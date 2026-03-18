@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod geometry;
 mod anchors;
 mod agent_harnesses;
@@ -13,8 +15,9 @@ use geometry::PixelRect;
 
 fn main() {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    let log_file = std::fs::File::create("/tmp/cc-hud.log").expect("could not create log file");
     tracing_subscriber::registry()
-        .with(fmt::layer())
+        .with(fmt::layer().with_writer(log_file))
         .with(
             EnvFilter::try_from_default_env()
                 .unwrap_or(EnvFilter::new("info,wgpu=warn,naga=warn")),
@@ -62,16 +65,20 @@ fn main() {
     tracing::info!(?initial_rect, "initial overlay position");
 
     let state = Arc::new(Mutex::new(initial_rect));
+    let visible = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     // Spawn pane tracking thread for ongoing updates
     let poll_state = state.clone();
+    let poll_visible = visible.clone();
     std::thread::spawn(move || {
-        pane_poll_loop(target, poll_state);
+        pane_poll_loop(target, poll_state, poll_visible);
     });
 
     start_overlay(Hud {
         first_frame: true,
+        shown: false,
         state,
+        visible,
     });
 }
 
@@ -97,18 +104,44 @@ fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
         None => { tracing::warn!(term_pid, "terminal_window_origin() returned None"); return None; }
     };
 
-    let rect = geometry::compute_overlay_rect(&pane.cell_rect, &metrics, &origin, 3);
+    let insets = geometry::TerminalInsets::iterm2_default();
+    let rect = geometry::compute_overlay_rect(&pane.cell_rect, &metrics, &origin, &insets, 3, 1);
     tracing::info!(?rect, "computed overlay rect");
     Some(rect)
 }
 
-fn pane_poll_loop(target: anchors::tmux::TmuxTarget, state: Arc<Mutex<PixelRect>>) {
+fn pane_poll_loop(
+    target: anchors::tmux::TmuxTarget,
+    state: Arc<Mutex<PixelRect>>,
+    visible: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+
+    // Resolve the client tty (iTerm's pty, not tmux's internal pane pty)
+    let tty = anchors::tmux::client_tty();
+    tracing::info!(?tty, "resolved client tty for tab detection");
+
+    let mut tick = 1u32; // start at 1 so first tab check is delayed, not immediate
     loop {
-        if let Some(rect) = compute_pane_rect(&target) {
-            let mut s = state.lock().unwrap();
-            if *s != rect {
-                tracing::debug!(?rect, "pane rect updated");
-                *s = rect;
+        // TODO: tab detection disabled until debugged
+        // Check tab visibility every ~1s (every 10th tick), not every 100ms
+        // AppleScript IPC is slow and would block geometry updates
+        // if tick % 10 == 0 {
+        //     let tab_active = match &tty {
+        //         Some(t) => anchors::terminal::is_iterm_tab_active(t),
+        //         None => true,
+        //     };
+        //     visible.store(tab_active, Ordering::Relaxed);
+        // }
+        tick = tick.wrapping_add(1);
+
+        if visible.load(Ordering::Relaxed) {
+            if let Some(rect) = compute_pane_rect(&target) {
+                let mut s = state.lock().unwrap();
+                if *s != rect {
+                    tracing::debug!(?rect, "pane rect updated");
+                    *s = rect;
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -117,7 +150,9 @@ fn pane_poll_loop(target: anchors::tmux::TmuxTarget, state: Arc<Mutex<PixelRect>
 
 struct Hud {
     first_frame: bool,
+    shown: bool,
     state: Arc<Mutex<PixelRect>>,
+    visible: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EguiOverlay for Hud {
@@ -128,53 +163,112 @@ impl EguiOverlay for Hud {
         glfw_backend: &mut GlfwBackend,
     ) {
         let rect = *self.state.lock().unwrap();
+        let is_visible = self.visible.load(std::sync::atomic::Ordering::Relaxed);
+
+        glfw_backend.set_passthrough(true);
+
+        if !is_visible {
+            // Move offscreen instead of hide() to avoid focus steal on show()
+            glfw_backend.window.set_pos(-9999, -9999);
+            glfw_backend.set_window_size([1.0, 1.0]);
+            egui_context.request_repaint();
+            return;
+        }
 
         glfw_backend.window.set_pos(rect.x, rect.y);
         glfw_backend.set_window_size([rect.w as f32, rect.h as f32]);
-        glfw_backend.set_passthrough(true);
 
         if self.first_frame {
             self.first_frame = false;
-            // Show window only after positioning, so it doesn't flash at default location
             glfw_backend.window.show();
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(140)))
+            .frame(egui::Frame::none().fill(egui::Color32::TRANSPARENT))
             .show(egui_context, |ui| {
                 let area = ui.available_rect_before_wrap();
                 let painter = ui.painter();
 
-                let bar_count = 30;
-                let bar_w = area.width() / bar_count as f32;
-                let time = ui.input(|i| i.time);
+                // AC color palette
+                let bronze = egui::Color32::from_rgb(180, 140, 60);
+                let bronze_dim = egui::Color32::from_rgba_unmultiplied(140, 110, 45, 180);
+                let bronze_bright = egui::Color32::from_rgb(220, 175, 80);
+                let bar_bg = egui::Color32::from_rgba_unmultiplied(15, 13, 8, 200);
+                let fill_color = egui::Color32::from_rgb(190, 120, 20);
+                let red_low = egui::Color32::from_rgb(180, 40, 30);
 
-                for i in 0..bar_count {
-                    let phase = i as f64 * 0.3 + time * 1.5;
-                    let height_frac = (phase.sin() * 0.4 + 0.5) as f32;
-                    let bar_h = area.height() * 0.8 * height_frac;
+                // Mock data
+                let fill_frac = 0.62_f32;
 
-                    let bar_rect = egui::Rect::from_min_size(
-                        egui::pos2(
-                            area.left() + i as f32 * bar_w + 1.0,
-                            area.bottom() - bar_h,
-                        ),
-                        egui::vec2(bar_w - 2.0, bar_h),
+                let pad = 2.0;
+                let outer_h = area.height() - pad * 2.0;
+                let outer_y = area.top() + pad;
+                let rounding = 4.0;
+                let stroke_w = 2.5;
+                let inner_margin = 4.0;
+
+                let label_box_w = outer_h * 0.7; // narrower to hug the letter
+                let label_bg = egui::Color32::from_rgba_unmultiplied(140, 110, 45, 40);
+
+                // One continuous outer rect spanning full width
+                let outer_rect = egui::Rect::from_min_size(
+                    egui::pos2(area.left() + pad, outer_y),
+                    egui::vec2(area.width() - pad * 2.0, outer_h),
+                );
+                painter.rect_filled(outer_rect, rounding, bar_bg);
+                painter.rect_stroke(outer_rect, rounding, egui::Stroke::new(stroke_w, bronze_dim));
+
+                // E label area (left end, inside the outer rect)
+                // Only round the left corners (it's part of the outer rect)
+                let e_rect = egui::Rect::from_min_size(
+                    egui::pos2(outer_rect.left() + stroke_w * 0.5, outer_rect.top() + stroke_w * 0.5),
+                    egui::vec2(label_box_w, outer_h - stroke_w),
+                );
+                let e_rounding = egui::Rounding { nw: rounding, sw: rounding, ne: 0.0, se: 0.0 };
+                painter.rect_filled(e_rect, e_rounding, label_bg);
+                let label_font = egui::FontId::monospace(outer_h * 0.85);
+                // Fake bold: draw twice with 1px horizontal offset
+                for dx in [0.0, 1.0] {
+                    painter.text(
+                        e_rect.center() + egui::vec2(dx, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        "E",
+                        label_font.clone(),
+                        fill_color,
                     );
-
-                    let r = (height_frac * 255.0) as u8;
-                    let g = ((1.0 - height_frac) * 200.0) as u8;
-                    let color = egui::Color32::from_rgba_unmultiplied(r, g, 40, 200);
-                    painter.rect_filled(bar_rect, 2.0, color);
                 }
 
-                painter.text(
-                    area.left_top() + egui::vec2(6.0, 4.0),
-                    egui::Align2::LEFT_TOP,
-                    "$0.00 total | 0 turns | cc-hud POC",
-                    egui::FontId::monospace(10.0),
-                    egui::Color32::from_white_alpha(180),
+                // F label area (right end, inside the outer rect)
+                let f_rect = egui::Rect::from_min_size(
+                    egui::pos2(outer_rect.right() - stroke_w * 0.5 - label_box_w, outer_rect.top() + stroke_w * 0.5),
+                    egui::vec2(label_box_w, outer_h - stroke_w),
                 );
+                let f_rounding = egui::Rounding { nw: 0.0, sw: 0.0, ne: rounding, se: rounding };
+                painter.rect_filled(f_rect, f_rounding, label_bg);
+                for dx in [0.0, 1.0] {
+                    painter.text(
+                        f_rect.center() + egui::vec2(dx, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        "F",
+                        label_font.clone(),
+                        fill_color,
+                    );
+                }
+
+                // Inner gauge area (between E and F, with margin from outer)
+                let gauge_rect = egui::Rect::from_min_max(
+                    egui::pos2(e_rect.right() + inner_margin, outer_rect.top() + inner_margin),
+                    egui::pos2(f_rect.left() - inner_margin, outer_rect.bottom() - inner_margin),
+                );
+
+                // Fill (not flush -- sits inside the gauge area)
+                let fill_w = gauge_rect.width() * fill_frac;
+                let fill_rect = egui::Rect::from_min_size(
+                    gauge_rect.left_top(),
+                    egui::vec2(fill_w, gauge_rect.height()),
+                );
+                let current_fill = if fill_frac < 0.2 { red_low } else { fill_color };
+                painter.rect_filled(fill_rect, 2.0, current_fill);
             });
 
         egui_context.request_repaint();

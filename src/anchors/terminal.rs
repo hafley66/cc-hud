@@ -1,5 +1,43 @@
 use crate::geometry::{CellMetrics, WindowOrigin};
 
+/// Check if an iTerm2 tab containing a given tty is the active tab.
+pub fn is_iterm_tab_active(tty: &str) -> bool {
+    let script = format!(
+        r#"tell application "iTerm2"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        if tty of s is "{}" then
+                            if t is current tab of w then
+                                return "active"
+                            else
+                                return "inactive"
+                            end if
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+            return "not-found"
+        end tell"#,
+        tty
+    );
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output();
+    match output {
+        Ok(o) => {
+            let result = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            tracing::info!(%result, %stderr, %tty, "iterm tab check");
+            result == "active"
+        }
+        Err(e) => {
+            tracing::warn!(%e, "osascript failed");
+            true
+        }
+    }
+}
+
 /// Get cell pixel dimensions from a tty via TIOCGWINSZ ioctl.
 /// Returns physical pixels. CellMetrics includes scale_factor for conversion.
 #[cfg(unix)]

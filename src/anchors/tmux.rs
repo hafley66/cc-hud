@@ -93,6 +93,63 @@ pub fn find_pane(target: &TmuxTarget) -> Option<PaneInfo> {
     }
 }
 
+/// Get the client tty for the current tmux session.
+/// Uses the TMUX env var (always set inside tmux) to get the session,
+/// then queries list-clients for the terminal's pty.
+pub fn client_tty() -> Option<String> {
+    // Get session name from current tmux environment
+    let session = std::process::Command::new("tmux")
+        .args(["display-message", "-p", "#{session_name}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())?;
+    tracing::info!(%session, "resolved tmux session");
+
+    let output = std::process::Command::new("tmux")
+        .args(["list-clients", "-t", &session, "-F", "#{client_tty}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())?;
+    let tty = output.lines().next().map(|s| s.trim().to_string());
+    tracing::info!(?tty, "client tty");
+    tty
+}
+
+/// Check if the pane's window is the active window in an attached session.
+/// Returns false if the session is detached or the window isn't active.
+pub fn is_pane_visible(target: &TmuxTarget) -> bool {
+    let args = match target {
+        TmuxTarget::Session(session) => {
+            vec!["list-panes", "-t", session, "-F", "#{window_active}:#{client_session}"]
+        }
+        TmuxTarget::PaneId(_) => {
+            vec!["list-panes", "-a", "-F", "#{pane_id}:#{window_active}:#{session_name}"]
+        }
+    };
+
+    let output = match std::process::Command::new("tmux").args(&args).output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return false,
+    };
+
+    match target {
+        TmuxTarget::Session(_) => {
+            // Any line with window_active=1 means visible
+            output.lines().any(|l| l.starts_with('1'))
+        }
+        TmuxTarget::PaneId(id) => {
+            // Find the line for our pane, check window_active
+            output.lines().any(|l| {
+                let parts: Vec<&str> = l.split(':').collect();
+                parts.len() >= 2 && parts[0] == id && parts[1] == "1"
+            })
+        }
+    }
+}
+
 /// Simple v4-ish UUID from random bytes. No external dep.
 fn uuid_v4_simple() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
