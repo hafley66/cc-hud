@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Launch cc-hud overlay with a tmux session.
+#
+# Usage:
+#   bin/launch                 -- new session, overlay main pane
+#   bin/launch my-session      -- create/attach named session
+#
+# If already in tmux, starts overlay for current pane.
+# If not in tmux, creates a session and attaches.
+#
+# Kill: Ctrl-C in the overlay pane, or:
+#   tmux kill-session -t <session-name>
+#   tmux kill-server   # kills ALL sessions
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BINARY="$SCRIPT_DIR/target/release/cc-hud"
+SESSION_NAME="${1:-}"
+
+# Build release if needed
+if [ ! -f "$BINARY" ] || [ "$SCRIPT_DIR/src/main.rs" -nt "$BINARY" ]; then
+    echo "Building cc-hud (release)..."
+    cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml" || exit 1
+fi
+
+# --- Already inside tmux ---
+if [ -n "$TMUX" ]; then
+    # Get the current pane's global ID
+    PANE_ID=$(tmux display-message -p '#{pane_id}')
+    echo "Starting overlay for pane: $PANE_ID"
+    "$BINARY" "$PANE_ID" &
+    HUD_PID=$!
+    trap "kill $HUD_PID 2>/dev/null" EXIT
+    echo "cc-hud running (pid $HUD_PID). Ctrl-C to stop."
+    wait $HUD_PID
+    exit 0
+fi
+
+# --- Not in tmux: create session and attach ---
+if [ -z "$SESSION_NAME" ]; then
+    SESSION_NAME="cc-hud-$(date +%s)-$$"
+fi
+
+# Create detached session sized to current terminal
+tmux new-session -d -s "$SESSION_NAME" \
+    -x "$(tput cols)" -y "$(tput lines)"
+
+# Capture the main pane's global ID before splitting
+MAIN_PANE=$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_id}' | head -1)
+
+# Split a 1-line pane at the bottom for the overlay daemon
+# Pass the MAIN pane's global ID so the overlay tracks it, not itself
+LOG="/tmp/cc-hud.log"
+tmux split-window -t "$SESSION_NAME" -v -l 1 \
+    "RUST_LOG=debug $BINARY $MAIN_PANE >$LOG 2>&1; echo EXIT_CODE=\$? >>$LOG; sleep 5"
+
+# Select the main pane for the user
+tmux select-pane -t "$SESSION_NAME:.0"
+
+# Attach
+exec tmux attach -t "$SESSION_NAME"
