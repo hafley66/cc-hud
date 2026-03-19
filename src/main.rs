@@ -902,7 +902,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
                 // Aggregate stats for group header
                 let mut g_cost = 0.0f64;
-                let mut g_total_input = 0u64;
+                let mut g_last_input = 0u64;
                 let mut any_active = false;
                 let mut active_count = 0u32;
                 let mut all_hidden = true;
@@ -911,12 +911,22 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 for (si, _) in members {
                     let s = &data.sessions[*si];
                     g_cost    += s.total_cost_usd;
-                    g_total_input += s.total_input;
-                    if s.is_active { any_active = true; active_count += 1; g_model = s.model.clone(); }
+                    // Context: use active session's value, or most recent if none active
+                    if s.is_active {
+                        any_active = true;
+                        active_count += 1;
+                        g_model = s.model.clone();
+                        g_last_input = s.last_input_tokens;
+                    }
                     if !effective_hidden.contains(&s.session_id) { all_hidden = false; }
                 }
-                if g_model.is_empty() {
-                    if let Some((si, _)) = members.last() { g_model = data.sessions[*si].model.clone(); }
+                // If no active session, use the first member (already sorted most-recent-first)
+                if !any_active {
+                    if let Some((si, _)) = members.first() {
+                        let s = &data.sessions[*si];
+                        g_last_input = s.last_input_tokens;
+                        g_model = s.model.clone();
+                    }
                 }
 
                 if is_flat {
@@ -952,7 +962,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
                             &s.project, sess_col, name_col, dim_col,
                             s.is_active, is_hidden,
-                            s.total_input, s.total_cost_usd, &s.model,
+                            s.last_input_tokens, s.total_cost_usd, &s.model,
                             &[(s, sess_col)], effective_hidden, None);
 
                         row_idx += 1;
@@ -1005,7 +1015,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
                         &header_name, bar_col, name_col, dim_col,
                         any_active, all_hidden,
-                        g_total_input, g_cost, &g_model,
+                        g_last_input, g_cost, &g_model,
                         &sess_refs, effective_hidden, None);
 
                     row_idx += 1;
@@ -1051,7 +1061,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             draw_legend_row(ui, sub_rect, row_h, timeline_w, week_start_secs, week_span,
                                 &sub_label, sess_col, sub_name_col, sub_dim,
                                 s.is_active, is_hidden,
-                                s.total_input, s.total_cost_usd, &s.model,
+                                s.last_input_tokens, s.total_cost_usd, &s.model,
                                 &[(s, sess_col)], effective_hidden, Some(16.0));
 
                             row_idx += 1;
@@ -1140,7 +1150,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5).name("agent"));
                     }
                     update_hover_src(pui, HoverSource::Cost);
-                    draw_legend_hl(pui, &legend_hl);
+                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
         });
     });
@@ -1171,7 +1181,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5));
                     }
                     update_hover_src(pui, HoverSource::TotalCost);
-                    draw_legend_hl(pui, &legend_hl);
+                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
         });
     });
@@ -1198,7 +1208,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     pui.bar_chart(BarChart::new(cd.in_tok_bars.clone()).color(Palette::INPUT_TINT).name("in"));
                     pui.bar_chart(BarChart::new(cd.out_tok_bars.clone()).color(Palette::OUTPUT_TINT).name("out"));
                     update_hover_src(pui, HoverSource::Tokens);
-                    draw_legend_hl(pui, &legend_hl);
+                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
         });
     });
@@ -1228,7 +1238,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             .style(egui_plot::LineStyle::Dashed { length: 8.0 }).name("out"));
                     }
                     update_hover_src(pui, HoverSource::TotalTokens);
-                    draw_legend_hl(pui, &legend_hl);
+                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
         });
     });
@@ -1505,7 +1515,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     pui.points(egui_plot::Points::new(cd.combined_cost_pts.clone())
                         .color(Palette::INPUT_TINT).radius(2.0));
                     update_hover_src(pui, HoverSource::WeeklyCost);
-                    draw_legend_hl(pui, &legend_hl);
+                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
             });
         });
@@ -1533,7 +1543,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     pui.points(egui_plot::Points::new(cd.cost_rate_pts.clone())
                         .color(Palette::OUTPUT_TINT).radius(2.0));
                     update_hover_src(pui, HoverSource::WeeklyRate);
-                    draw_legend_hl(pui, &legend_hl);
+                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
             });
         });

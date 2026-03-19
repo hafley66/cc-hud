@@ -5,19 +5,170 @@ use std::io::{BufRead, Write};
 
 use serde::{Deserialize, Serialize};
 
-/// Where usage history is stored on disk.
-fn history_path() -> PathBuf {
-    let mut p = dirs();
-    p.push("usage_history.jsonl");
-    p
-}
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
 
-fn dirs() -> PathBuf {
-    let mut p = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+fn hud_dir() -> PathBuf {
+    let home = if cfg!(windows) {
+        std::env::var("USERPROFILE").unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+    } else {
+        std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
+    };
+    let mut p = PathBuf::from(home);
     p.push(".cc-hud");
     std::fs::create_dir_all(&p).ok();
     p
 }
+
+fn history_path() -> PathBuf {
+    let mut p = hud_dir();
+    p.push("usage_history.jsonl");
+    p
+}
+
+fn config_path() -> PathBuf {
+    let mut p = hud_dir();
+    p.push("config.toml");
+    p
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct Config {
+    /// Inline OAuth token.
+    oauth_token: Option<String>,
+    /// Path to a file containing the OAuth token (first line, trimmed).
+    oauth_token_file: Option<String>,
+    /// Poll interval in seconds (default 90).
+    poll_interval_secs: Option<u64>,
+}
+
+fn load_config() -> Config {
+    let path = config_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            // serde is already a dep; parse toml manually to avoid adding toml crate.
+            // Format is simple key = "value" lines.
+            parse_simple_toml(&text)
+        }
+        Err(_) => Config::default(),
+    }
+}
+
+/// Minimal key="value" parser. Handles the three fields we care about.
+fn parse_simple_toml(text: &str) -> Config {
+    let mut cfg = Config::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() { continue; }
+        if let Some((key, val)) = line.split_once('=') {
+            let key = key.trim();
+            let val = val.trim().trim_matches('"').trim_matches('\'');
+            match key {
+                "oauth_token" => cfg.oauth_token = Some(val.to_string()),
+                "oauth_token_file" => cfg.oauth_token_file = Some(val.to_string()),
+                "poll_interval_secs" => cfg.poll_interval_secs = val.parse().ok(),
+                _ => {}
+            }
+        }
+    }
+    cfg
+}
+
+// ---------------------------------------------------------------------------
+// Token resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve OAuth token. Priority:
+/// 1. CC_HUD_OAUTH_TOKEN env var
+/// 2. ~/.cc-hud/config.toml oauth_token or oauth_token_file
+/// 3. Platform-native credential store (macOS Keychain)
+fn read_oauth_token(cfg: &Config) -> Option<String> {
+    // 1. Env var
+    if let Ok(tok) = std::env::var("CC_HUD_OAUTH_TOKEN") {
+        let tok = tok.trim().to_string();
+        if !tok.is_empty() {
+            tracing::info!("using OAuth token from CC_HUD_OAUTH_TOKEN env var");
+            return Some(tok);
+        }
+    }
+
+    // 2a. Config: inline token
+    if let Some(tok) = &cfg.oauth_token {
+        let tok = tok.trim().to_string();
+        if !tok.is_empty() {
+            tracing::info!("using OAuth token from config.toml oauth_token");
+            return Some(tok);
+        }
+    }
+
+    // 2b. Config: token file
+    if let Some(path) = &cfg.oauth_token_file {
+        let expanded = if path.starts_with('~') {
+            let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+            path.replacen('~', &home, 1)
+        } else {
+            path.clone()
+        };
+        match std::fs::read_to_string(&expanded) {
+            Ok(contents) => {
+                let tok = contents.lines().next().unwrap_or("").trim().to_string();
+                if !tok.is_empty() {
+                    tracing::info!("using OAuth token from file: {}", expanded);
+                    return Some(tok);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to read oauth_token_file {}: {}", expanded, e);
+            }
+        }
+    }
+
+    // 3. Platform-native
+    read_platform_token()
+}
+
+#[cfg(target_os = "macos")]
+fn read_platform_token() -> Option<String> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .output()
+        .ok()?;
+    if !output.status.success() { return None; }
+    let json_str = String::from_utf8(output.stdout).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(json_str.trim()).ok()?;
+    let tok = parsed.get("claudeAiOauth")?.get("accessToken")?.as_str()?.to_string();
+    tracing::info!("using OAuth token from macOS Keychain");
+    Some(tok)
+}
+
+#[cfg(target_os = "windows")]
+fn read_platform_token() -> Option<String> {
+    // Windows Credential Manager: Claude Code stores creds under "Claude Code-credentials".
+    // Use cmdkey or PowerShell to read. For now, log guidance and return None.
+    tracing::warn!(
+        "Windows Credential Manager not yet supported. \
+         Set CC_HUD_OAUTH_TOKEN env var or add oauth_token to ~/.cc-hud/config.toml"
+    );
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn read_platform_token() -> Option<String> {
+    tracing::warn!(
+        "no platform credential store implemented for this OS. \
+         Set CC_HUD_OAUTH_TOKEN env var or add oauth_token to ~/.cc-hud/config.toml"
+    );
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Usage data types
+// ---------------------------------------------------------------------------
 
 /// A single usage snapshot from the API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,17 +205,9 @@ struct UsageResponse {
     seven_day_sonnet: Option<UsageWindow>,
 }
 
-/// Read OAuth access token from macOS Keychain.
-fn read_oauth_token() -> Option<String> {
-    let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-        .output()
-        .ok()?;
-    if !output.status.success() { return None; }
-    let json_str = String::from_utf8(output.stdout).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(json_str.trim()).ok()?;
-    parsed.get("claudeAiOauth")?.get("accessToken")?.as_str().map(|s| s.to_string())
-}
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
 
 fn fetch_usage(token: &str) -> Result<UsageResponse, String> {
     let output = std::process::Command::new("curl")
@@ -82,6 +225,10 @@ fn fetch_usage(token: &str) -> Result<UsageResponse, String> {
     serde_json::from_slice::<UsageResponse>(&output.stdout)
         .map_err(|e| format!("parse failed: {}", e))
 }
+
+// ---------------------------------------------------------------------------
+// Disk persistence
+// ---------------------------------------------------------------------------
 
 /// Load historical snapshots from disk (last 7 days).
 fn load_history() -> Vec<UsageSnapshot> {
@@ -109,7 +256,6 @@ fn load_history() -> Vec<UsageSnapshot> {
     snaps
 }
 
-/// Append a snapshot to disk.
 fn append_to_disk(snap: &UsageSnapshot) {
     let path = history_path();
     let mut file = match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
@@ -124,7 +270,6 @@ fn append_to_disk(snap: &UsageSnapshot) {
     }
 }
 
-/// Compact the history file: keep only last 7 days of data.
 fn compact_history(snaps: &[UsageSnapshot]) {
     let path = history_path();
     let tmp = path.with_extension("jsonl.tmp");
@@ -138,13 +283,23 @@ fn compact_history(snaps: &[UsageSnapshot]) {
     }
 }
 
-pub fn poll_loop(data: Arc<Mutex<UsageData>>, interval: Duration) {
-    let token = match read_oauth_token() {
+// ---------------------------------------------------------------------------
+// Poll loop
+// ---------------------------------------------------------------------------
+
+pub fn poll_loop(data: Arc<Mutex<UsageData>>, default_interval: Duration) {
+    let cfg = load_config();
+    let interval = cfg.poll_interval_secs
+        .map(|s| Duration::from_secs(s.max(10)))
+        .unwrap_or(default_interval);
+
+    let token = match read_oauth_token(&cfg) {
         Some(t) => t,
         None => {
-            tracing::warn!("no OAuth token found in keychain, usage polling disabled");
+            tracing::warn!("no OAuth token found, usage polling disabled");
+            tracing::warn!("set CC_HUD_OAUTH_TOKEN env var or create ~/.cc-hud/config.toml");
             let mut d = data.lock().unwrap();
-            d.error = Some("no OAuth token".into());
+            d.error = Some("no OAuth token (see ~/.cc-hud/config.toml)".into());
             return;
         }
     };
@@ -172,7 +327,6 @@ pub fn poll_loop(data: Arc<Mutex<UsageData>>, interval: Duration) {
                     seven_day_sonnet: resp.seven_day_sonnet.as_ref().and_then(|w| w.utilization),
                 };
 
-                // Write to disk
                 append_to_disk(&snap);
 
                 let mut d = data.lock().unwrap();
@@ -180,12 +334,10 @@ pub fn poll_loop(data: Arc<Mutex<UsageData>>, interval: Duration) {
                 d.snapshots.push(snap);
                 d.error = None;
 
-                // Prune in-memory to 7 days
                 let cutoff = now.saturating_sub(7 * 24 * 3600);
                 d.snapshots.retain(|s| s.ts >= cutoff);
 
                 poll_count += 1;
-                // Compact disk file every ~100 polls (~2.5h at 90s interval)
                 if poll_count % 100 == 0 {
                     compact_history(&d.snapshots);
                 }
