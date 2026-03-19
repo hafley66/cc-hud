@@ -87,7 +87,7 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: false, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new() });
+    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new() });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -902,8 +902,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let row_h = legend_row_h;
     let timeline_w = 120.0_f32;
 
+    let eye_w = 14.0_f32;
+
     // Collect toggle actions to apply after rendering
     let mut toggle_ids: Vec<String> = vec![];
+    let mut group_toggle: Option<(String, Vec<String>)> = None; // (cwd, all member ids)
     let mut toggle_expand: Option<String> = None;
     let legend_hl_id = egui::Id::new("legend_highlight");
     // Clear highlight each frame; legend hover will re-set it
@@ -962,8 +965,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         let s = &data.sessions[*si];
                         let sess_col = session_color(*si);
                         let is_hidden = effective_hidden.contains(&s.session_id);
+                        let manually_hidden = hidden.contains(&s.session_id);
+                        let force_masked = *show_active_only && !s.is_active;
                         let text_alpha = if is_hidden { 80u8 } else { 230u8 };
-                        // Visible sessions get full brightness regardless of is_active
                         let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
                         let dim_col = egui::Color32::from_rgba_unmultiplied(130, 120, 100, text_alpha / 2);
 
@@ -973,8 +977,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             egui::vec2(inner.width(), row_h),
                         );
                         let resp = ui.interact(row_rect, egui::Id::new(("legend_flat", gi, *si)), egui::Sense::click());
-                        if resp.clicked() { toggle_ids.push(s.session_id.clone()); }
-                        // Clickable row: subtle bg tint always, brighter on hover
+                        if resp.clicked() && !force_masked { toggle_ids.push(s.session_id.clone()); }
                         ui.painter().rect_filled(row_rect, 2.0,
                             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4));
                         if resp.hovered() {
@@ -986,12 +989,27 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             }
                         }
 
+                        // Eye icon: filled circle = visible, outline = hidden, gray = force-masked
+                        let eye_cx = row_rect.left() + eye_w * 0.5 + 2.0;
+                        let eye_cy = row_rect.center().y;
+                        let eye_r = 4.0;
+                        if force_masked {
+                            ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
+                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 75, 65, 60)));
+                        } else if manually_hidden {
+                            ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
+                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(180, 170, 150, 120)));
+                        } else {
+                            ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r,
+                                egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180));
+                        }
+
                         draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
                             &s.project, sess_col, name_col, dim_col,
                             s.is_active, is_hidden,
                             s.last_input_tokens, s.total_cost_usd, &s.model,
                             None,
-                            &[(s, sess_col)], effective_hidden, None);
+                            &[(s, sess_col)], effective_hidden, Some(eye_w));
 
                         row_idx += 1;
                     }
@@ -1007,11 +1025,32 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         egui::pos2(inner.left(), row_top),
                         egui::vec2(inner.width(), row_h),
                     );
-                    let resp = ui.interact(row_rect, egui::Id::new(("legend_group", gi)), egui::Sense::click());
-                    if resp.clicked() { toggle_expand = Some(cwd.clone()); }
+
+                    // Eye zone (left): toggles all members' visibility
+                    let eye_rect = egui::Rect::from_min_size(
+                        row_rect.left_top(),
+                        egui::vec2(eye_w + 4.0, row_h),
+                    );
+                    let eye_resp = ui.interact(eye_rect, egui::Id::new(("legend_group_eye", gi)), egui::Sense::click());
+                    if eye_resp.clicked() {
+                        let member_ids: Vec<String> = members.iter()
+                            .map(|(si, _)| data.sessions[*si].session_id.clone())
+                            .collect();
+                        group_toggle = Some((cwd.clone(), member_ids));
+                    }
+
+                    // Main zone (right of eye): expand/collapse
+                    let main_rect = egui::Rect::from_min_max(
+                        egui::pos2(row_rect.left() + eye_w + 4.0, row_rect.top()),
+                        row_rect.right_bottom(),
+                    );
+                    let main_resp = ui.interact(main_rect, egui::Id::new(("legend_group", gi)), egui::Sense::click());
+                    if main_resp.clicked() { toggle_expand = Some(cwd.clone()); }
+
+                    // Row bg
                     ui.painter().rect_filled(row_rect, 2.0,
                         egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4));
-                    if resp.hovered() {
+                    if main_resp.hovered() || eye_resp.hovered() {
                         ui.painter().rect_filled(row_rect, 2.0,
                             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
                         ui.ctx().data_mut(|d| {
@@ -1023,6 +1062,30 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 }
                             }
                         });
+                    }
+
+                    // Eye icon for group: filled = some visible, outline = all hidden, half = mixed
+                    let eye_cx = row_rect.left() + eye_w * 0.5 + 2.0;
+                    let eye_cy = row_rect.center().y;
+                    let eye_r = 4.5;
+                    let none_hidden = members.iter().all(|(si, _)| !hidden.contains(&data.sessions[*si].session_id));
+                    if all_hidden {
+                        ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(180, 170, 150, 120)));
+                    } else if none_hidden {
+                        ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r,
+                            egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180));
+                    } else {
+                        // Mixed: half-filled -- outline + smaller filled inner
+                        ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(200, 190, 170, 150)));
+                        ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r * 0.5,
+                            egui::Color32::from_rgba_unmultiplied(200, 190, 170, 150));
+                    }
+                    // Hover highlight on eye zone
+                    if eye_resp.hovered() {
+                        ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r + 2.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40)));
                     }
 
                     // Build session refs for timeline
@@ -1044,7 +1107,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         any_active, all_hidden,
                         g_last_input, g_cost, &g_model,
                         agc,
-                        &sess_refs, effective_hidden, None);
+                        &sess_refs, effective_hidden, Some(eye_w));
 
                     row_idx += 1;
 
@@ -1054,6 +1117,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             let s = &data.sessions[*si];
                             let sess_col = session_color(*si);
                             let is_hidden = effective_hidden.contains(&s.session_id);
+                            let manually_hidden = hidden.contains(&s.session_id);
+                            let force_masked = *show_active_only && !s.is_active;
                             let sub_alpha = if is_hidden { 60u8 } else { 230u8 };
                             let sub_name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, sub_alpha);
                             let sub_dim = egui::Color32::from_rgba_unmultiplied(110, 105, 90, sub_alpha / 2);
@@ -1064,7 +1129,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 egui::vec2(inner.width(), row_h),
                             );
                             let sub_resp = ui.interact(sub_rect, egui::Id::new(("legend_sub", gi, *si)), egui::Sense::click());
-                            if sub_resp.clicked() { toggle_ids.push(s.session_id.clone()); }
+                            if sub_resp.clicked() && !force_masked { toggle_ids.push(s.session_id.clone()); }
                             ui.painter().rect_filled(sub_rect, 2.0,
                                 egui::Color32::from_rgba_unmultiplied(255, 255, 255, 3));
                             if sub_resp.hovered() {
@@ -1074,6 +1139,21 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
                                         .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
                                 }
+                            }
+
+                            // Eye icon for sub-row
+                            let eye_cx = sub_rect.left() + eye_w * 0.5 + 2.0 + 16.0; // extra indent for sub-rows
+                            let eye_cy = sub_rect.center().y;
+                            let eye_r = 3.5;
+                            if force_masked {
+                                ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 75, 65, 60)));
+                            } else if manually_hidden {
+                                ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(180, 170, 150, 120)));
+                            } else {
+                                ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r,
+                                    egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180));
                             }
 
                             // Session label: short id + active marker
@@ -1089,7 +1169,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 s.is_active, is_hidden,
                                 s.last_input_tokens, s.total_cost_usd, &s.model,
                                 None,
-                                &[(s, sess_col)], effective_hidden, Some(16.0));
+                                &[(s, sess_col)], effective_hidden, Some(16.0 + eye_w));
 
                             row_idx += 1;
                         }
@@ -1115,6 +1195,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             expanded_groups.remove(&cwd);
         } else {
             expanded_groups.insert(cwd);
+        }
+    }
+    // Apply group toggle: if any member is visible, hide all; otherwise show all
+    if let Some((_cwd, member_ids)) = group_toggle {
+        let any_visible = member_ids.iter().any(|id| !hidden.contains(id));
+        if any_visible {
+            for id in member_ids { hidden.insert(id); }
+        } else {
+            for id in &member_ids { hidden.remove(id); }
         }
     }
     // Apply individual session visibility toggles
