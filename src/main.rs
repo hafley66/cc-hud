@@ -710,183 +710,183 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     });
 
     // --- Row 2: Three Mini Charts ---
-    let cursor_id = egui::Id::new("small_charts_cursor");
+    // Build data for both charts from session events
+    struct TurnData { x: f64, cost: f64, total_cost: f64, toks: u64, total_toks: u64, idx: usize }
+    let mut turns: Vec<TurnData> = vec![];
+    let mut cum_cost = 0.0f64;
+    let mut cum_toks = 0u64;
+    let mut api_idx = 0usize;
+    for ev in &session.events {
+        if let Event::ApiCall { input_cost_usd, output_cost_usd, input_tokens, output_tokens, timestamp_secs, .. } = ev {
+            let x = if is_time { *timestamp_secs as f64 / 60.0 } else { api_idx as f64 };
+            let cost = input_cost_usd + output_cost_usd;
+            let toks = input_tokens + output_tokens;
+            cum_cost += cost;
+            cum_toks += toks;
+            turns.push(TurnData { x, cost, total_cost: cum_cost, toks, total_toks: cum_toks, idx: api_idx });
+            api_idx += 1;
+        }
+    }
 
-    // Cost chart
+    let cursor_id = egui::Id::new("small_charts_cursor");
+    let bar_w = if is_time { 0.5 } else { 0.8 };
+    let line_style = if is_time { egui_plot::LineStyle::Dashed { length: 8.0 } } else { egui_plot::LineStyle::Solid };
+
+    // --- Cost chart ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(cost_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            // Build summed cost data for this session
-            let mut cost_bars: Vec<Bar> = vec![];
-            let mut cost_pts: Vec<[f64; 2]> = vec![];
-            let mut total_cost = 0.0f64;
-            let mut max_cost = 0.001f64;
-            let mut api_idx = 0usize;
-
-            for ev in &session.events {
-                if let Event::ApiCall { input_cost_usd, output_cost_usd, timestamp_secs, .. } = ev {
-                    let x = if is_time {
-                        *timestamp_secs as f64 / 60.0
-                    } else {
-                        api_idx as f64
-                    };
-                    let bar_w = if is_time { 0.5 } else { 0.8 };
-                    let summed_cost = input_cost_usd + output_cost_usd;
-                    cost_bars.push(Bar::new(x, summed_cost).width(bar_w).fill(Palette::INPUT_TINT));
-                    max_cost = max_cost.max(summed_cost);
-
-                    total_cost += summed_cost;
-                    cost_pts.push([x, total_cost]);
-                    api_idx += 1;
-                }
-            }
+            let cost_bars: Vec<Bar> = turns.iter()
+                .map(|t| Bar::new(t.x, t.cost).width(bar_w).fill(Palette::INPUT_TINT))
+                .collect();
+            let cost_line: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_cost]).collect();
 
             let mut p = base_plot("small_cost")
                 .link_cursor(cursor_id, true, false)
                 .include_y(0.0)
-                .include_y(max_cost * 1.1)
+                .include_y(cum_cost * 1.05)
                 .show_axes([false, false])
                 .show_grid(false);
-
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
-
-            p.show(ui, |pui| {
+            let plot_resp = p.show(ui, |pui| {
                 pui.bar_chart(BarChart::new(cost_bars).color(Palette::INPUT_TINT));
-                if !cost_pts.is_empty() {
-                    let line_style = if is_time {
-                        egui_plot::LineStyle::Dashed { length: 8.0 }
-                    } else {
-                        egui_plot::LineStyle::Solid
-                    };
-                    pui.line(egui_plot::Line::new(cost_pts).color(Palette::OUTPUT_TINT).width(1.5).style(line_style));
+                if !cost_line.is_empty() {
+                    pui.line(egui_plot::Line::new(cost_line).color(Palette::OUTPUT_TINT).width(1.5).style(line_style));
                 }
             });
 
             // Current value at top-right
-            let val_text = format_cost(total_cost);
             ui.painter().text(
-                egui::pos2(cost_rect.right() - 2.0, cost_rect.top() + 2.0),
-                egui::Align2::RIGHT_TOP,
-                &val_text,
-                egui::FontId::monospace(8.0),
-                Palette::TEXT_DIM,
-            );
+                egui::pos2(cost_rect.right() - 4.0, cost_rect.top() + 2.0),
+                egui::Align2::RIGHT_TOP, &format_cost(cum_cost),
+                egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+
+            // Pinned tooltip at top-left (solid bg)
+            if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                if cost_rect.contains(hover_pos) {
+                    let plot_x = plot_resp.response.hover_pos()
+                        .map(|p| plot_resp.transform.value_from_position(p).x);
+                    if let Some(px) = plot_x {
+                        if let Some(t) = turns.iter().min_by(|a, b|
+                            (a.x - px).abs().partial_cmp(&(b.x - px).abs()).unwrap()) {
+                            let tip = format!("t{}  {}  total {}", t.idx + 1, format_cost(t.cost), format_cost(t.total_cost));
+                            let font = egui::FontId::monospace(9.0);
+                            let galley = ui.painter().layout_no_wrap(tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
+                            let tip_rect = egui::Rect::from_min_size(
+                                egui::pos2(cost_rect.left() + 2.0, cost_rect.top() + 2.0),
+                                galley.size() + egui::vec2(8.0, 4.0));
+                            ui.painter().rect_filled(tip_rect, 2.0, egui::Color32::from_rgb(20, 18, 14));
+                            ui.painter().text(tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, &tip, font, Palette::TEXT_BRIGHT);
+                        }
+                    }
+                }
+            }
         });
     });
 
-    // Token chart
+    // --- Token chart ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tok_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            // Build summed token data for this session
-            let mut tok_bars: Vec<Bar> = vec![];
-            let mut tok_pts: Vec<[f64; 2]> = vec![];
-            let mut total_toks = 0u64;
-            let mut max_tok = 1.0f64;
-            let mut api_idx = 0usize;
-
-            for ev in &session.events {
-                if let Event::ApiCall { input_tokens, output_tokens, timestamp_secs, .. } = ev {
-                    let x = if is_time {
-                        *timestamp_secs as f64 / 60.0
-                    } else {
-                        api_idx as f64
-                    };
-                    let bar_w = if is_time { 0.5 } else { 0.8 };
-                    let summed_tok = (input_tokens + output_tokens) as f64;
-                    tok_bars.push(Bar::new(x, summed_tok).width(bar_w).fill(Palette::OUTPUT_TINT));
-                    max_tok = max_tok.max(summed_tok);
-
-                    total_toks += input_tokens + output_tokens;
-                    tok_pts.push([x, total_toks as f64]);
-                    api_idx += 1;
-                }
-            }
+            let tok_bars: Vec<Bar> = turns.iter()
+                .map(|t| Bar::new(t.x, t.toks as f64).width(bar_w).fill(Palette::OUTPUT_TINT))
+                .collect();
+            let tok_line: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_toks as f64]).collect();
 
             let mut p = base_plot("small_tok")
                 .link_cursor(cursor_id, true, false)
                 .include_y(0.0)
-                .include_y(max_tok * 1.1)
+                .include_y(cum_toks as f64 * 1.05)
                 .show_axes([false, false])
                 .show_grid(false);
-
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
-
-            p.show(ui, |pui| {
+            let plot_resp = p.show(ui, |pui| {
                 pui.bar_chart(BarChart::new(tok_bars).color(Palette::OUTPUT_TINT));
-                if !tok_pts.is_empty() {
-                    let line_style = if is_time {
-                        egui_plot::LineStyle::Dashed { length: 8.0 }
-                    } else {
-                        egui_plot::LineStyle::Solid
-                    };
-                    pui.line(egui_plot::Line::new(tok_pts).color(Palette::INPUT_TINT).width(1.5).style(line_style));
+                if !tok_line.is_empty() {
+                    pui.line(egui_plot::Line::new(tok_line).color(Palette::INPUT_TINT).width(1.5).style(line_style));
                 }
             });
 
             // Current value at top-right
-            let val_text = format_tokens(total_toks);
             ui.painter().text(
-                egui::pos2(tok_rect.right() - 2.0, tok_rect.top() + 2.0),
-                egui::Align2::RIGHT_TOP,
-                &val_text,
-                egui::FontId::monospace(8.0),
-                Palette::TEXT_DIM,
-            );
+                egui::pos2(tok_rect.right() - 4.0, tok_rect.top() + 2.0),
+                egui::Align2::RIGHT_TOP, &format_tokens(cum_toks),
+                egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+
+            // Pinned tooltip at top-left (solid bg)
+            if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                if tok_rect.contains(hover_pos) {
+                    let plot_x = plot_resp.response.hover_pos()
+                        .map(|p| plot_resp.transform.value_from_position(p).x);
+                    if let Some(px) = plot_x {
+                        if let Some(t) = turns.iter().min_by(|a, b|
+                            (a.x - px).abs().partial_cmp(&(b.x - px).abs()).unwrap()) {
+                            let tip = format!("t{}  {}  total {}", t.idx + 1, format_tokens(t.toks), format_tokens(t.total_toks));
+                            let font = egui::FontId::monospace(9.0);
+                            let galley = ui.painter().layout_no_wrap(tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
+                            let tip_rect = egui::Rect::from_min_size(
+                                egui::pos2(tok_rect.left() + 2.0, tok_rect.top() + 2.0),
+                                galley.size() + egui::vec2(8.0, 4.0));
+                            ui.painter().rect_filled(tip_rect, 2.0, egui::Color32::from_rgb(20, 18, 14));
+                            ui.painter().text(tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, &tip, font, Palette::TEXT_BRIGHT);
+                        }
+                    }
+                }
+            }
         });
     });
 
-    // Usage stacked bar
+    // --- Usage: vertical thermometer bars (0-100% fill, overlapping, largest behind) ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(usage_rect), |ui| {
         panel_frame().show(ui, |ui| {
             let inner = ui.available_rect_before_wrap();
             let painter = ui.painter();
 
             if let Some(latest) = &usage.latest {
-                let values = vec![
-                    ("5h", latest.five_hour),
-                    ("7d", latest.seven_day),
+                let mut bars: Vec<(&str, f64, egui::Color32)> = vec![
+                    ("5h", latest.five_hour, egui::Color32::from_rgb(220, 160, 60)),
+                    ("7d", latest.seven_day, egui::Color32::from_rgb(100, 160, 220)),
                 ];
+                // Sort largest first (drawn first = behind)
+                bars.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                let mut sorted = values.clone();
-                sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                let bar_pad = 4.0;
+                let bar_w = (inner.width() - bar_pad * 2.0) * 0.6;
+                let bar_max_h = inner.height() - bar_pad * 2.0;
+                let bar_bottom = inner.bottom() - bar_pad;
+                for (i, (label, pct, col)) in bars.iter().enumerate() {
+                    let fill_h = ((*pct as f32) / 100.0).clamp(0.0, 1.0) * bar_max_h;
+                    // Offset each bar slightly so they overlap but are distinguishable
+                    let x_offset = i as f32 * 8.0;
+                    let bw = bar_w - i as f32 * 12.0; // inner bars narrower
+                    let bar_left = inner.left() + bar_pad + x_offset + (bar_w - bw) * 0.5;
 
-                let bar_h = inner.height() * 0.6;
-                let bar_top = inner.center().y - bar_h / 2.0;
-                let bar_rect = egui::Rect::from_min_size(
-                    egui::pos2(inner.left() + 4.0, bar_top),
-                    egui::vec2(inner.width() - 8.0, bar_h),
-                );
+                    let fill_rect = egui::Rect::from_min_max(
+                        egui::pos2(bar_left, bar_bottom - fill_h),
+                        egui::pos2(bar_left + bw, bar_bottom),
+                    );
+                    painter.rect_filled(fill_rect, 2.0, *col);
 
-                let mut x = bar_rect.left();
-                for (label, pct) in sorted {
-                    let w = ((pct as f32) / 100.0) * bar_rect.width();
-                    if w > 0.5 {
-                        let col = if pct < 30.0 {
-                            egui::Color32::from_rgb(100, 160, 220)
-                        } else if pct < 60.0 {
-                            egui::Color32::from_rgb(220, 160, 60)
-                        } else {
-                            egui::Color32::from_rgb(200, 80, 80)
-                        };
-                        painter.rect_filled(
-                            egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), egui::vec2(w, bar_rect.height())),
-                            2.0, col,
+                    // Label inside bar at top-left
+                    if fill_h > 14.0 {
+                        painter.text(
+                            egui::pos2(bar_left + 3.0, bar_bottom - fill_h + 2.0),
+                            egui::Align2::LEFT_TOP,
+                            &format!("{} {:.0}%", label, pct),
+                            egui::FontId::monospace(9.0),
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
                         );
-                        if w > 20.0 {
-                            painter.text(
-                                egui::pos2(x + 2.0, bar_rect.top() + 2.0),
-                                egui::Align2::LEFT_TOP,
-                                &format!("{} {:.0}%", label, pct),
-                                egui::FontId::monospace(7.0),
-                                Palette::TEXT_DIM,
-                            );
-                        }
-                        x += w;
                     }
                 }
+
+                // 100% reference line at top
+                painter.line_segment(
+                    [egui::pos2(inner.left() + bar_pad, inner.top() + bar_pad),
+                     egui::pos2(inner.left() + bar_pad + bar_w, inner.top() + bar_pad)],
+                    egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(200, 60, 60, 80)),
+                );
             }
         });
     });
@@ -2205,6 +2205,16 @@ impl EguiOverlay for Hud {
         if let Some(ref sid) = self.small_mode_session {
             if data.sessions.iter().all(|s| s.session_id != *sid) {
                 self.small_mode_session = None;
+            }
+        }
+
+        // Resize window for small mode (compact 160px tall, full width)
+        if big_mode && self.small_mode_session.is_some() {
+            let (win_w, _) = glfw_backend.window.get_size();
+            let target_h = 160;
+            let (_, cur_h) = glfw_backend.window.get_size();
+            if cur_h != target_h {
+                glfw_backend.set_window_size([win_w as f32, target_h as f32]);
             }
         }
 
