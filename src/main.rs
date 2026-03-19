@@ -198,7 +198,7 @@ struct ChartData {
     in_max: f64,
     out_max: f64,
     tool_list: Vec<(String, u32)>,
-    /// Per-session total cost lines: (color, points)
+    /// Per-session cumulative cost lines: (color, points)
     total_cost_lines: Vec<(egui::Color32, Vec<[f64; 2]>)>,
     total_cost_max: f64,
     /// Per-session running token lines: (color, in_points, out_points)
@@ -373,7 +373,7 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
     let mut tool_list: Vec<(String, u32)> = agg_tools.into_iter().collect();
     tool_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    // Derive running total lines from session_turns
+    // Per-session cumulative lines
     let mut total_cost_lines: Vec<(egui::Color32, Vec<[f64; 2]>)> = vec![];
     let mut total_cost_max = 0.001_f64;
     let mut total_tok_lines: Vec<(egui::Color32, Vec<[f64; 2]>, Vec<[f64; 2]>)> = vec![];
@@ -559,17 +559,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
             painter.text(ta_rect.center(), egui::Align2::CENTER_CENTER,
                 ta_label, egui::FontId::monospace(10.0), ta_col);
 
-            // "autofit" button
-            let af_label = if *autofit { "● fit" } else { "○ fit" };
-            let af_col = if *autofit { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
+            // "fit" button (one-shot action)
             let af_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 8.0, cy - btn_size.y / 2.0), egui::vec2(50.0, btn_size.y));
             let af_resp = ui.interact(af_rect, egui::Id::new("ctrl_autofit"), egui::Sense::click());
-            if af_resp.clicked() { *autofit = !*autofit; }
+            if af_resp.clicked() { *autofit = true; }
             if af_resp.hovered() {
                 painter.rect_filled(af_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
             }
             painter.text(af_rect.center(), egui::Align2::CENTER_CENTER,
-                af_label, egui::FontId::monospace(10.0), af_col);
+                "fit", egui::FontId::monospace(10.0), Palette::TEXT_DIM);
         });
     });
 
