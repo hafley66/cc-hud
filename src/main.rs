@@ -911,7 +911,13 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            // Boost scroll speed 4x: read raw delta, apply extra offset after ScrollArea
+            let extra_scroll = ui.input(|i| i.smooth_scroll_delta.y) * 3.0; // 3x extra = 4x total
+            let legend_scroll_id = egui::Id::new("legend_scroll");
+            let scroll_out = egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .id_salt(legend_scroll_id)
+                .show(ui, |ui| {
             let inner = ui.available_rect_before_wrap();
             let mut row_idx = 0usize;
 
@@ -957,11 +963,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         let sess_col = session_color(*si);
                         let is_hidden = effective_hidden.contains(&s.session_id);
                         let text_alpha = if is_hidden { 80u8 } else { 230u8 };
-                        let name_col = if s.is_active {
-                            egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha)
-                        } else {
-                            egui::Color32::from_rgba_unmultiplied(160, 150, 130, text_alpha)
-                        };
+                        // Visible sessions get full brightness regardless of is_active
+                        let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
                         let dim_col = egui::Color32::from_rgba_unmultiplied(130, 120, 100, text_alpha / 2);
 
                         let row_top = inner.top() + row_idx as f32 * (row_h + row_gap);
@@ -971,9 +974,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         );
                         let resp = ui.interact(row_rect, egui::Id::new(("legend_flat", gi, *si)), egui::Sense::click());
                         if resp.clicked() { toggle_ids.push(s.session_id.clone()); }
+                        // Clickable row: subtle bg tint always, brighter on hover
+                        ui.painter().rect_filled(row_rect, 2.0,
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4));
                         if resp.hovered() {
                             ui.painter().rect_filled(row_rect, 2.0,
-                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
                             if s.first_ts > 0 {
                                 ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
                                     .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
@@ -993,11 +999,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     // Group header row
                     let text_alpha = if all_hidden { 80u8 } else { 230u8 };
                     let bar_col = egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), text_alpha);
-                    let name_col = if any_active {
-                        egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha)
-                    } else {
-                        egui::Color32::from_rgba_unmultiplied(160, 150, 130, text_alpha)
-                    };
+                    let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
                     let dim_col = egui::Color32::from_rgba_unmultiplied(130, 120, 100, text_alpha / 2);
 
                     let row_top = inner.top() + row_idx as f32 * (row_h + row_gap);
@@ -1007,9 +1009,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     );
                     let resp = ui.interact(row_rect, egui::Id::new(("legend_group", gi)), egui::Sense::click());
                     if resp.clicked() { toggle_expand = Some(cwd.clone()); }
+                    ui.painter().rect_filled(row_rect, 2.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4));
                     if resp.hovered() {
                         ui.painter().rect_filled(row_rect, 2.0,
-                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
                         ui.ctx().data_mut(|d| {
                             let hl = d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id);
                             for (si, _) in members {
@@ -1050,12 +1054,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             let s = &data.sessions[*si];
                             let sess_col = session_color(*si);
                             let is_hidden = effective_hidden.contains(&s.session_id);
-                            let sub_alpha = if is_hidden { 60u8 } else if s.is_active { 230u8 } else { 160u8 };
-                            let sub_name_col = if s.is_active {
-                                egui::Color32::from_rgba_unmultiplied(240, 230, 200, sub_alpha)
-                            } else {
-                                egui::Color32::from_rgba_unmultiplied(140, 135, 120, sub_alpha)
-                            };
+                            let sub_alpha = if is_hidden { 60u8 } else { 230u8 };
+                            let sub_name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, sub_alpha);
                             let sub_dim = egui::Color32::from_rgba_unmultiplied(110, 105, 90, sub_alpha / 2);
 
                             let sub_top = inner.top() + row_idx as f32 * (row_h + row_gap);
@@ -1065,9 +1065,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             );
                             let sub_resp = ui.interact(sub_rect, egui::Id::new(("legend_sub", gi, *si)), egui::Sense::click());
                             if sub_resp.clicked() { toggle_ids.push(s.session_id.clone()); }
+                            ui.painter().rect_filled(sub_rect, 2.0,
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 3));
                             if sub_resp.hovered() {
                                 ui.painter().rect_filled(sub_rect, 2.0,
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8));
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
                                 if s.first_ts > 0 {
                                     ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
                                         .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
@@ -1098,6 +1100,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let total_h = row_idx as f32 * (row_h + row_gap);
             ui.allocate_space(egui::vec2(ui.available_width(), total_h));
             }); // ScrollArea
+            // Apply boosted scroll offset
+            if extra_scroll.abs() > 0.1 {
+                let mut state = scroll_out.state;
+                state.offset.y = (state.offset.y - extra_scroll).max(0.0);
+                state.store(ui.ctx(), legend_scroll_id);
+            }
         });
     });
 
@@ -1578,9 +1586,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 fn draw_chart_label(ui: &mut egui::Ui, title: &str, top_label: &str, bot_label: &str) {
     let rect = ui.available_rect_before_wrap();
     let p = ui.painter();
-    p.text(egui::pos2(rect.left(), rect.top()), egui::Align2::LEFT_TOP, title, egui::FontId::monospace(10.0), Palette::TEXT_DIM);
-    p.text(egui::pos2(rect.right(), rect.top()), egui::Align2::RIGHT_TOP, top_label, egui::FontId::monospace(9.0), Palette::INPUT_TINT);
-    p.text(egui::pos2(rect.right(), rect.bottom()), egui::Align2::RIGHT_BOTTOM, bot_label, egui::FontId::monospace(9.0), Palette::OUTPUT_TINT);
+    // Inset from edges to avoid colliding with y-axis tick labels
+    let y_inset = 12.0; // clear top/bottom axis ticks
+    let x_inset = 4.0;
+    p.text(egui::pos2(rect.left() + x_inset, rect.top() + y_inset), egui::Align2::LEFT_TOP, title, egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+    p.text(egui::pos2(rect.right() - x_inset, rect.top() + y_inset), egui::Align2::RIGHT_TOP, top_label, egui::FontId::monospace(9.0), Palette::INPUT_TINT);
+    p.text(egui::pos2(rect.right() - x_inset, rect.bottom() - y_inset), egui::Align2::RIGHT_BOTTOM, bot_label, egui::FontId::monospace(9.0), Palette::OUTPUT_TINT);
 }
 
 // ---------------------------------------------------------------------------
