@@ -485,6 +485,14 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             }
         }
 
+        // Refresh is_active on all sessions every poll cycle
+        {
+            let mut d = data.lock().unwrap();
+            for s in d.sessions.iter_mut() {
+                s.is_active = active_ids.contains(&s.session_id);
+            }
+        }
+
         if !show_history && !updated {
             // Rebuild session list for active-only mode
             let mut all_sessions = Vec::new();
