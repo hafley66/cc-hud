@@ -153,6 +153,15 @@ fn format_cost(usd: f64) -> String {
     else { format!("${:.2}", usd) }
 }
 
+fn short_model(model: &str) -> String {
+    if model.contains("opus-4-6") || model.contains("opus-4-5") { "opus4".into() }
+    else if model.contains("opus") { "opus3".into() }
+    else if model.contains("sonnet") { "sonnet".into() }
+    else if model.contains("haiku") { "haiku".into() }
+    else if model.is_empty() { "?".into() }
+    else { model.split('-').next().unwrap_or("?").to_string() }
+}
+
 fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1_000_000.0) }
     else if n >= 1_000 { format!("{}k", n / 1_000) }
@@ -164,16 +173,18 @@ fn format_tokens(n: u64) -> String {
 // ---------------------------------------------------------------------------
 
 /// Per-turn values for hover tooltip, one entry per api call within a session.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct TurnInfo {
     x: f64,
     in_cost: f64,
     out_cost: f64,
+    cost_change: f64,
     in_tok: u64,
     out_tok: u64,
     total_cost: f64,
     total_in_tok: u64,
     total_out_tok: u64,
+    model_short: String,
 }
 
 struct ChartData {
@@ -197,12 +208,13 @@ struct ChartData {
     session_turns: Vec<(String, egui::Color32, Vec<TurnInfo>)>,
 }
 
-/// Combined weekly time-series across all visible sessions.
+/// Combined time-series across all visible sessions, in minutes-from-epoch coordinates
+/// (same x-axis as all other time-mode charts).
 struct WeeklyData {
-    /// (hours_from_week_start, running_cost) — 0 = 7d ago, 168 = now
+    /// (minutes_from_epoch, running_cost)
     total_pts: Vec<[f64; 2]>,
     total_max: f64,
-    /// (hours_from_week_start, cost_in_that_hour_bucket)
+    /// (minutes_from_epoch, cost_in_that_hour_bucket)
     rate_pts: Vec<[f64; 2]>,
     rate_max: f64,
 }
@@ -211,16 +223,14 @@ fn build_weekly_data(data: &HudData, hidden: &HashSet<String>) -> Option<WeeklyD
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs()).unwrap_or(0);
-    let week_secs = 7 * 24 * 3600u64;
-    let week_start = now_secs.saturating_sub(week_secs);
 
-    // Collect (timestamp_secs, total_cost) from visible sessions, last 7 days only
+    // Collect all visible API calls (no 7d filter -- viewport handles clipping)
     let mut raw: Vec<(u64, f64)> = vec![];
     for session in &data.sessions {
         if hidden.contains(&session.session_id) { continue; }
         for ev in &session.events {
             if let Event::ApiCall { timestamp_secs, input_cost_usd, output_cost_usd, .. } = ev {
-                if *timestamp_secs == 0 || *timestamp_secs < week_start { continue; }
+                if *timestamp_secs == 0 { continue; }
                 raw.push((*timestamp_secs, input_cost_usd + output_cost_usd));
             }
         }
@@ -228,24 +238,32 @@ fn build_weekly_data(data: &HudData, hidden: &HashSet<String>) -> Option<WeeklyD
     if raw.is_empty() { return None; }
     raw.sort_by_key(|(t, _)| *t);
 
-    // Running total line
+    let first_secs = raw.first().unwrap().0;
+    let now_min = now_secs as f64 / 60.0;
+
+    // Running total line in minutes-from-epoch
     let mut running = 0.0f64;
-    let mut total_pts: Vec<[f64; 2]> = vec![[0.0, 0.0]];
+    let mut total_pts: Vec<[f64; 2]> = vec![[first_secs as f64 / 60.0, 0.0]];
     for (t, cost) in &raw {
-        let h = (t - week_start) as f64 / 3600.0;
         running += cost;
-        total_pts.push([h, running]);
+        total_pts.push([*t as f64 / 60.0, running]);
     }
-    total_pts.push([168.0, running]); // extend to "now"
+    total_pts.push([now_min, running]);
     let total_max = running.max(0.001);
 
-    // Hourly rate buckets (168 hours = 7 days)
-    let mut buckets = vec![0.0f64; 169];
+    // Hourly rate buckets, keyed by minutes-from-epoch (bucket center)
+    let first_hour = first_secs / 3600;
+    let now_hour = now_secs / 3600;
+    let n_buckets = ((now_hour - first_hour) as usize + 1).min(10_000);
+    let mut buckets = vec![0.0f64; n_buckets + 1];
     for (t, cost) in &raw {
-        let h = ((t - week_start) as f64 / 3600.0) as usize;
-        buckets[h.min(168)] += cost;
+        let idx = ((t / 3600).saturating_sub(first_hour)) as usize;
+        buckets[idx.min(n_buckets)] += cost;
     }
-    let rate_pts: Vec<[f64; 2]> = buckets.iter().enumerate().map(|(i, &c)| [i as f64, c]).collect();
+    let rate_pts: Vec<[f64; 2]> = buckets.iter().enumerate().map(|(i, &c)| {
+        let hour_secs = (first_hour + i as u64) * 3600;
+        [hour_secs as f64 / 60.0, c]
+    }).collect();
     let rate_max = buckets.iter().cloned().fold(0.001_f64, f64::max);
 
     Some(WeeklyData { total_pts, total_max, rate_pts, rate_max })
@@ -262,8 +280,26 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
     let mut in_tok_bars: Vec<Bar> = vec![];
     let mut out_tok_bars: Vec<Bar> = vec![];
     let mut agent_xs: Vec<f64> = vec![];
-    // (display_name, session_color, per-turn info)
     let mut session_turns: Vec<(String, egui::Color32, Vec<TurnInfo>)> = vec![];
+
+    // Pre-compute time span + total api calls for adaptive bar width
+    let mut total_api_calls = 0usize;
+    let (mut ts_min, mut ts_max) = (u64::MAX, 0u64);
+    for session in &data.sessions {
+        if hidden.contains(&session.session_id) { continue; }
+        for ev in &session.events {
+            if let Event::ApiCall { timestamp_secs, .. } = ev {
+                if *timestamp_secs > 0 {
+                    ts_min = ts_min.min(*timestamp_secs);
+                    ts_max = ts_max.max(*timestamp_secs);
+                }
+                total_api_calls += 1;
+            }
+        }
+    }
+    let time_span_min = if ts_max > ts_min { (ts_max - ts_min) as f64 / 60.0 } else { 60.0 };
+    // Bar width: fraction of total span so bars are visible. Target ~200 bars filling the view.
+    let time_bar_w = (time_span_min / total_api_calls.max(1) as f64).max(time_span_min / 300.0).min(time_span_min / 10.0);
 
     for (si, session) in data.sessions.iter().enumerate() {
         if hidden.contains(&session.session_id) { continue; }
@@ -275,6 +311,7 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
         let mut turns: Vec<TurnInfo> = vec![];
         let mut total_in_cost = 0.0f64;
         let mut total_out_cost = 0.0f64;
+        let mut prev_total_cost = 0.0f64;
         let mut total_in_tok = 0u64;
         let mut total_out_tok = 0u64;
         let mut api_idx = 0usize;
@@ -283,15 +320,14 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
         for ev in &session.events {
             match ev {
                 Event::ApiCall { input_cost_usd, output_cost_usd, input_tokens, output_tokens,
-                                 cache_read_tokens, cache_create_tokens, timestamp_secs, .. } => {
+                                 cache_read_tokens, cache_create_tokens, timestamp_secs, model, .. } => {
                     let _total_input = input_tokens + cache_read_tokens + cache_create_tokens;
-                    // x: sequential index or minutes-from-epoch
                     let x = if time_axis {
                         *timestamp_secs as f64 / 60.0
                     } else {
                         api_idx as f64
                     };
-                    let bar_w = if time_axis { 0.3 } else { 0.8 };
+                    let bar_w = if time_axis { time_bar_w } else { 0.8 };
 
                     per_turn_in_cost_max = per_turn_in_cost_max.max(*input_cost_usd);
                     per_turn_out_cost_max = per_turn_out_cost_max.max(*output_cost_usd);
@@ -308,16 +344,20 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
                     total_in_tok += input_tokens;
                     total_out_tok += output_tokens;
 
+                    let cur_total = total_in_cost + total_out_cost;
                     turns.push(TurnInfo {
                         x,
                         in_cost: *input_cost_usd,
                         out_cost: *output_cost_usd,
+                        cost_change: cur_total - prev_total_cost,
                         in_tok: *input_tokens,
                         out_tok: *output_tokens,
-                        total_cost: total_in_cost + total_out_cost,
+                        total_cost: cur_total,
                         total_in_tok,
                         total_out_tok,
+                        model_short: short_model(model),
                     });
+                    prev_total_cost = cur_total;
 
                     last_x = x;
                     api_idx += 1;
@@ -542,13 +582,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
     for (si, session) in data.sessions.iter().enumerate() {
         if hidden.contains(&session.session_id) { continue; }
         let col = session_color(si);
+        let alpha = if session.is_active { 200u8 } else { 50u8 };
+        let dot_col = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
         for ev in &session.events {
             if let Event::ApiCall { timestamp_secs, .. } = ev {
                 if *timestamp_secs > 0 {
                     let x = *timestamp_secs as f64 / 60.0;
                     all_x_min = all_x_min.min(x);
                     all_x_max = all_x_max.max(x);
-                    all_dots.push((x, col));
+                    all_dots.push((x, dot_col));
                 }
             }
         }
@@ -560,8 +602,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
     let full_max = all_x_max + data_span * 0.02;
     let full_span = full_max - full_min;
 
-    // Autofit resets viewport
-    if *autofit { *nav_view = None; *autofit = false; }
+    // Autofit: snap viewport to visible sessions' time range
+    if *autofit {
+        *nav_view = Some((full_min, full_max));
+        *autofit = false;
+    }
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
         let bar = ui.available_rect_before_wrap();
@@ -624,16 +669,25 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                 *nav_view = Some((vmin, vmax));
             }
 
-            // Handle scroll: zoom the viewport
+            // Handle scroll: zoom anchored to mouse position
             let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
             if resp.hovered() && scroll.abs() > 0.1 {
                 let zoom_factor = 1.0 - (scroll as f64 * 0.003);
                 let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
                 let vspan = vmax - vmin;
-                let center = (vmin + vmax) / 2.0;
+
+                // Anchor point: mouse x position mapped to time domain
+                let mouse_frac = ui.input(|i| i.pointer.hover_pos())
+                    .map(|p| ((p.x - bar.left()) / bar_w).clamp(0.0, 1.0) as f64)
+                    .unwrap_or(0.5);
+                let anchor = full_min + mouse_frac * full_span;
+                // How far anchor is into current viewport (0..1)
+                let t = ((anchor - vmin) / vspan).clamp(0.0, 1.0);
+
                 let new_span = (vspan * zoom_factor).clamp(1.0, full_span);
-                let new_min = (center - new_span / 2.0).max(full_min);
+                let new_min = (anchor - t * new_span).max(full_min);
                 let new_max = (new_min + new_span).min(full_max);
+                let new_min = (new_max - new_span).max(full_min);
                 *nav_view = Some((new_min, new_max));
             }
         }
@@ -656,6 +710,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
     });
 
     // --- legend (grouped by cwd, one row per project) ---
+    // Click toggles entire group. Active sessions bright in timeline, inactive dimmed.
     let mut toggle_group: Option<Vec<String>> = None;
     let row_h = (legend_h / n_groups as f32).clamp(14.0, 36.0);
     let timeline_w = 120.0_f32;
@@ -665,20 +720,16 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
             let inner = ui.available_rect_before_wrap();
 
             for (gi, (cwd, members)) in groups.iter().enumerate() {
-                // Use the global session index of the first member for color
                 let group_col = session_color(members[0].0);
 
-                // Aggregate stats across all sessions in group
+                // Aggregate stats
                 let mut g_cost = 0.0f64;
                 let mut g_in_cost = 0.0f64;
                 let mut g_out_cost = 0.0f64;
                 let mut g_calls = 0u32;
                 let mut g_agents = 0u32;
-                let mut g_in_tok = 0u64;
-                let mut g_out_tok = 0u64;
-                // Last-turn ctx from most recent session in group
-                let mut g_last_ctx = 0u64;
                 let mut any_active = false;
+                let mut active_count = 0u32;
                 let mut all_hidden = true;
                 let group_ids: Vec<String> = members.iter()
                     .map(|(si, _)| data.sessions[*si].session_id.clone())
@@ -691,24 +742,17 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     g_out_cost+= s.total_output_cost;
                     g_calls   += s.api_call_count;
                     g_agents  += s.agent_count;
-                    g_in_tok  += s.total_input;
-                    g_out_tok += s.total_output;
-                    if s.is_active { any_active = true; }
+                    if s.is_active { any_active = true; active_count += 1; }
                     if !hidden.contains(&s.session_id) { all_hidden = false; }
-                    // ctx from most recent session (last_ts)
-                    if s.last_ts > 0 {
-                        let ctx = s.events.iter().rev().find_map(|e| {
-                            if let Event::ApiCall { input_tokens, cache_read_tokens, cache_create_tokens, .. } = e {
-                                Some(input_tokens + cache_read_tokens + cache_create_tokens)
-                            } else { None }
-                        }).unwrap_or(0);
-                        if ctx > g_last_ctx { g_last_ctx = ctx; }
-                    }
                 }
 
                 let text_alpha = if all_hidden { 80u8 } else { 230u8 };
                 let bar_col  = egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), text_alpha);
-                let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
+                let name_col = if any_active {
+                    egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(160, 150, 130, text_alpha)
+                };
                 let dim_col  = egui::Color32::from_rgba_unmultiplied(130, 120, 100, text_alpha / 2);
 
                 let row_top = inner.top() + gi as f32 * row_h;
@@ -729,32 +773,26 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                 let bar_h_px  = row_h - (row_h * 0.2).max(4.0);
                 let bar_w     = 5.0_f32;
 
-                // Context fill bar (most recent session in group)
-                let ctx_fill = (g_last_ctx as f32 / CTX_WINDOW as f32).min(1.0);
+                // Color swatch
                 painter.rect_filled(
                     egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
-                    1.5, egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), 40),
+                    1.5, bar_col,
                 );
-                let fill_h = (ctx_fill * bar_h_px).max(if g_last_ctx > 0 { 2.0 } else { 0.0 });
-                if fill_h > 0.0 {
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(bar_x, bar_top_y + bar_h_px - fill_h),
-                            egui::vec2(bar_w, fill_h),
-                        ),
-                        1.5, bar_col,
-                    );
-                }
 
-                // Active dot
+                // Active dot (green if any active, gray otherwise)
                 if any_active {
                     painter.circle_filled(
                         egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
                         2.5, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 200),
                     );
+                } else {
+                    painter.circle_filled(
+                        egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
+                        2.0, egui::Color32::from_rgba_unmultiplied(80, 75, 65, 100),
+                    );
                 }
 
-                // --- Mini timeline (right side, drawn FIRST as background) ---
+                // --- Mini timeline (right side) ---
                 let tl_right = row_rect.right() - 4.0;
                 let tl_left  = tl_right - timeline_w;
                 let tl_rect = egui::Rect::from_min_size(
@@ -762,23 +800,27 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     egui::vec2(timeline_w, bar_h_px),
                 );
 
-                // Text area: left of the timeline with gap
+                // Text area clipped before timeline
                 let text_x = row_rect.left() + 18.0;
                 let text_max_x = tl_left - 6.0;
                 let cy     = row_rect.center().y;
                 let font_name = egui::FontId::monospace((row_h * 0.35).clamp(9.0, 13.0));
                 let font_stat = egui::FontId::monospace((row_h * 0.27).clamp(8.0, 10.0));
 
-                // Clip text to avoid overflowing into the timeline
                 let text_clip = egui::Rect::from_min_max(
                     egui::pos2(row_rect.left(), row_rect.top()),
                     egui::pos2(text_max_x, row_rect.bottom()),
                 );
                 let text_painter = ui.painter().with_clip_rect(text_clip);
 
-                // Name: cwd + session count badge if >1
+                // Name + count badge + active indicator
                 let name_str = if members.len() > 1 {
-                    format!("{} ×{}", cwd, members.len())
+                    let badge = if active_count > 0 {
+                        format!("{} x{} ({} active)", cwd, members.len(), active_count)
+                    } else {
+                        format!("{} x{}", cwd, members.len())
+                    };
+                    badge
                 } else {
                     cwd.clone()
                 };
@@ -787,29 +829,35 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
 
                 if row_h >= 22.0 {
                     let cost_str = format!(
-                        "{}  in {}  out {}  |  {} calls{}  |  {}tok in  {}tok out",
+                        "{}  in {}  out {}  |  {} calls{}",
                         format_cost(g_cost),
                         format_cost(g_in_cost),
                         format_cost(g_out_cost),
                         g_calls,
-                        if g_agents > 0 { format!("  {} agents", g_agents) } else { String::new() },
-                        format_tokens(g_in_tok),
-                        format_tokens(g_out_tok),
+                        if g_agents > 0 { format!("  {} agt", g_agents) } else { String::new() },
                     );
                     text_painter.text(egui::pos2(text_x, cy + row_h * 0.18), egui::Align2::LEFT_CENTER,
                         &cost_str, font_stat, dim_col);
                 }
-                // Dim BG
+
+                // Timeline bg
                 painter.rect_filled(tl_rect, 2.0,
                     egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), 18));
 
+                // Per-session lanes in timeline: active sessions bright, inactive dim
                 let n_members = members.len();
                 let seg_h = (bar_h_px / n_members as f32).max(2.0);
 
                 for (lane, (si, _)) in members.iter().enumerate() {
                     let s = &data.sessions[*si];
                     let seg_col = session_color(*si);
-                    let seg_alpha = if hidden.contains(&s.session_id) { 40u8 } else { text_alpha };
+                    let seg_alpha = if hidden.contains(&s.session_id) {
+                        30u8
+                    } else if s.is_active {
+                        220u8
+                    } else {
+                        80u8
+                    };
                     let seg_col_a = egui::Color32::from_rgba_unmultiplied(seg_col.r(), seg_col.g(), seg_col.b(), seg_alpha);
 
                     let seg_top = tl_rect.top() + lane as f32 * seg_h;
@@ -824,6 +872,16 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                             egui::Rect::from_min_max(egui::pos2(px0, seg_top), egui::pos2(px1, seg_bot)),
                             1.0, seg_col_a,
                         );
+                        // Active sessions get a bright left-edge accent
+                        if s.is_active {
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(px1 - 2.0, seg_top),
+                                    egui::pos2(px1, seg_bot),
+                                ),
+                                0.0, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 160),
+                            );
+                        }
                     }
                 }
             }
@@ -993,10 +1051,10 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                         entries.push((
                             name.clone(),
                             format!(
-                                "  t{} ctx {}  gen {}  in {}  out {}  total {}",
-                                idx + 1,
+                                "  t{} [{}] +{}  ctx {}  gen {}  total {}",
+                                idx + 1, t.model_short,
+                                format_cost(t.cost_change),
                                 format_cost(t.in_cost), format_cost(t.out_cost),
-                                format_tokens(t.in_tok), format_tokens(t.out_tok),
                                 format_cost(t.total_cost),
                             ),
                         ));
@@ -1089,53 +1147,53 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
         });
     });
 
-    // --- weekly row ---
+    // --- weekly row (same x-axis as main charts, responds to nav_view) ---
     if let Some(wd) = build_weekly_data(data, hidden) {
-        // x-axis formatter: hours -> "Xd" label at 24h intervals
-        let x_fmt = |v: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
-            let days_ago = ((168.0 - v.value) / 24.0).round() as i64;
-            if days_ago == 0 { "now".into() } else { format!("{}d", days_ago) }
-        };
-
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(weekly_total_rect), |ui| {
             panel_frame().show(ui, |ui| {
-                draw_chart_label(ui, "7d total cost", "", "");
-                base_plot("weekly_total")
+                draw_chart_label(ui, "total cost", "", "");
+                let mut p = base_plot("weekly_total")
+                    .link_cursor(cursor_id, true, false)
                     .include_y(0.0)
                     .include_y(wd.total_max)
-                    .include_x(0.0)
-                    .include_x(168.0)
-                    .x_axis_formatter(x_fmt)
-                    .x_grid_spacer(|_| {
-                        (0..=7).map(|d| egui_plot::GridMark { value: d as f64 * 24.0, step_size: 24.0 }).collect()
+                    .y_axis_formatter(move |v, _| {
+                        if v.value < 1e-9 { String::new() } else { format_cost(v.value) }
                     })
-                    .show_axes([true, false])
+                    .show_axes([true, true])
                     .show_grid(true)
-                    .show(ui, |pui| {
-                        pui.line(egui_plot::Line::new(wd.total_pts.clone())
-                            .color(Palette::INPUT_TINT).width(2.0).fill(0.0));
-                    });
+                    .x_axis_formatter(time_x_fmt);
+                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+                }
+                p.show(ui, |pui| {
+                    pui.line(egui_plot::Line::new(wd.total_pts.clone())
+                        .color(Palette::INPUT_TINT).width(2.0).fill(0.0));
+                    update_hover(pui);
+                });
             });
         });
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(weekly_rate_rect), |ui| {
             panel_frame().show(ui, |ui| {
-                draw_chart_label(ui, "cost/hr (7d)", "", "");
-                base_plot("weekly_rate")
+                draw_chart_label(ui, "cost/hr", "", "");
+                let mut p = base_plot("weekly_rate")
+                    .link_cursor(cursor_id, true, false)
                     .include_y(0.0)
                     .include_y(wd.rate_max)
-                    .include_x(0.0)
-                    .include_x(168.0)
-                    .x_axis_formatter(x_fmt)
-                    .x_grid_spacer(|_| {
-                        (0..=7).map(|d| egui_plot::GridMark { value: d as f64 * 24.0, step_size: 24.0 }).collect()
+                    .y_axis_formatter(move |v, _| {
+                        if v.value < 1e-9 { String::new() } else { format_cost(v.value) }
                     })
-                    .show_axes([true, false])
+                    .show_axes([true, true])
                     .show_grid(true)
-                    .show(ui, |pui| {
-                        pui.line(egui_plot::Line::new(wd.rate_pts.clone())
-                            .color(Palette::OUTPUT_TINT).width(1.5).fill(0.0));
-                    });
+                    .x_axis_formatter(time_x_fmt);
+                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+                }
+                p.show(ui, |pui| {
+                    pui.line(egui_plot::Line::new(wd.rate_pts.clone())
+                        .color(Palette::OUTPUT_TINT).width(1.5).fill(0.0));
+                    update_hover(pui);
+                });
             });
         });
     }
