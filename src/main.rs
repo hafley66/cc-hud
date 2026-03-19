@@ -442,7 +442,7 @@ fn panel_frame() -> egui::Frame {
 // Big dashboard layout
 // ---------------------------------------------------------------------------
 
-fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut HashSet<String>, show_active_only: &mut bool, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>) {
+fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut HashSet<String>, effective_hidden: &HashSet<String>, show_active_only: &mut bool, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>) {
     let area = ui.available_rect_before_wrap();
     let pad = 8.0;
     let gap = 8.0;
@@ -580,7 +580,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
     let mut all_x_max = f64::MIN;
     let mut all_dots: Vec<(f64, egui::Color32)> = vec![];
     for (si, session) in data.sessions.iter().enumerate() {
-        if hidden.contains(&session.session_id) { continue; }
+        if effective_hidden.contains(&session.session_id) { continue; }
         let col = session_color(si);
         let alpha = if session.is_active { 200u8 } else { 50u8 };
         let dot_col = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
@@ -602,9 +602,21 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
     let full_max = all_x_max + data_span * 0.02;
     let full_span = full_max - full_min;
 
-    // Autofit: snap viewport to visible sessions' time range
+    // Autofit: snap viewport to effectively visible sessions' time range
     if *autofit {
-        *nav_view = Some((full_min, full_max));
+        let mut fit_min = f64::MAX;
+        let mut fit_max = f64::MIN;
+        for session in &data.sessions {
+            if effective_hidden.contains(&session.session_id) { continue; }
+            if session.first_ts > 0 {
+                fit_min = fit_min.min(session.first_ts as f64 / 60.0);
+                fit_max = fit_max.max(session.last_ts as f64 / 60.0);
+            }
+        }
+        if fit_min < fit_max {
+            let span = (fit_max - fit_min).max(1.0);
+            *nav_view = Some((fit_min - span * 0.02, fit_max + span * 0.02));
+        }
         *autofit = false;
     }
 
@@ -743,7 +755,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     g_calls   += s.api_call_count;
                     g_agents  += s.agent_count;
                     if s.is_active { any_active = true; active_count += 1; }
-                    if !hidden.contains(&s.session_id) { all_hidden = false; }
+                    if !effective_hidden.contains(&s.session_id) { all_hidden = false; }
                 }
 
                 let text_alpha = if all_hidden { 80u8 } else { 230u8 };
@@ -851,7 +863,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                 for (lane, (si, _)) in members.iter().enumerate() {
                     let s = &data.sessions[*si];
                     let seg_col = session_color(*si);
-                    let seg_alpha = if hidden.contains(&s.session_id) {
+                    let seg_alpha = if effective_hidden.contains(&s.session_id) {
                         30u8
                     } else if s.is_active {
                         220u8
@@ -888,11 +900,21 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
         });
     });
     if let Some(ids) = toggle_group {
-        let all_hidden = ids.iter().all(|id| hidden.contains(id));
-        if all_hidden {
-            for id in ids { hidden.remove(&id); }
+        // When active-only filter is on, only toggle active sessions
+        let toggleable: Vec<String> = if *show_active_only {
+            ids.into_iter().filter(|id| {
+                data.sessions.iter().any(|s| s.session_id == *id && s.is_active)
+            }).collect()
         } else {
-            for id in ids { hidden.insert(id); }
+            ids
+        };
+        if !toggleable.is_empty() {
+            let all_hidden = toggleable.iter().all(|id| hidden.contains(id));
+            if all_hidden {
+                for id in toggleable { hidden.remove(&id); }
+            } else {
+                for id in toggleable { hidden.insert(id); }
+            }
         }
     }
 
@@ -1385,7 +1407,7 @@ impl EguiOverlay for Hud {
                 let cd = build_chart_data(&data, &effective_hidden, self.time_axis);
 
                 if big_mode {
-                    draw_big(ui, &data, &cd, &mut self.hidden_sessions, &mut self.show_active_only, &mut self.time_axis, &mut self.autofit, &mut self.nav_view);
+                    draw_big(ui, &data, &cd, &mut self.hidden_sessions, &effective_hidden, &mut self.show_active_only, &mut self.time_axis, &mut self.autofit, &mut self.nav_view);
                 } else {
                     draw_strip(ui, &data, &cd);
                 }
