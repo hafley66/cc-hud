@@ -708,22 +708,30 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let ta_col = if *time_axis { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
             let ta_rect = egui::Rect::from_min_size(egui::pos2(btn_rect.right() + 8.0, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
             let ta_resp = ui.interact(ta_rect, egui::Id::new("ctrl_time_axis"), egui::Sense::click());
-            if ta_resp.clicked() { *time_axis = !*time_axis; }
+            if ta_resp.clicked() {
+                *time_axis = !*time_axis;
+                if *time_axis {
+                    *autofit = true;
+                    *nav_view = None;
+                }
+            }
             if ta_resp.hovered() {
                 painter.rect_filled(ta_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
             }
             painter.text(ta_rect.center(), egui::Align2::CENTER_CENTER,
                 ta_label, egui::FontId::monospace(10.0), ta_col);
 
-            // "fit" button (one-shot action)
-            let af_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 8.0, cy - btn_size.y / 2.0), egui::vec2(50.0, btn_size.y));
-            let af_resp = ui.interact(af_rect, egui::Id::new("ctrl_autofit"), egui::Sense::click());
-            if af_resp.clicked() { *autofit = true; }
-            if af_resp.hovered() {
-                painter.rect_filled(af_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+            // "fit" button -- only relevant when time axis is off (time mode autofits)
+            if !*time_axis {
+                let af_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 8.0, cy - btn_size.y / 2.0), egui::vec2(50.0, btn_size.y));
+                let af_resp = ui.interact(af_rect, egui::Id::new("ctrl_autofit"), egui::Sense::click());
+                if af_resp.clicked() { *autofit = true; }
+                if af_resp.hovered() {
+                    painter.rect_filled(af_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                }
+                painter.text(af_rect.center(), egui::Align2::CENTER_CENTER,
+                    "fit", egui::FontId::monospace(10.0), Palette::TEXT_DIM);
             }
-            painter.text(af_rect.center(), egui::Align2::CENTER_CENTER,
-                "fit", egui::FontId::monospace(10.0), Palette::TEXT_DIM);
         });
     });
 
