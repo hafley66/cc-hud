@@ -3,6 +3,7 @@
 mod geometry;
 mod anchors;
 mod agent_harnesses;
+mod usage;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,7 @@ use egui_overlay::egui_window_glfw_passthrough::GlfwBackend;
 use egui_plot::{Bar, BarChart, Plot, VLine};
 
 use geometry::PixelRect;
-use agent_harnesses::claude_code::{Event, HudData};
+use agent_harnesses::claude_code::{Event, HudData, SessionData};
 
 const SESSION_COLORS: &[(u8, u8, u8)] = &[
     (190, 120, 20),   // amber
@@ -68,6 +69,7 @@ fn main() {
 
     let visible = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let hud_data = Arc::new(Mutex::new(HudData::default()));
+    let usage_data = Arc::new(Mutex::new(usage::UsageData::default()));
 
     if let Some(target) = poll_target {
         let poll_state = state.clone();
@@ -80,7 +82,12 @@ fn main() {
         agent_harnesses::claude_code::poll_loop(feed_data, show_history);
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: false, time_axis: false, autofit: true, nav_view: None });
+    let feed_usage = usage_data.clone();
+    std::thread::spawn(move || {
+        usage::poll_loop(feed_usage, Duration::from_secs(90));
+    });
+
+    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: false, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new() });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -112,6 +119,7 @@ struct Hud {
     state: Arc<Mutex<PixelRect>>,
     visible: Arc<std::sync::atomic::AtomicBool>,
     hud_data: Arc<Mutex<HudData>>,
+    usage_data: Arc<Mutex<usage::UsageData>>,
     big_mode: bool,
     hidden_sessions: HashSet<String>,
     show_active_only: bool,
@@ -119,6 +127,8 @@ struct Hud {
     autofit: bool,
     /// Chart viewport x-range in minutes-from-epoch. None = auto-fit to all data.
     nav_view: Option<(f64, f64)>,
+    /// Which cwd groups have their session list expanded.
+    expanded_groups: HashSet<String>,
 }
 
 // --- colors ---
@@ -140,6 +150,13 @@ impl Palette {
 /// Which chart region the hover originated from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate }
+
+/// Session time ranges highlighted from legend hover (stored as minutes-from-epoch).
+#[derive(Clone, Default)]
+struct LegendHighlight {
+    /// (first_ts_min, last_ts_min) for each hovered session
+    ranges: Vec<(f64, f64)>,
+}
 
 /// Wrapper for storing hover state in egui temp storage.
 #[derive(Clone, Copy)]
@@ -414,10 +431,151 @@ fn panel_frame() -> egui::Frame {
 }
 
 // ---------------------------------------------------------------------------
+// Legend row drawing helper
+// ---------------------------------------------------------------------------
+
+fn draw_legend_row(
+    ui: &egui::Ui,
+    row_rect: egui::Rect,
+    row_h: f32,
+    timeline_w: f32,
+    week_start_secs: u64,
+    week_span: f32,
+    name: &str,
+    swatch_col: egui::Color32,
+    name_col: egui::Color32,
+    dim_col: egui::Color32,
+    is_active: bool,
+    _is_hidden: bool,
+    total_input: u64,
+    cost: f64,
+    model: &str,
+    // Sessions to draw in the mini timeline
+    timeline_sessions: &[(&agent_harnesses::claude_code::SessionData, egui::Color32)],
+    effective_hidden: &HashSet<String>,
+    indent: Option<f32>,
+) {
+    let painter = ui.painter();
+    let indent_px = indent.unwrap_or(0.0);
+    let bar_x = row_rect.left() + 2.0 + indent_px;
+    let bar_top_y = row_rect.top() + (row_h * 0.1).max(2.0);
+    let bar_h_px = row_h - (row_h * 0.2).max(4.0);
+    let bar_w = 8.0_f32;
+
+    // Color swatch -- full-height faded background, then filled portion proportional to total_input / 200k
+    let faded_col = egui::Color32::from_rgba_unmultiplied(swatch_col.r(), swatch_col.g(), swatch_col.b(), 35);
+    painter.rect_filled(
+        egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
+        2.0, faded_col,
+    );
+    let ctx_frac = (total_input as f32 / 200_000.0).clamp(0.02, 1.0);
+    let swatch_h = (bar_h_px * ctx_frac).max(3.0);
+    let swatch_top = bar_top_y + bar_h_px - swatch_h; // anchored to bottom
+    painter.rect_filled(
+        egui::Rect::from_min_size(egui::pos2(bar_x, swatch_top), egui::vec2(bar_w, swatch_h)),
+        2.0, swatch_col,
+    );
+
+    // Active dot
+    if is_active {
+        painter.circle_filled(
+            egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
+            2.5, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 200),
+        );
+    } else {
+        painter.circle_filled(
+            egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
+            2.0, egui::Color32::from_rgba_unmultiplied(80, 75, 65, 100),
+        );
+    }
+
+    // Mini timeline (right side)
+    let tl_right = row_rect.right() - 4.0;
+    let tl_left = tl_right - timeline_w;
+    let tl_rect = egui::Rect::from_min_size(
+        egui::pos2(tl_left, bar_top_y),
+        egui::vec2(timeline_w, bar_h_px),
+    );
+
+    // Text area
+    let text_x = bar_x + 16.0;
+    let text_max_x = tl_left - 6.0;
+    let cy = row_rect.center().y;
+    let font_name = egui::FontId::monospace((row_h * 0.35).clamp(9.0, 13.0));
+    let font_stat = egui::FontId::monospace((row_h * 0.27).clamp(8.0, 10.0));
+
+    let text_clip = egui::Rect::from_min_max(
+        egui::pos2(row_rect.left(), row_rect.top()),
+        egui::pos2(text_max_x, row_rect.bottom()),
+    );
+    let text_painter = ui.painter().with_clip_rect(text_clip);
+
+    // Name (primary line) -- calls count first, cost secondary
+    text_painter.text(egui::pos2(text_x, cy - row_h * 0.12), egui::Align2::LEFT_CENTER,
+        name, font_name, name_col);
+
+    // Stats (secondary line) -- tokens/200k, cost, model
+    if row_h >= 22.0 {
+        let ctx_pct = (total_input as f64 / 200_000.0 * 100.0).min(999.0);
+        let model_tag = if model.is_empty() { String::new() } else { format!("  {}", short_model(model)) };
+        let stat_str = format!(
+            "{:.0}% ctx  {}{}",
+            ctx_pct,
+            format_cost(cost),
+            model_tag,
+        );
+        text_painter.text(egui::pos2(text_x, cy + row_h * 0.18), egui::Align2::LEFT_CENTER,
+            &stat_str, font_stat, dim_col);
+    }
+
+    // Timeline bg
+    painter.rect_filled(tl_rect, 2.0,
+        egui::Color32::from_rgba_unmultiplied(swatch_col.r(), swatch_col.g(), swatch_col.b(), 18));
+
+    // Per-session lanes in timeline
+    let n_sessions = timeline_sessions.len();
+    let seg_h = (bar_h_px / n_sessions.max(1) as f32).max(2.0);
+
+    for (lane, (s, col)) in timeline_sessions.iter().enumerate() {
+        let seg_alpha = if effective_hidden.contains(&s.session_id) {
+            30u8
+        } else if s.is_active {
+            220u8
+        } else {
+            80u8
+        };
+        let seg_col_a = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), seg_alpha);
+
+        let seg_top = tl_rect.top() + lane as f32 * seg_h;
+        let seg_bot = (seg_top + seg_h).min(tl_rect.bottom());
+
+        if s.first_ts > 0 {
+            let x0f = ((s.first_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
+            let x1f = ((s.last_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
+            let px0 = tl_rect.left() + x0f * timeline_w;
+            let px1 = (tl_rect.left() + x1f * timeline_w).max(px0 + 3.0).min(tl_rect.right());
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(px0, seg_top), egui::pos2(px1, seg_bot)),
+                1.0, seg_col_a,
+            );
+            if s.is_active {
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(px1 - 2.0, seg_top),
+                        egui::pos2(px1, seg_bot),
+                    ),
+                    0.0, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 160),
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Big dashboard layout
 // ---------------------------------------------------------------------------
 
-fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut HashSet<String>, effective_hidden: &HashSet<String>, show_active_only: &mut bool, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>) {
+fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, hidden: &mut HashSet<String>, effective_hidden: &HashSet<String>, show_active_only: &mut bool, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>) {
     let area = ui.available_rect_before_wrap();
     let pad = 8.0;
     let gap = 8.0;
@@ -449,10 +607,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
             groups.push((session.cwd.clone(), vec![(si, 0)]));
         }
     }
-    let n_groups = groups.len().max(1);
-    let ideal_row_h = 38.0_f32;
-    let max_legend_h = h * 0.30;
-    let legend_h = (ideal_row_h * n_groups as f32).min(max_legend_h).max(40.0);
+    let legend_row_h = 42.0_f32;
+    let row_gap = 3.0_f32;
+    let legend_h = (h * 0.30).clamp(100.0, 220.0);
     // Row 3: weekly strip (thin)
     let weekly_h = (h * 0.17).max(50.0);
     // Row 2: per-turn + running total charts
@@ -473,7 +630,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
     let total_cost_rect = egui::Rect::from_min_size(egui::pos2(x0, chart_y + per_turn_h + gap), egui::vec2(cost_w, stacked_h));
     let tok_rect     = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, chart_y), egui::vec2(tok_w, per_turn_h));
     let total_tok_rect = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, chart_y + per_turn_h + gap), egui::vec2(tok_w, stacked_h));
-    let tool_rect    = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + tok_w + gap * 2.0, chart_y), egui::vec2(tool_w, chart_h));
+    let usage_chart_h = (chart_h * 0.45).floor();
+    let tool_h = chart_h - usage_chart_h - gap;
+    let right_x = x0 + cost_w + tok_w + gap * 2.0;
+    let usage_rect   = egui::Rect::from_min_size(egui::pos2(right_x, chart_y), egui::vec2(tool_w, usage_chart_h));
+    let tool_rect    = egui::Rect::from_min_size(egui::pos2(right_x, chart_y + usage_chart_h + gap), egui::vec2(tool_w, tool_h));
     let weekly_y     = chart_y + chart_h + gap;
     let weekly_half  = (w - gap) / 2.0;
     let weekly_total_rect  = egui::Rect::from_min_size(egui::pos2(x0, weekly_y), egui::vec2(weekly_half, weekly_h));
@@ -694,200 +855,231 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
         }
     });
 
-    // --- legend (grouped by cwd, one row per project) ---
-    // Click toggles entire group. Active sessions bright in timeline, inactive dimmed.
-    let mut toggle_group: Option<Vec<String>> = None;
-    let row_h = (legend_h / n_groups as f32).clamp(14.0, 36.0);
+    // --- legend (grouped by cwd) ---
+    // Sort: groups with active sessions first, then by cost descending.
+    groups.sort_by(|a, b| {
+        let a_active = a.1.iter().any(|(si, _)| data.sessions[*si].is_active);
+        let b_active = b.1.iter().any(|(si, _)| data.sessions[*si].is_active);
+        b_active.cmp(&a_active)
+            .then_with(|| {
+                let a_cost: f64 = a.1.iter().map(|(si, _)| data.sessions[*si].total_cost_usd).sum();
+                let b_cost: f64 = b.1.iter().map(|(si, _)| data.sessions[*si].total_cost_usd).sum();
+                b_cost.partial_cmp(&a_cost).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    // Within each group, put active sessions first
+    for (_, members) in &mut groups {
+        members.sort_by(|a, b| {
+            let a_active = data.sessions[a.0].is_active;
+            let b_active = data.sessions[b.0].is_active;
+            b_active.cmp(&a_active)
+        });
+    }
+
+    // Groups with <=2 sessions: flat rows, click toggles visibility.
+    // Groups with 3+: collapsible header, click expands/collapses sub-session list.
+    // Sub-session rows: click toggles individual session visibility.
+    let row_h = legend_row_h;
     let timeline_w = 120.0_f32;
+
+    // Collect toggle actions to apply after rendering
+    let mut toggle_ids: Vec<String> = vec![];
+    let mut toggle_expand: Option<String> = None;
+    let legend_hl_id = egui::Id::new("legend_highlight");
+    // Clear highlight each frame; legend hover will re-set it
+    ui.ctx().data_mut(|d| d.insert_temp(legend_hl_id, LegendHighlight::default()));
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
         panel_frame().show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             let inner = ui.available_rect_before_wrap();
+            let mut row_idx = 0usize;
 
             for (gi, (cwd, members)) in groups.iter().enumerate() {
                 let group_col = session_color(members[0].0);
+                let is_flat = members.len() <= 2;
+                let is_expanded = expanded_groups.contains(cwd);
 
-                // Aggregate stats
+                // Aggregate stats for group header
                 let mut g_cost = 0.0f64;
-                let mut g_in_cost = 0.0f64;
-                let mut g_out_cost = 0.0f64;
-                let mut g_calls = 0u32;
-                let mut g_agents = 0u32;
+                let mut g_total_input = 0u64;
                 let mut any_active = false;
                 let mut active_count = 0u32;
                 let mut all_hidden = true;
-                let group_ids: Vec<String> = members.iter()
-                    .map(|(si, _)| data.sessions[*si].session_id.clone())
-                    .collect();
+                let mut g_model = String::new();
 
                 for (si, _) in members {
                     let s = &data.sessions[*si];
                     g_cost    += s.total_cost_usd;
-                    g_in_cost += s.total_input_cost;
-                    g_out_cost+= s.total_output_cost;
-                    g_calls   += s.api_call_count;
-                    g_agents  += s.agent_count;
-                    if s.is_active { any_active = true; active_count += 1; }
+                    g_total_input += s.total_input;
+                    if s.is_active { any_active = true; active_count += 1; g_model = s.model.clone(); }
                     if !effective_hidden.contains(&s.session_id) { all_hidden = false; }
                 }
-
-                let text_alpha = if all_hidden { 80u8 } else { 230u8 };
-                let bar_col  = egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), text_alpha);
-                let name_col = if any_active {
-                    egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(160, 150, 130, text_alpha)
-                };
-                let dim_col  = egui::Color32::from_rgba_unmultiplied(130, 120, 100, text_alpha / 2);
-
-                let row_top = inner.top() + gi as f32 * row_h;
-                let row_rect = egui::Rect::from_min_size(
-                    egui::pos2(inner.left(), row_top),
-                    egui::vec2(inner.width(), row_h),
-                );
-                let resp = ui.interact(row_rect, egui::Id::new(("legend_group", gi)), egui::Sense::click());
-                if resp.clicked() { toggle_group = Some(group_ids.clone()); }
-                if resp.hovered() {
-                    ui.painter().rect_filled(row_rect, 2.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+                if g_model.is_empty() {
+                    if let Some((si, _)) = members.last() { g_model = data.sessions[*si].model.clone(); }
                 }
 
-                let painter = ui.painter();
-                let bar_x     = row_rect.left() + 2.0;
-                let bar_top_y = row_rect.top() + (row_h * 0.1).max(2.0);
-                let bar_h_px  = row_h - (row_h * 0.2).max(4.0);
-                let bar_w     = 5.0_f32;
+                if is_flat {
+                    // Flat: render each session as its own row
+                    for (si, _) in members {
+                        let s = &data.sessions[*si];
+                        let sess_col = session_color(*si);
+                        let is_hidden = effective_hidden.contains(&s.session_id);
+                        let text_alpha = if is_hidden { 80u8 } else { 230u8 };
+                        let name_col = if s.is_active {
+                            egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(160, 150, 130, text_alpha)
+                        };
+                        let dim_col = egui::Color32::from_rgba_unmultiplied(130, 120, 100, text_alpha / 2);
 
-                // Color swatch
-                painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
-                    1.5, bar_col,
-                );
+                        let row_top = inner.top() + row_idx as f32 * (row_h + row_gap);
+                        let row_rect = egui::Rect::from_min_size(
+                            egui::pos2(inner.left(), row_top),
+                            egui::vec2(inner.width(), row_h),
+                        );
+                        let resp = ui.interact(row_rect, egui::Id::new(("legend_flat", gi, *si)), egui::Sense::click());
+                        if resp.clicked() { toggle_ids.push(s.session_id.clone()); }
+                        if resp.hovered() {
+                            ui.painter().rect_filled(row_rect, 2.0,
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+                            if s.first_ts > 0 {
+                                ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
+                                    .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
+                            }
+                        }
 
-                // Active dot (green if any active, gray otherwise)
-                if any_active {
-                    painter.circle_filled(
-                        egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
-                        2.5, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 200),
-                    );
+                        draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
+                            &s.project, sess_col, name_col, dim_col,
+                            s.is_active, is_hidden,
+                            s.total_input, s.total_cost_usd, &s.model,
+                            &[(s, sess_col)], effective_hidden, None);
+
+                        row_idx += 1;
+                    }
                 } else {
-                    painter.circle_filled(
-                        egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
-                        2.0, egui::Color32::from_rgba_unmultiplied(80, 75, 65, 100),
+                    // Group header row
+                    let text_alpha = if all_hidden { 80u8 } else { 230u8 };
+                    let bar_col = egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), text_alpha);
+                    let name_col = if any_active {
+                        egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha)
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(160, 150, 130, text_alpha)
+                    };
+                    let dim_col = egui::Color32::from_rgba_unmultiplied(130, 120, 100, text_alpha / 2);
+
+                    let row_top = inner.top() + row_idx as f32 * (row_h + row_gap);
+                    let row_rect = egui::Rect::from_min_size(
+                        egui::pos2(inner.left(), row_top),
+                        egui::vec2(inner.width(), row_h),
                     );
-                }
+                    let resp = ui.interact(row_rect, egui::Id::new(("legend_group", gi)), egui::Sense::click());
+                    if resp.clicked() { toggle_expand = Some(cwd.clone()); }
+                    if resp.hovered() {
+                        ui.painter().rect_filled(row_rect, 2.0,
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+                        ui.ctx().data_mut(|d| {
+                            let hl = d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id);
+                            for (si, _) in members {
+                                let s = &data.sessions[*si];
+                                if s.first_ts > 0 {
+                                    hl.ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0));
+                                }
+                            }
+                        });
+                    }
 
-                // --- Mini timeline (right side) ---
-                let tl_right = row_rect.right() - 4.0;
-                let tl_left  = tl_right - timeline_w;
-                let tl_rect = egui::Rect::from_min_size(
-                    egui::pos2(tl_left, bar_top_y),
-                    egui::vec2(timeline_w, bar_h_px),
-                );
+                    // Build session refs for timeline
+                    let sess_refs: Vec<(&SessionData, egui::Color32)> = members.iter()
+                        .map(|(si, _)| (&data.sessions[*si], session_color(*si)))
+                        .collect();
 
-                // Text area clipped before timeline
-                let text_x = row_rect.left() + 18.0;
-                let text_max_x = tl_left - 6.0;
-                let cy     = row_rect.center().y;
-                let font_name = egui::FontId::monospace((row_h * 0.35).clamp(9.0, 13.0));
-                let font_stat = egui::FontId::monospace((row_h * 0.27).clamp(8.0, 10.0));
-
-                let text_clip = egui::Rect::from_min_max(
-                    egui::pos2(row_rect.left(), row_rect.top()),
-                    egui::pos2(text_max_x, row_rect.bottom()),
-                );
-                let text_painter = ui.painter().with_clip_rect(text_clip);
-
-                // Name + count badge + active indicator
-                let name_str = if members.len() > 1 {
                     let badge = if active_count > 0 {
                         format!("{} x{} ({} active)", cwd, members.len(), active_count)
                     } else {
                         format!("{} x{}", cwd, members.len())
                     };
-                    badge
-                } else {
-                    cwd.clone()
-                };
-                text_painter.text(egui::pos2(text_x, cy - row_h * 0.12), egui::Align2::LEFT_CENTER,
-                    &name_str, font_name, name_col);
+                    let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
+                    let header_name = format!("{} {}", arrow, badge);
 
-                if row_h >= 22.0 {
-                    let cost_str = format!(
-                        "{}  in {}  out {}  |  {} calls{}",
-                        format_cost(g_cost),
-                        format_cost(g_in_cost),
-                        format_cost(g_out_cost),
-                        g_calls,
-                        if g_agents > 0 { format!("  {} agt", g_agents) } else { String::new() },
-                    );
-                    text_painter.text(egui::pos2(text_x, cy + row_h * 0.18), egui::Align2::LEFT_CENTER,
-                        &cost_str, font_stat, dim_col);
-                }
+                    draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
+                        &header_name, bar_col, name_col, dim_col,
+                        any_active, all_hidden,
+                        g_total_input, g_cost, &g_model,
+                        &sess_refs, effective_hidden, None);
 
-                // Timeline bg
-                painter.rect_filled(tl_rect, 2.0,
-                    egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), 18));
+                    row_idx += 1;
 
-                // Per-session lanes in timeline: active sessions bright, inactive dim
-                let n_members = members.len();
-                let seg_h = (bar_h_px / n_members as f32).max(2.0);
+                    // Expanded sub-rows
+                    if is_expanded {
+                        for (si, _) in members {
+                            let s = &data.sessions[*si];
+                            let sess_col = session_color(*si);
+                            let is_hidden = effective_hidden.contains(&s.session_id);
+                            let sub_alpha = if is_hidden { 60u8 } else if s.is_active { 230u8 } else { 160u8 };
+                            let sub_name_col = if s.is_active {
+                                egui::Color32::from_rgba_unmultiplied(240, 230, 200, sub_alpha)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(140, 135, 120, sub_alpha)
+                            };
+                            let sub_dim = egui::Color32::from_rgba_unmultiplied(110, 105, 90, sub_alpha / 2);
 
-                for (lane, (si, _)) in members.iter().enumerate() {
-                    let s = &data.sessions[*si];
-                    let seg_col = session_color(*si);
-                    let seg_alpha = if effective_hidden.contains(&s.session_id) {
-                        30u8
-                    } else if s.is_active {
-                        220u8
-                    } else {
-                        80u8
-                    };
-                    let seg_col_a = egui::Color32::from_rgba_unmultiplied(seg_col.r(), seg_col.g(), seg_col.b(), seg_alpha);
-
-                    let seg_top = tl_rect.top() + lane as f32 * seg_h;
-                    let seg_bot = (seg_top + seg_h).min(tl_rect.bottom());
-
-                    if s.first_ts > 0 {
-                        let x0f = ((s.first_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
-                        let x1f = ((s.last_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
-                        let px0 = tl_rect.left() + x0f * timeline_w;
-                        let px1 = (tl_rect.left() + x1f * timeline_w).max(px0 + 3.0).min(tl_rect.right());
-                        painter.rect_filled(
-                            egui::Rect::from_min_max(egui::pos2(px0, seg_top), egui::pos2(px1, seg_bot)),
-                            1.0, seg_col_a,
-                        );
-                        // Active sessions get a bright left-edge accent
-                        if s.is_active {
-                            painter.rect_filled(
-                                egui::Rect::from_min_max(
-                                    egui::pos2(px1 - 2.0, seg_top),
-                                    egui::pos2(px1, seg_bot),
-                                ),
-                                0.0, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 160),
+                            let sub_top = inner.top() + row_idx as f32 * (row_h + row_gap);
+                            let sub_rect = egui::Rect::from_min_size(
+                                egui::pos2(inner.left(), sub_top),
+                                egui::vec2(inner.width(), row_h),
                             );
+                            let sub_resp = ui.interact(sub_rect, egui::Id::new(("legend_sub", gi, *si)), egui::Sense::click());
+                            if sub_resp.clicked() { toggle_ids.push(s.session_id.clone()); }
+                            if sub_resp.hovered() {
+                                ui.painter().rect_filled(sub_rect, 2.0,
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8));
+                                if s.first_ts > 0 {
+                                    ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
+                                        .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
+                                }
+                            }
+
+                            // Session label: short id + active marker
+                            let sid_short = if s.session_id.len() > 8 { &s.session_id[..8] } else { &s.session_id };
+                            let sub_label = if s.is_active {
+                                format!("  {} (active)", sid_short)
+                            } else {
+                                format!("  {}", sid_short)
+                            };
+
+                            draw_legend_row(ui, sub_rect, row_h, timeline_w, week_start_secs, week_span,
+                                &sub_label, sess_col, sub_name_col, sub_dim,
+                                s.is_active, is_hidden,
+                                s.total_input, s.total_cost_usd, &s.model,
+                                &[(s, sess_col)], effective_hidden, Some(16.0));
+
+                            row_idx += 1;
                         }
                     }
                 }
             }
+            // Tell ScrollArea the total content height so scrolling works
+            let total_h = row_idx as f32 * (row_h + row_gap);
+            ui.allocate_space(egui::vec2(ui.available_width(), total_h));
+            }); // ScrollArea
         });
     });
-    if let Some(ids) = toggle_group {
-        // When active-only filter is on, only toggle active sessions
-        let toggleable: Vec<String> = if *show_active_only {
-            ids.into_iter().filter(|id| {
-                data.sessions.iter().any(|s| s.session_id == *id && s.is_active)
-            }).collect()
+
+    // Apply expand/collapse
+    if let Some(cwd) = toggle_expand {
+        if expanded_groups.contains(&cwd) {
+            expanded_groups.remove(&cwd);
         } else {
-            ids
-        };
-        if !toggleable.is_empty() {
-            let all_hidden = toggleable.iter().all(|id| hidden.contains(id));
-            if all_hidden {
-                for id in toggleable { hidden.remove(&id); }
-            } else {
-                for id in toggleable { hidden.insert(id); }
-            }
+            expanded_groups.insert(cwd);
+        }
+    }
+    // Apply individual session visibility toggles
+    for id in toggle_ids {
+        if hidden.contains(&id) {
+            hidden.remove(&id);
+        } else {
+            hidden.insert(id);
         }
     }
 
@@ -910,6 +1102,18 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
         if !egui::Rect::from_two_pos(s_min, s_max).contains(hover_pos) { return; }
         let x = pui.plot_from_screen(hover_pos).x;
         pui.ctx().data_mut(|d| d.insert_temp(hover_id, HoverState { x, source }));
+    };
+
+    // Read legend highlight for drawing VLines on charts
+    let legend_hl: LegendHighlight = ui.ctx().data(|d| d.get_temp(legend_hl_id).unwrap_or_default());
+    let hl_color = egui::Color32::from_rgba_unmultiplied(220, 60, 60, 140);
+    let draw_legend_hl = |pui: &mut egui_plot::PlotUi, hl: &LegendHighlight| {
+        for (start, end) in &hl.ranges {
+            pui.vline(VLine::new(*start).color(hl_color).width(1.0));
+            if (end - start).abs() > 0.5 {
+                pui.vline(VLine::new(*end).color(hl_color).width(1.0));
+            }
+        }
     };
 
     // --- cost per-turn chart (ctx cost up / gen cost down) ---
@@ -936,6 +1140,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5).name("agent"));
                     }
                     update_hover_src(pui, HoverSource::Cost);
+                    draw_legend_hl(pui, &legend_hl);
                 });
         });
     });
@@ -966,6 +1171,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5));
                     }
                     update_hover_src(pui, HoverSource::TotalCost);
+                    draw_legend_hl(pui, &legend_hl);
                 });
         });
     });
@@ -992,6 +1198,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     pui.bar_chart(BarChart::new(cd.in_tok_bars.clone()).color(Palette::INPUT_TINT).name("in"));
                     pui.bar_chart(BarChart::new(cd.out_tok_bars.clone()).color(Palette::OUTPUT_TINT).name("out"));
                     update_hover_src(pui, HoverSource::Tokens);
+                    draw_legend_hl(pui, &legend_hl);
                 });
         });
     });
@@ -1021,6 +1228,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                             .style(egui_plot::LineStyle::Dashed { length: 8.0 }).name("out"));
                     }
                     update_hover_src(pui, HoverSource::TotalTokens);
+                    draw_legend_hl(pui, &legend_hl);
                 });
         });
     });
@@ -1107,6 +1315,115 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
         }
     }
 
+    // --- usage chart (5h + 7d utilization over time) ---
+    // Clear session hover tooltip when pointer is over usage chart
+    if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+        if usage_rect.contains(pos) {
+            ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
+        }
+    }
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(usage_rect), |ui| {
+        panel_frame().show(ui, |ui| {
+            draw_chart_label(ui, "usage %", "5h", "7d");
+
+            if let Some(latest) = &usage.latest {
+                // Show current values as text
+                let inner = ui.available_rect_before_wrap();
+                let painter = ui.painter();
+                let font = egui::FontId::monospace(9.0);
+                painter.text(
+                    egui::pos2(inner.right() - 60.0, inner.top()),
+                    egui::Align2::LEFT_TOP,
+                    format!("{}%  {}%", latest.five_hour as u32, latest.seven_day as u32),
+                    font,
+                    Palette::TEXT_DIM,
+                );
+            }
+
+            if usage.snapshots.len() >= 2 {
+                let five_h_pts: Vec<[f64; 2]> = usage.snapshots.iter()
+                    .map(|s| [s.ts as f64 / 60.0, s.five_hour])
+                    .collect();
+                let seven_d_pts: Vec<[f64; 2]> = usage.snapshots.iter()
+                    .map(|s| [s.ts as f64 / 60.0, s.seven_day])
+                    .collect();
+
+                let usage_time_fmt = move |v: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
+                    let ago_min = now_min - v.value;
+                    if ago_min < 0.5 { "now".into() }
+                    else if ago_min < 60.0 { format!("{}m", ago_min.round() as i64) }
+                    else if ago_min < 24.0 * 60.0 { format!("{:.0}h", ago_min / 60.0) }
+                    else { format!("{:.0}d", ago_min / (24.0 * 60.0)) }
+                };
+
+                // Clone snapshots for the label formatter closure
+                let snap_for_tip = usage.snapshots.clone();
+                let tip_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
+                    let hx = point.x;
+                    // Find nearest snapshot
+                    let nearest = snap_for_tip.iter().min_by(|a, b| {
+                        let ax = a.ts as f64 / 60.0;
+                        let bx = b.ts as f64 / 60.0;
+                        (ax - hx).abs().partial_cmp(&(bx - hx).abs()).unwrap()
+                    });
+                    if let Some(s) = nearest {
+                        let ago_min = now_min - (s.ts as f64 / 60.0);
+                        let ago = if ago_min < 1.0 { "now".into() }
+                            else if ago_min < 60.0 { format!("{}m ago", ago_min.round() as i64) }
+                            else if ago_min < 24.0 * 60.0 { format!("{:.1}h ago", ago_min / 60.0) }
+                            else { format!("{:.1}d ago", ago_min / (24.0 * 60.0)) };
+                        let mut tip = format!("{}\n5h: {:.0}%\n7d: {:.0}%", ago, s.five_hour, s.seven_day);
+                        if let Some(opus) = s.seven_day_opus { tip += &format!("\nopus 7d: {:.0}%", opus); }
+                        if let Some(sonnet) = s.seven_day_sonnet { tip += &format!("\nsonnet 7d: {:.0}%", sonnet); }
+                        tip
+                    } else {
+                        String::new()
+                    }
+                };
+
+                Plot::new("usage_pct")
+                    .show_axes([true, true])
+                    .show_grid(true)
+                    .allow_zoom(false)
+                    .allow_drag(false)
+                    .allow_scroll(false)
+                    .show_background(false)
+                    .set_margin_fraction(egui::Vec2::ZERO)
+                    .auto_bounds(egui::Vec2b::new(true, true))
+                    .include_y(0.0)
+                    .include_y(100.0)
+                    .y_axis_formatter(|v, _| {
+                        if v.value < 0.5 { String::new() } else { format!("{}%", v.value as u32) }
+                    })
+                    .x_axis_formatter(usage_time_fmt)
+                    .label_formatter(tip_fmt)
+                    .show(ui, |pui| {
+                        pui.line(egui_plot::Line::new(five_h_pts)
+                            .color(egui::Color32::from_rgb(220, 160, 60)).width(1.5).name("5h"));
+                        pui.line(egui_plot::Line::new(seven_d_pts)
+                            .color(egui::Color32::from_rgb(100, 160, 220)).width(1.5).name("7d"));
+                        pui.hline(egui_plot::HLine::new(100.0)
+                            .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 80))
+                            .width(0.5));
+                    });
+            } else if let Some(e) = &usage.error {
+                let inner = ui.available_rect_before_wrap();
+                ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER,
+                    e, egui::FontId::monospace(9.0), Palette::TEXT_DIM);
+            } else {
+                let inner = ui.available_rect_before_wrap();
+                ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER,
+                    "polling...", egui::FontId::monospace(9.0), Palette::TEXT_DIM);
+            }
+        });
+    });
+
+    // Clear session hover tooltip when pointer is over tool panel
+    if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+        if tool_rect.contains(pos) {
+            ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
+        }
+    }
     // --- tool breakdown ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tool_rect), |ui| {
         panel_frame().show(ui, |ui| {
@@ -1188,6 +1505,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     pui.points(egui_plot::Points::new(cd.combined_cost_pts.clone())
                         .color(Palette::INPUT_TINT).radius(2.0));
                     update_hover_src(pui, HoverSource::WeeklyCost);
+                    draw_legend_hl(pui, &legend_hl);
                 });
             });
         });
@@ -1215,6 +1533,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     pui.points(egui_plot::Points::new(cd.cost_rate_pts.clone())
                         .color(Palette::OUTPUT_TINT).radius(2.0));
                     update_hover_src(pui, HoverSource::WeeklyRate);
+                    draw_legend_hl(pui, &legend_hl);
                 });
             });
         });
@@ -1405,9 +1724,10 @@ impl EguiOverlay for Hud {
                 };
 
                 let cd = build_chart_data(&data, &effective_hidden, self.time_axis);
+                let usage = self.usage_data.lock().unwrap().clone();
 
                 if big_mode {
-                    draw_big(ui, &data, &cd, &mut self.hidden_sessions, &effective_hidden, &mut self.show_active_only, &mut self.time_axis, &mut self.autofit, &mut self.nav_view);
+                    draw_big(ui, &data, &cd, &usage, &mut self.hidden_sessions, &effective_hidden, &mut self.show_active_only, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups);
                 } else {
                     draw_strip(ui, &data, &cd);
                 }

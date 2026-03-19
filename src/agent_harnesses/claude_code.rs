@@ -86,6 +86,7 @@ pub struct SessionData {
     pub is_active: bool,
     pub first_ts: u64,   // unix seconds of first ApiCall (0 if none)
     pub last_ts: u64,    // unix seconds of last ApiCall  (0 if none)
+    pub model: String,   // most recent model used
 }
 
 /// All data the HUD renders from.
@@ -342,10 +343,12 @@ fn build_session_data(
     let mut agents = 0u32;
     let mut first_ts = 0u64;
     let mut last_ts = 0u64;
+    let mut last_model = String::new();
 
     for ev in &events {
         match ev {
-            Event::ApiCall { input_tokens, output_tokens, cumulative_input_cost, cumulative_output_cost, timestamp_secs, .. } => {
+            Event::ApiCall { input_tokens, output_tokens, cumulative_input_cost, cumulative_output_cost, timestamp_secs, model, .. } => {
+                last_model = model.clone();
                 total_input_cost = *cumulative_input_cost;
                 total_output_cost = *cumulative_output_cost;
                 total_input += input_tokens;
@@ -380,6 +383,7 @@ fn build_session_data(
         is_active,
         first_ts,
         last_ts,
+        model: last_model,
     }
 }
 
