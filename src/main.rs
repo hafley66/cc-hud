@@ -450,6 +450,8 @@ fn draw_legend_row(
     total_input: u64,
     cost: f64,
     model: &str,
+    // Some((active_cost, group_total_cost)) for active groups, None otherwise
+    active_group_costs: Option<(f64, f64)>,
     // Sessions to draw in the mini timeline
     timeline_sessions: &[(&agent_harnesses::claude_code::SessionData, egui::Color32)],
     effective_hidden: &HashSet<String>,
@@ -462,19 +464,26 @@ fn draw_legend_row(
     let bar_h_px = row_h - (row_h * 0.2).max(4.0);
     let bar_w = 8.0_f32;
 
-    // Color swatch -- full-height faded background, then filled portion proportional to total_input / 200k
-    let faded_col = egui::Color32::from_rgba_unmultiplied(swatch_col.r(), swatch_col.g(), swatch_col.b(), 35);
-    painter.rect_filled(
-        egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
-        2.0, faded_col,
-    );
-    let ctx_frac = (total_input as f32 / 200_000.0).clamp(0.02, 1.0);
-    let swatch_h = (bar_h_px * ctx_frac).max(3.0);
-    let swatch_top = bar_top_y + bar_h_px - swatch_h; // anchored to bottom
-    painter.rect_filled(
-        egui::Rect::from_min_size(egui::pos2(bar_x, swatch_top), egui::vec2(bar_w, swatch_h)),
-        2.0, swatch_col,
-    );
+    // Color swatch -- active: fill proportional to context usage; inactive: solid full bar
+    if is_active {
+        let faded_col = egui::Color32::from_rgba_unmultiplied(swatch_col.r(), swatch_col.g(), swatch_col.b(), 35);
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
+            2.0, faded_col,
+        );
+        let ctx_frac = (total_input as f32 / 200_000.0).clamp(0.02, 1.0);
+        let swatch_h = (bar_h_px * ctx_frac).max(3.0);
+        let swatch_top = bar_top_y + bar_h_px - swatch_h;
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bar_x, swatch_top), egui::vec2(bar_w, swatch_h)),
+            2.0, swatch_col,
+        );
+    } else {
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
+            2.0, swatch_col,
+        );
+    }
 
     // Active dot
     if is_active {
@@ -514,16 +523,27 @@ fn draw_legend_row(
     text_painter.text(egui::pos2(text_x, cy - row_h * 0.12), egui::Align2::LEFT_CENTER,
         name, font_name, name_col);
 
-    // Stats (secondary line) -- tokens/200k, cost, model
+    // Stats (secondary line)
     if row_h >= 22.0 {
-        let ctx_pct = (total_input as f64 / 200_000.0 * 100.0).min(999.0);
         let model_tag = if model.is_empty() { String::new() } else { format!("  {}", short_model(model)) };
-        let stat_str = format!(
-            "{:.0}% ctx  {}{}",
-            ctx_pct,
-            format_cost(cost),
-            model_tag,
-        );
+        let stat_str = if let Some((active_cost, group_cost)) = active_group_costs {
+            // Active group: show active session stats first, then group total
+            let ctx_pct = (total_input as f64 / 200_000.0 * 100.0).min(999.0);
+            format!(
+                "{:.0}% ctx  {}{}  |  {} total",
+                ctx_pct,
+                format_cost(active_cost),
+                model_tag,
+                format_cost(group_cost),
+            )
+        } else if is_active {
+            // Flat active session
+            let ctx_pct = (total_input as f64 / 200_000.0 * 100.0).min(999.0);
+            format!("{:.0}% ctx  {}{}", ctx_pct, format_cost(cost), model_tag)
+        } else {
+            // Inactive: no context %, just cost
+            format!("{}{}", format_cost(cost), model_tag)
+        };
         text_painter.text(egui::pos2(text_x, cy + row_h * 0.18), egui::Align2::LEFT_CENTER,
             &stat_str, font_stat, dim_col);
     }
@@ -903,6 +923,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 // Aggregate stats for group header
                 let mut g_cost = 0.0f64;
                 let mut g_last_input = 0u64;
+                let mut g_active_cost = 0.0f64;
                 let mut any_active = false;
                 let mut active_count = 0u32;
                 let mut all_hidden = true;
@@ -911,12 +932,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 for (si, _) in members {
                     let s = &data.sessions[*si];
                     g_cost    += s.total_cost_usd;
-                    // Context: use active session's value, or most recent if none active
                     if s.is_active {
                         any_active = true;
                         active_count += 1;
                         g_model = s.model.clone();
                         g_last_input = s.last_input_tokens;
+                        g_active_cost += s.total_cost_usd;
                     }
                     if !effective_hidden.contains(&s.session_id) { all_hidden = false; }
                 }
@@ -963,6 +984,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             &s.project, sess_col, name_col, dim_col,
                             s.is_active, is_hidden,
                             s.last_input_tokens, s.total_cost_usd, &s.model,
+                            None,
                             &[(s, sess_col)], effective_hidden, None);
 
                         row_idx += 1;
@@ -1012,10 +1034,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
                     let header_name = format!("{} {}", arrow, badge);
 
+                    let agc = if any_active { Some((g_active_cost, g_cost)) } else { None };
                     draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
                         &header_name, bar_col, name_col, dim_col,
                         any_active, all_hidden,
                         g_last_input, g_cost, &g_model,
+                        agc,
                         &sess_refs, effective_hidden, None);
 
                     row_idx += 1;
@@ -1062,6 +1086,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 &sub_label, sess_col, sub_name_col, sub_dim,
                                 s.is_active, is_hidden,
                                 s.last_input_tokens, s.total_cost_usd, &s.model,
+                                None,
                                 &[(s, sess_col)], effective_hidden, Some(16.0));
 
                             row_idx += 1;
