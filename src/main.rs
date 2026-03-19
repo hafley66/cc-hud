@@ -137,9 +137,13 @@ impl Palette {
     const SEPARATOR: egui::Color32 = egui::Color32::from_rgba_premultiplied(60, 55, 42, 120);
 }
 
-/// Wrapper for storing an f64 in egui temp storage (needs Clone + Send + Sync + 'static).
+/// Which chart region the hover originated from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate }
+
+/// Wrapper for storing hover state in egui temp storage.
 #[derive(Clone, Copy)]
-struct HoverX(f64);
+struct HoverState { x: f64, source: HoverSource }
 
 fn session_color(i: usize) -> egui::Color32 {
     let (r, g, b) = SESSION_COLORS[i % SESSION_COLORS.len()];
@@ -204,70 +208,16 @@ struct ChartData {
     /// Per-session running token lines: (color, in_points, out_points)
     total_tok_lines: Vec<(egui::Color32, Vec<[f64; 2]>, Vec<[f64; 2]>)>,
     total_tok_max: f64,
+    /// Combined running cost across all visible sessions, sorted by x
+    combined_cost_pts: Vec<[f64; 2]>,
+    combined_cost_max: f64,
+    /// Per-turn cost (cost_change) at each x, sorted by x
+    cost_rate_pts: Vec<[f64; 2]>,
+    cost_rate_max: f64,
     /// Per-session turn data for tooltips: (display_name, session_color, turns)
     session_turns: Vec<(String, egui::Color32, Vec<TurnInfo>)>,
 }
 
-/// Combined time-series across all visible sessions, in minutes-from-epoch coordinates
-/// (same x-axis as all other time-mode charts).
-struct WeeklyData {
-    /// (minutes_from_epoch, running_cost)
-    total_pts: Vec<[f64; 2]>,
-    total_max: f64,
-    /// (minutes_from_epoch, cost_in_that_hour_bucket)
-    rate_pts: Vec<[f64; 2]>,
-    rate_max: f64,
-}
-
-fn build_weekly_data(data: &HudData, hidden: &HashSet<String>) -> Option<WeeklyData> {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
-
-    // Collect all visible API calls (no 7d filter -- viewport handles clipping)
-    let mut raw: Vec<(u64, f64)> = vec![];
-    for session in &data.sessions {
-        if hidden.contains(&session.session_id) { continue; }
-        for ev in &session.events {
-            if let Event::ApiCall { timestamp_secs, input_cost_usd, output_cost_usd, .. } = ev {
-                if *timestamp_secs == 0 { continue; }
-                raw.push((*timestamp_secs, input_cost_usd + output_cost_usd));
-            }
-        }
-    }
-    if raw.is_empty() { return None; }
-    raw.sort_by_key(|(t, _)| *t);
-
-    let first_secs = raw.first().unwrap().0;
-    let now_min = now_secs as f64 / 60.0;
-
-    // Running total line in minutes-from-epoch
-    let mut running = 0.0f64;
-    let mut total_pts: Vec<[f64; 2]> = vec![[first_secs as f64 / 60.0, 0.0]];
-    for (t, cost) in &raw {
-        running += cost;
-        total_pts.push([*t as f64 / 60.0, running]);
-    }
-    total_pts.push([now_min, running]);
-    let total_max = running.max(0.001);
-
-    // Hourly rate buckets, keyed by minutes-from-epoch (bucket center)
-    let first_hour = first_secs / 3600;
-    let now_hour = now_secs / 3600;
-    let n_buckets = ((now_hour - first_hour) as usize + 1).min(10_000);
-    let mut buckets = vec![0.0f64; n_buckets + 1];
-    for (t, cost) in &raw {
-        let idx = ((t / 3600).saturating_sub(first_hour)) as usize;
-        buckets[idx.min(n_buckets)] += cost;
-    }
-    let rate_pts: Vec<[f64; 2]> = buckets.iter().enumerate().map(|(i, &c)| {
-        let hour_secs = (first_hour + i as u64) * 3600;
-        [hour_secs as f64 / 60.0, c]
-    }).collect();
-    let rate_max = buckets.iter().cloned().fold(0.001_f64, f64::max);
-
-    Some(WeeklyData { total_pts, total_max, rate_pts, rate_max })
-}
 
 fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -> ChartData {
     let mut per_turn_in_cost_max = 0.001_f64;
@@ -392,10 +342,35 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
         total_tok_lines.push((*color, in_tok_pts, out_tok_pts));
     }
 
+    // Combined running cost + per-turn rate, merged across all sessions, sorted by x
+    let mut all_cost_events: Vec<(f64, f64)> = vec![]; // (x, cost_change)
+    for (_, _, turns) in &session_turns {
+        for t in turns {
+            all_cost_events.push((t.x, t.cost_change));
+        }
+    }
+    all_cost_events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut running = 0.0f64;
+    let mut combined_cost_pts: Vec<[f64; 2]> = Vec::with_capacity(all_cost_events.len() + 1);
+    let mut cost_rate_pts: Vec<[f64; 2]> = Vec::with_capacity(all_cost_events.len());
+    if let Some((first_x, _)) = all_cost_events.first() {
+        combined_cost_pts.push([*first_x, 0.0]);
+    }
+    for (x, dc) in &all_cost_events {
+        running += dc;
+        combined_cost_pts.push([*x, running]);
+        cost_rate_pts.push([*x, *dc]);
+    }
+    let combined_cost_max = running.max(0.001);
+    let cost_rate_max = all_cost_events.iter().map(|(_, c)| *c).fold(0.001_f64, f64::max);
+
     ChartData {
         in_cost_bars, out_cost_bars, in_tok_bars, out_tok_bars, agent_xs,
         per_turn_in_cost_max, per_turn_out_cost_max, in_max, out_max, tool_list,
-        total_cost_lines, total_cost_max, total_tok_lines, total_tok_max, session_turns,
+        total_cost_lines, total_cost_max, total_tok_lines, total_tok_max,
+        combined_cost_pts, combined_cost_max, cost_rate_pts, cost_rate_max,
+        session_turns,
     }
 }
 
@@ -919,21 +894,22 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
     let cursor_id = egui::Id::new("all_charts_cursor");
     let hover_id = egui::Id::new("hud_hover_turn");
 
-    // Clear at frame start -- charts set it only if cursor is physically over them.
-    // Store hover x as OrderedFloat wrapper so it satisfies Any + Clone + Send + Sync.
-    ui.ctx().data_mut(|d| d.remove::<HoverX>(hover_id));
+    // Don't clear hover state every frame -- let it persist so tooltip stays visible
+    // when mouse is stationary. Charts overwrite when cursor is inside them.
+    // Clear only if pointer left the window entirely.
+    if ui.ctx().input(|i| i.pointer.hover_pos()).is_none() {
+        ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
+    }
 
-    // Screen-space containment check. pointer_coordinate() always returns Some regardless
-    // of where the cursor is, so we convert plot-bound corners to screen space and test
-    // the actual pixel rect before writing.
-    let update_hover = |pui: &egui_plot::PlotUi| {
+    // Screen-space containment check + source tracking.
+    let update_hover_src = |pui: &egui_plot::PlotUi, source: HoverSource| {
         let Some(hover_pos) = pui.ctx().input(|i| i.pointer.hover_pos()) else { return };
         let b = pui.plot_bounds();
         let s_min = pui.screen_from_plot(egui_plot::PlotPoint::new(b.min()[0], b.min()[1]));
         let s_max = pui.screen_from_plot(egui_plot::PlotPoint::new(b.max()[0], b.max()[1]));
         if !egui::Rect::from_two_pos(s_min, s_max).contains(hover_pos) { return; }
         let x = pui.plot_from_screen(hover_pos).x;
-        pui.ctx().data_mut(|d| d.insert_temp(hover_id, HoverX(x)));
+        pui.ctx().data_mut(|d| d.insert_temp(hover_id, HoverState { x, source }));
     };
 
     // --- cost per-turn chart (ctx cost up / gen cost down) ---
@@ -959,7 +935,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     for x in &cd.agent_xs {
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5).name("agent"));
                     }
-                    update_hover(pui);
+                    update_hover_src(pui, HoverSource::Cost);
                 });
         });
     });
@@ -989,7 +965,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                     for x in &cd.agent_xs {
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5));
                     }
-                    update_hover(pui);
+                    update_hover_src(pui, HoverSource::TotalCost);
                 });
         });
     });
@@ -1015,7 +991,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
             p.show(ui, |pui| {
                     pui.bar_chart(BarChart::new(cd.in_tok_bars.clone()).color(Palette::INPUT_TINT).name("in"));
                     pui.bar_chart(BarChart::new(cd.out_tok_bars.clone()).color(Palette::OUTPUT_TINT).name("out"));
-                    update_hover(pui);
+                    update_hover_src(pui, HoverSource::Tokens);
                 });
         });
     });
@@ -1044,40 +1020,58 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
                         pui.line(egui_plot::Line::new(out_pts.clone()).color(*color).width(1.5)
                             .style(egui_plot::LineStyle::Dashed { length: 8.0 }).name("out"));
                     }
-                    update_hover(pui);
+                    update_hover_src(pui, HoverSource::TotalTokens);
                 });
         });
     });
 
-    // --- floating hover tooltip (all sessions, all dims) ---
-    // Read after all charts have had a chance to write hover_id this frame.
-    let hover_x: Option<HoverX> = ui.ctx().data(|d| d.get_temp(hover_id));
-    if let Some(HoverX(hx)) = hover_x {
+    // --- floating hover tooltip (all sessions, context-aware) ---
+    let hover_state: Option<HoverState> = ui.ctx().data(|d| d.get_temp(hover_id));
+    if let Some(hs) = hover_state {
+        let hx = hs.x;
         if let Some(cursor) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-            // Find nearest turn per session by x distance
             let mut entries: Vec<(String, String)> = vec![];
             for (name, _, turns) in &cd.session_turns {
                 let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
                     (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
                 });
                 if let Some((idx, t)) = nearest {
-                    // Only show if within reasonable snap distance
                     let snap = if turns.len() > 1 {
-                        // Half the average gap between turns
                         let span = turns.last().unwrap().x - turns.first().unwrap().x;
                         (span / turns.len() as f64).max(0.5)
                     } else { 1.0 };
                     if (t.x - hx).abs() <= snap {
-                        entries.push((
-                            name.clone(),
-                            format!(
-                                "  t{} [{}] +{}  ctx {}  gen {}  total {}",
+                        let detail = match hs.source {
+                            HoverSource::Cost => format!(
+                                "  t{} [{}] ctx {}  gen {}  (+{})",
+                                idx + 1, t.model_short,
+                                format_cost(t.in_cost), format_cost(t.out_cost),
+                                format_cost(t.cost_change),
+                            ),
+                            HoverSource::TotalCost => format!(
+                                "  t{} total {}  (+{})",
+                                idx + 1,
+                                format_cost(t.total_cost),
+                                format_cost(t.cost_change),
+                            ),
+                            HoverSource::Tokens => format!(
+                                "  t{} [{}] in {}  out {}",
+                                idx + 1, t.model_short,
+                                format_tokens(t.in_tok), format_tokens(t.out_tok),
+                            ),
+                            HoverSource::TotalTokens => format!(
+                                "  t{} total in {}  out {}",
+                                idx + 1,
+                                format_tokens(t.total_in_tok), format_tokens(t.total_out_tok),
+                            ),
+                            HoverSource::WeeklyCost | HoverSource::WeeklyRate => format!(
+                                "  t{} [{}] +{}  total {}",
                                 idx + 1, t.model_short,
                                 format_cost(t.cost_change),
-                                format_cost(t.in_cost), format_cost(t.out_cost),
                                 format_cost(t.total_cost),
                             ),
-                        ));
+                        };
+                        entries.push((name.clone(), detail));
                     }
                 }
             }
@@ -1167,52 +1161,60 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, hidden: &mut Hash
         });
     });
 
-    // --- weekly row (same x-axis as main charts, responds to nav_view) ---
-    if let Some(wd) = build_weekly_data(data, hidden) {
+    // --- bottom row: combined cost + cost rate (from ChartData, same x-domain) ---
+    {
+        let rate_label = if is_time { "cost/hr" } else { "cost/turn" };
+
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(weekly_total_rect), |ui| {
             panel_frame().show(ui, |ui| {
-                draw_chart_label(ui, "total cost", "", "");
-                let mut p = base_plot("weekly_total")
+                draw_chart_label(ui, "combined cost", "", "");
+                let mut p = base_plot("combined_cost")
                     .link_cursor(cursor_id, true, false)
                     .include_y(0.0)
-                    .include_y(wd.total_max)
+                    .include_y(cd.combined_cost_max)
                     .y_axis_formatter(move |v, _| {
                         if v.value < 1e-9 { String::new() } else { format_cost(v.value) }
                     })
-                    .show_axes([true, true])
-                    .show_grid(true)
-                    .x_axis_formatter(time_x_fmt);
+                    .show_axes([is_time, true])
+                    .show_grid(true);
+                if is_time { p = p.x_axis_formatter(time_x_fmt); }
                 if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                     p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
                 }
                 p.show(ui, |pui| {
-                    pui.line(egui_plot::Line::new(wd.total_pts.clone())
-                        .color(Palette::INPUT_TINT).width(2.0).fill(0.0));
-                    update_hover(pui);
+                    pui.line(egui_plot::Line::new(cd.combined_cost_pts.clone())
+                        .color(Palette::INPUT_TINT).width(1.0)
+                        .style(egui_plot::LineStyle::Dashed { length: 4.0 }));
+                    pui.points(egui_plot::Points::new(cd.combined_cost_pts.clone())
+                        .color(Palette::INPUT_TINT).radius(2.0));
+                    update_hover_src(pui, HoverSource::WeeklyCost);
                 });
             });
         });
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(weekly_rate_rect), |ui| {
             panel_frame().show(ui, |ui| {
-                draw_chart_label(ui, "cost/hr", "", "");
-                let mut p = base_plot("weekly_rate")
+                draw_chart_label(ui, rate_label, "", "");
+                let mut p = base_plot("cost_rate")
                     .link_cursor(cursor_id, true, false)
                     .include_y(0.0)
-                    .include_y(wd.rate_max)
+                    .include_y(cd.cost_rate_max)
                     .y_axis_formatter(move |v, _| {
                         if v.value < 1e-9 { String::new() } else { format_cost(v.value) }
                     })
-                    .show_axes([true, true])
-                    .show_grid(true)
-                    .x_axis_formatter(time_x_fmt);
+                    .show_axes([is_time, true])
+                    .show_grid(true);
+                if is_time { p = p.x_axis_formatter(time_x_fmt); }
                 if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                     p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
                 }
                 p.show(ui, |pui| {
-                    pui.line(egui_plot::Line::new(wd.rate_pts.clone())
-                        .color(Palette::OUTPUT_TINT).width(1.5).fill(0.0));
-                    update_hover(pui);
+                    pui.line(egui_plot::Line::new(cd.cost_rate_pts.clone())
+                        .color(Palette::OUTPUT_TINT).width(1.0)
+                        .style(egui_plot::LineStyle::Dashed { length: 4.0 }));
+                    pui.points(egui_plot::Points::new(cd.cost_rate_pts.clone())
+                        .color(Palette::OUTPUT_TINT).radius(2.0));
+                    update_hover_src(pui, HoverSource::WeeklyRate);
                 });
             });
         });
