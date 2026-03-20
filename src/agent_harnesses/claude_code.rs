@@ -67,6 +67,22 @@ impl Event {
     }
 }
 
+/// Per-subagent data.
+#[derive(Debug, Clone)]
+pub struct SubagentData {
+    pub agent_id: String,
+    pub agent_type: String,
+    pub description: String,
+    pub model: String,
+    pub total_cost_usd: f64,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub api_call_count: u32,
+    pub tool_counts: HashMap<String, u32>,
+    pub first_ts: u64,
+    pub last_ts: u64,
+}
+
 /// Per-session data.
 #[derive(Debug, Clone)]
 pub struct SessionData {
@@ -88,6 +104,7 @@ pub struct SessionData {
     pub last_ts: u64,    // unix seconds of last ApiCall  (0 if none)
     pub model: String,   // most recent model used
     pub last_input_tokens: u64, // input tokens of most recent API call (context fullness)
+    pub subagents: Vec<SubagentData>,
 }
 
 /// All data the HUD renders from.
@@ -156,6 +173,14 @@ struct ContentBlock {
     #[serde(rename = "type")]
     block_type: Option<String>,
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentMeta {
+    #[serde(rename = "agentType", default)]
+    agent_type: String,
+    #[serde(default)]
+    description: String,
 }
 
 struct TailState {
@@ -243,6 +268,96 @@ fn discover_all_jsonl() -> Vec<(String, String, String)> {
 fn jsonl_path_for_session(sf: &SessionFile) -> String {
     let project_dir = cwd_to_project_dir(&sf.cwd);
     format!("{}/.claude/projects/{}/{}.jsonl", home_dir(), project_dir, sf.session_id)
+}
+
+/// Discover subagent dir for a session JSONL path.
+/// Session JSONL is at `{projects}/{proj}/{sid}.jsonl`, subagents at `{projects}/{proj}/{sid}/subagents/`.
+fn subagents_dir_for_jsonl(jsonl_path: &str) -> String {
+    // Strip .jsonl extension to get session dir
+    let base = jsonl_path.strip_suffix(".jsonl").unwrap_or(jsonl_path);
+    format!("{}/subagents", base)
+}
+
+fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
+    let dir = subagents_dir_for_jsonl(jsonl_path);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+
+    let mut meta_files: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if name.ends_with(".meta.json") {
+            meta_files.push(name);
+        }
+    }
+
+    let mut subagents = Vec::new();
+    for meta_name in &meta_files {
+        let meta_path = format!("{}/{}", dir, meta_name);
+        let agent_id = meta_name.strip_suffix(".meta.json").unwrap_or("").to_string();
+        let jsonl_name = format!("{}.jsonl", agent_id);
+        let jsonl_path = format!("{}/{}", dir, jsonl_name);
+
+        let meta: AgentMeta = match std::fs::read_to_string(&meta_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Parse the subagent JSONL for cost/token data
+        let (events, _) = parse_jsonl_full(&jsonl_path);
+
+        let mut total_input_cost = 0.0;
+        let mut total_output_cost = 0.0;
+        let mut total_input = 0u64;
+        let mut total_output = 0u64;
+        let mut api_calls = 0u32;
+        let mut tool_counts: HashMap<String, u32> = HashMap::new();
+        let mut first_ts = 0u64;
+        let mut last_ts = 0u64;
+        let mut last_model = String::new();
+
+        for ev in &events {
+            match ev {
+                Event::ApiCall { input_tokens, output_tokens, cumulative_input_cost, cumulative_output_cost, timestamp_secs, model, .. } => {
+                    last_model = model.clone();
+                    total_input_cost = *cumulative_input_cost;
+                    total_output_cost = *cumulative_output_cost;
+                    total_input += input_tokens;
+                    total_output += output_tokens;
+                    api_calls += 1;
+                    if *timestamp_secs > 0 {
+                        if first_ts == 0 { first_ts = *timestamp_secs; }
+                        last_ts = *timestamp_secs;
+                    }
+                }
+                Event::ToolUse { name, .. } => {
+                    *tool_counts.entry(name.clone()).or_default() += 1;
+                }
+                Event::AgentSpawn { .. } => {}
+            }
+        }
+
+        subagents.push(SubagentData {
+            agent_id,
+            agent_type: meta.agent_type,
+            description: meta.description,
+            model: last_model,
+            total_cost_usd: total_input_cost + total_output_cost,
+            total_input,
+            total_output,
+            api_call_count: api_calls,
+            tool_counts,
+            first_ts,
+            last_ts,
+        });
+    }
+
+    // Sort by first_ts so they appear in spawn order
+    subagents.sort_by_key(|s| s.first_ts);
+    subagents
 }
 
 fn parse_jsonl_full(path: &str) -> (Vec<Event>, TailState) {
@@ -334,6 +449,7 @@ fn build_session_data(
     pid: i32,
     events: Vec<Event>,
     is_active: bool,
+    subagents: Vec<SubagentData>,
 ) -> SessionData {
     let mut total_input_cost = 0.0;
     let mut total_output_cost = 0.0;
@@ -388,6 +504,7 @@ fn build_session_data(
         last_ts,
         model: last_model,
         last_input_tokens,
+        subagents,
     }
 }
 
@@ -413,7 +530,11 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
                 if events.is_empty() { continue; }
 
                 let project = project_from_dir(proj_dir);
-                let sd = build_session_data(sid, &project, &project, 0, events, is_active);
+                let subs = discover_subagents(path);
+                if !subs.is_empty() {
+                    tracing::info!(session = %sid, count = subs.len(), "discovered subagents");
+                }
+                let sd = build_session_data(sid, &project, &project, 0, events, is_active, subs);
                 sessions.push(sd);
 
                 // Keep tail state for active sessions so we can append later
@@ -468,7 +589,8 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             let mut d = data.lock().unwrap();
             if let Some(existing) = d.sessions.iter_mut().find(|s| s.session_id == *sid) {
                 existing.events.extend(new_events);
-                // Recompute aggregates
+                // Recompute aggregates (re-discover subagents too, new ones may have spawned)
+                let subs = discover_subagents(&path);
                 *existing = build_session_data(
                     &existing.session_id,
                     &existing.cwd,
@@ -476,11 +598,13 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
                     existing.pid,
                     existing.events.clone(),
                     true,
+                    subs,
                 );
             } else {
                 // New active session not in history
                 let events = new_events;
-                let sd = build_session_data(sid, &short_name(&sf.cwd), &short_name(&sf.cwd), sf.pid, events, true);
+                let subs = discover_subagents(&path);
+                let sd = build_session_data(sid, &short_name(&sf.cwd), &short_name(&sf.cwd), sf.pid, events, true, subs);
                 d.sessions.insert(0, sd);
             }
         }
@@ -505,7 +629,8 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
                     let path = jsonl_path_for_session(sf);
                     let (events, ts) = parse_jsonl_full(&path);
                     tail_states.insert(sid.clone(), ts);
-                    all_sessions.push(build_session_data(sid, &short_name(&sf.cwd), &short_name(&sf.cwd), sf.pid, events, true));
+                    let subs = discover_subagents(&path);
+                    all_sessions.push(build_session_data(sid, &short_name(&sf.cwd), &short_name(&sf.cwd), sf.pid, events, true, subs));
                 }
             }
             if !all_sessions.is_empty() {

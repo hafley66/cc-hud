@@ -87,7 +87,7 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), small_mode_session: None, pre_small_window_size: None });
+    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -129,6 +129,8 @@ struct Hud {
     nav_view: Option<(f64, f64)>,
     /// Which cwd groups have their session list expanded.
     expanded_groups: HashSet<String>,
+    /// Which sessions have their subagent tree expanded.
+    expanded_sessions: HashSet<String>,
     /// When Some, show small mode for this session id
     small_mode_session: Option<String>,
     /// Saved window size from before entering small mode
@@ -442,6 +444,153 @@ fn panel_frame() -> egui::Frame {
         .stroke(egui::Stroke::new(0.5, Palette::SEPARATOR))
         .rounding(4.0)
         .inner_margin(egui::Margin::same(6.0))
+}
+
+// ---------------------------------------------------------------------------
+// Subagent tree rendering helper
+// ---------------------------------------------------------------------------
+
+/// Format duration between two epoch-second timestamps as compact string.
+fn format_duration_secs(first: u64, last: u64) -> String {
+    if first == 0 || last == 0 || last < first { return String::new(); }
+    let secs = last - first;
+    if secs < 60 { format!("{}s", secs) }
+    else if secs < 3600 { format!("{}m", secs / 60) }
+    else { format!("{:.1}h", secs as f64 / 3600.0) }
+}
+
+/// Render subagent toggle inline on parent row + expanded tree rows below.
+fn draw_subagent_tree(
+    ui: &egui::Ui,
+    inner: egui::Rect,
+    row_h: f32,
+    row_gap: f32,
+    timeline_w: f32,
+    row_idx: &mut usize,
+    parent_rect: egui::Rect,
+    indent: f32,
+    session: &agent_harnesses::claude_code::SessionData,
+    is_expanded: bool,
+    toggle_out: &mut Vec<String>,
+    gi: usize,
+    si: usize,
+) {
+    if session.subagents.is_empty() { return; }
+
+    // Inline toggle: right side of parent row, left of timeline area
+    let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
+    let agent_cost_sum: f64 = session.subagents.iter().map(|a| a.total_cost_usd).sum();
+    let tog_label = format!("{} {}ag {}", arrow, session.subagents.len(), format_cost(agent_cost_sum));
+
+    let tog_w = 110.0_f32;
+    let tog_rect = egui::Rect::from_min_size(
+        egui::pos2(parent_rect.right() - timeline_w - tog_w - 44.0, parent_rect.top()),
+        egui::vec2(tog_w, row_h),
+    );
+    let tog_resp = ui.interact(tog_rect, egui::Id::new(("agent_toggle", gi, si)), egui::Sense::click());
+    if tog_resp.clicked() {
+        toggle_out.push(session.session_id.clone());
+    }
+
+    if tog_resp.hovered() {
+        ui.painter().rect_filled(tog_rect, 2.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+    }
+
+    let tog_col = if is_expanded {
+        Palette::TEXT_BRIGHT
+    } else if tog_resp.hovered() {
+        egui::Color32::from_rgba_unmultiplied(200, 195, 180, 200)
+    } else {
+        Palette::TEXT_DIM
+    };
+    ui.painter().text(
+        egui::pos2(tog_rect.left() + 2.0, tog_rect.center().y),
+        egui::Align2::LEFT_CENTER, &tog_label,
+        egui::FontId::monospace(10.0), tog_col,
+    );
+
+    if !is_expanded { return; }
+
+    let tree_x = parent_rect.left() + indent + 6.0;
+    let text_x = tree_x + 14.0;
+    let tree_col = egui::Color32::from_rgba_unmultiplied(90, 85, 75, 140);
+    let name_col = egui::Color32::from_rgba_unmultiplied(200, 195, 180, 200);
+    let stat_col = egui::Color32::from_rgba_unmultiplied(140, 135, 120, 170);
+
+    for (ai, agent) in session.subagents.iter().enumerate() {
+        let a_top = inner.top() + *row_idx as f32 * (row_h + row_gap);
+        let a_rect = egui::Rect::from_min_size(
+            egui::pos2(inner.left(), a_top),
+            egui::vec2(inner.width(), row_h),
+        );
+
+        // Background
+        ui.painter().rect_filled(a_rect, 2.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 3));
+
+        // Tree connector
+        let is_last = ai == session.subagents.len() - 1;
+        let connector = if is_last { "\u{2514}" } else { "\u{251c}" };
+        ui.painter().text(
+            egui::pos2(tree_x, a_rect.center().y),
+            egui::Align2::CENTER_CENTER, connector,
+            egui::FontId::monospace(12.0), tree_col,
+        );
+
+        // Vertical tree line for non-last items
+        if !is_last {
+            ui.painter().line_segment(
+                [egui::pos2(tree_x, a_rect.bottom()), egui::pos2(tree_x, a_rect.bottom() + row_gap)],
+                egui::Stroke::new(1.0, tree_col),
+            );
+        }
+
+        // Agent type badge
+        let type_short = match agent.agent_type.as_str() {
+            "general-purpose" => "agent",
+            "Explore" => "explore",
+            "Plan" => "plan",
+            other => other,
+        };
+
+        // Description - allow more chars since text is bigger
+        let desc_trunc = if agent.description.len() > 40 {
+            format!("{}...", &agent.description[..37])
+        } else {
+            agent.description.clone()
+        };
+
+        // Name line: type + description
+        let name_font = egui::FontId::monospace(11.0);
+        let agent_label = format!("{} {}", type_short, desc_trunc);
+
+        // Clip text to avoid overlap with right-side stats
+        let text_clip = egui::Rect::from_min_max(
+            egui::pos2(text_x, a_rect.top()),
+            egui::pos2(a_rect.right() - timeline_w - 8.0, a_rect.bottom()),
+        );
+        let clip_painter = ui.painter().with_clip_rect(text_clip);
+        clip_painter.text(
+            egui::pos2(text_x, a_rect.center().y - row_h * 0.12),
+            egui::Align2::LEFT_CENTER, &agent_label,
+            name_font, name_col,
+        );
+
+        // Stats line: model + cost + duration
+        let model_short = short_model(&agent.model);
+        let duration = format_duration_secs(agent.first_ts, agent.last_ts);
+        let total_tok = format_tokens(agent.total_input + agent.total_output);
+        let stat_str = format!("{}  {}  {} tok  {}  {}calls", model_short, format_cost(agent.total_cost_usd), total_tok, duration, agent.api_call_count);
+        let stat_font = egui::FontId::monospace(9.0);
+        clip_painter.text(
+            egui::pos2(text_x, a_rect.center().y + row_h * 0.18),
+            egui::Align2::LEFT_CENTER, &stat_str,
+            stat_font, stat_col,
+        );
+
+        *row_idx += 1;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,7 +1189,7 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
 // Big dashboard layout
 // ---------------------------------------------------------------------------
 
-fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, hidden: &mut HashSet<String>, effective_hidden: &HashSet<String>, show_active_only: &mut bool, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>, small_mode_session: &mut Option<String>) {
+fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, hidden: &mut HashSet<String>, effective_hidden: &HashSet<String>, show_active_only: &mut bool, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>, expanded_sessions: &mut HashSet<String>, small_mode_session: &mut Option<String>) {
     let area = ui.available_rect_before_wrap();
     let pad = 8.0;
     let gap = 8.0;
@@ -1361,6 +1510,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let mut toggle_ids: Vec<String> = vec![];
     let mut group_toggle: Option<(String, Vec<String>)> = None; // (cwd, all member ids)
     let mut toggle_expand: Option<String> = None;
+    let mut toggle_session_agents: Vec<String> = vec![];
     let mut enter_small_mode: Option<String> = None;
     let legend_hl_id = egui::Id::new("legend_highlight");
     // Clear highlight each frame; legend hover will re-set it
@@ -1485,6 +1635,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             &[(s, sess_col)], effective_hidden, Some(eye_w));
 
                         row_idx += 1;
+
+                        // Subagent tree (toggle + rows)
+                        draw_subagent_tree(
+                            ui, inner, row_h, row_gap, timeline_w,
+                            &mut row_idx, row_rect, eye_w,
+                            s, expanded_sessions.contains(&s.session_id),
+                            &mut toggle_session_agents, gi, *si,
+                        );
                     }
                 } else {
                     // Group header row
@@ -1690,6 +1848,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 &[(s, sess_col)], effective_hidden, Some(16.0 + eye_w));
 
                             row_idx += 1;
+
+                            // Subagent tree (toggle + rows)
+                            draw_subagent_tree(
+                                ui, inner, row_h, row_gap, timeline_w,
+                                &mut row_idx, sub_rect, 16.0 + eye_w,
+                                s, expanded_sessions.contains(&s.session_id),
+                                &mut toggle_session_agents, gi, *si,
+                            );
                         }
                     }
                 }
@@ -1713,6 +1879,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             expanded_groups.remove(&cwd);
         } else {
             expanded_groups.insert(cwd);
+        }
+    }
+    // Apply session agent tree toggles
+    for sid in toggle_session_agents {
+        if expanded_sessions.contains(&sid) {
+            expanded_sessions.remove(&sid);
+        } else {
+            expanded_sessions.insert(sid);
         }
     }
     // Apply group toggle: if any member is visible, hide all; otherwise show all
@@ -2411,7 +2585,7 @@ impl EguiOverlay for Hud {
                     if let Some(sid) = self.small_mode_session.clone() {
                         draw_small(ui, &data, &cd, &usage, &sid, &self.hidden_sessions, &mut self.show_active_only, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.small_mode_session);
                     } else {
-                        draw_big(ui, &data, &cd, &usage, &mut self.hidden_sessions, &effective_hidden, &mut self.show_active_only, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups, &mut self.small_mode_session);
+                        draw_big(ui, &data, &cd, &usage, &mut self.hidden_sessions, &effective_hidden, &mut self.show_active_only, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups, &mut self.expanded_sessions, &mut self.small_mode_session);
                     }
                 } else {
                     draw_strip(ui, &data, &cd);
