@@ -87,7 +87,7 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), small_mode_session: None });
+    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, hidden_sessions: HashSet::new(), show_active_only: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), small_mode_session: None, pre_small_window_size: None });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -131,6 +131,8 @@ struct Hud {
     expanded_groups: HashSet<String>,
     /// When Some, show small mode for this session id
     small_mode_session: Option<String>,
+    /// Saved window size from before entering small mode
+    pre_small_window_size: Option<(i32, i32)>,
 }
 
 // --- colors ---
@@ -174,6 +176,16 @@ fn format_cost(usd: f64) -> String {
     else if usd < 0.01 { format!("${:.4}", usd) }
     else if usd < 1.0 { format!("${:.3}", usd) }
     else { format!("${:.2}", usd) }
+}
+
+/// Format epoch seconds as "YYYY/MM/DD HH:MM" in local time (24h).
+fn format_epoch_local(epoch_secs: u64) -> String {
+    let ts = epoch_secs as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&ts, &mut tm); }
+    format!("{:04}/{:02}/{:02} {:02}:{:02}",
+        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+        tm.tm_hour, tm.tm_min)
 }
 
 fn short_model(model: &str) -> String {
@@ -600,117 +612,272 @@ fn draw_legend_row(
 fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage::UsageData, session_id: &str, hidden: &HashSet<String>, show_active_only: &mut bool, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, small_mode_session: &mut Option<String>) {
     let area = ui.available_rect_before_wrap();
     let pad = 4.0;
-    let gap = 4.0;
+    let gap = 3.0;
 
     let w = area.width() - pad * 2.0;
     let h = area.height() - pad * 2.0;
     let x0 = area.left() + pad;
     let y0 = area.top() + pad;
-
-    // Row 0: Controls + Time Navigator (~18px)
-    let controls_h = 16.0_f32;
-    let controls_rect = egui::Rect::from_min_size(egui::pos2(x0, y0), egui::vec2(w, controls_h));
-
-    // Row 1: Session Legend Row (~42px)
-    let legend_h = 42.0_f32;
-    let legend_rect = egui::Rect::from_min_size(
-        egui::pos2(x0, y0 + controls_h + gap),
-        egui::vec2(w, legend_h),
-    );
-
-    // Row 2: Three Mini Charts (~80px)
-    let charts_h = h - controls_h - gap - legend_h - gap;
-    let charts_y = y0 + controls_h + gap + legend_h + gap;
-
-    let chart_w = (w - gap * 2.0) / 3.0;
-    let cost_rect = egui::Rect::from_min_size(egui::pos2(x0, charts_y), egui::vec2(chart_w, charts_h));
-    let tok_rect = egui::Rect::from_min_size(egui::pos2(x0 + chart_w + gap, charts_y), egui::vec2(chart_w, charts_h));
-    let usage_rect = egui::Rect::from_min_size(egui::pos2(x0 + chart_w * 2.0 + gap * 2.0, charts_y), egui::vec2(chart_w, charts_h));
+    let is_time = *time_axis;
 
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let now_min = now_secs as f64 / 60.0;
     let week_start_secs = now_secs.saturating_sub(7 * 24 * 3600);
     let week_span = (now_secs - week_start_secs).max(1) as f32;
+
+    // Responsive layout: sections collapse as height shrinks
+    let controls_h = 14.0_f32;
+    let nav_h_full = 10.0_f32;
+    let legend_h_full = 32.0_f32;
+    let min_chart_h = 20.0_f32;
+
+    // Budget after controls
+    let budget = h - controls_h;
+    let show_nav = budget >= nav_h_full + gap;
+    let nav_budget = if show_nav { nav_h_full + gap } else { 0.0 };
+    let show_legend = budget - nav_budget >= legend_h_full + gap;
+    let legend_budget = if show_legend { legend_h_full + gap } else { 0.0 };
+    let charts_budget = budget - nav_budget - legend_budget;
+    let show_charts = charts_budget >= min_chart_h;
+
+    let controls_rect = egui::Rect::from_min_size(egui::pos2(x0, y0), egui::vec2(w, controls_h));
+
+    let nav_y = y0 + controls_h + gap;
+    let nav_rect = egui::Rect::from_min_size(egui::pos2(x0, nav_y), egui::vec2(w, nav_h_full));
+
+    let legend_y = nav_y + if show_nav { nav_h_full + gap } else { 0.0 };
+    let legend_rect = egui::Rect::from_min_size(egui::pos2(x0, legend_y), egui::vec2(w, legend_h_full));
+
+    let charts_y = legend_y + if show_legend { legend_h_full + gap } else { 0.0 };
+    let charts_h = if show_charts { charts_budget } else { 0.0 };
+    let chart_w = (w - gap) / 2.0;
+    let cost_rect = egui::Rect::from_min_size(egui::pos2(x0, charts_y), egui::vec2(chart_w, charts_h));
+    let tok_rect = egui::Rect::from_min_size(egui::pos2(x0 + chart_w + gap, charts_y), egui::vec2(chart_w, charts_h));
+
     let eye_w = 20.0_f32;
     let timeline_w = 60.0_f32;
-    let is_time = *time_axis;
 
     // Find the selected session
     let selected_session = data.sessions.iter().find(|s| s.session_id == session_id);
     let Some(session) = selected_session else { return; };
 
-    // --- Row 0: Controls + Time Navigator ---
+    // --- Row 0: Controls + usage bars ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
         panel_frame().show(ui, |ui| {
             let inner = ui.available_rect_before_wrap();
             let cy = inner.center().y;
             let painter = ui.painter();
+            let btn_h = controls_h - 2.0;
 
-            // [▲ back] button
-            let btn_label = "▲ back";
-            let btn_size = egui::vec2(50.0, controls_h - 3.0);
-            let btn_rect = egui::Rect::from_min_size(egui::pos2(inner.left() + 2.0, cy - btn_size.y / 2.0), btn_size);
+            // [▲ back]
+            let btn_size = egui::vec2(46.0, btn_h);
+            let btn_rect = egui::Rect::from_min_size(egui::pos2(inner.left() + 2.0, cy - btn_h / 2.0), btn_size);
             let btn_resp = ui.interact(btn_rect, egui::Id::new("small_back"), egui::Sense::click());
             if btn_resp.clicked() { *small_mode_session = None; }
             if btn_resp.hovered() {
                 painter.rect_filled(btn_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
             }
             painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER,
-                btn_label, egui::FontId::monospace(9.0), Palette::TEXT_DIM);
+                "▲ back", egui::FontId::monospace(8.0), Palette::TEXT_DIM);
 
             // "active only" toggle
             let ao_label = if *show_active_only { "● active" } else { "○ active" };
             let ao_col = if *show_active_only { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let ao_rect = egui::Rect::from_min_size(egui::pos2(btn_rect.right() + 6.0, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
+            let ao_rect = egui::Rect::from_min_size(egui::pos2(btn_rect.right() + 4.0, cy - btn_h / 2.0), egui::vec2(50.0, btn_h));
             let ao_resp = ui.interact(ao_rect, egui::Id::new("small_active_only"), egui::Sense::click());
             if ao_resp.clicked() { *show_active_only = !*show_active_only; }
             if ao_resp.hovered() {
                 painter.rect_filled(ao_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
             }
             painter.text(ao_rect.center(), egui::Align2::CENTER_CENTER,
-                ao_label, egui::FontId::monospace(9.0), ao_col);
+                ao_label, egui::FontId::monospace(8.0), ao_col);
 
             // "time" toggle
             let ta_label = if *time_axis { "● time" } else { "○ time" };
             let ta_col = if *time_axis { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let ta_rect = egui::Rect::from_min_size(egui::pos2(ao_rect.right() + 6.0, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
+            let ta_rect = egui::Rect::from_min_size(egui::pos2(ao_rect.right() + 4.0, cy - btn_h / 2.0), egui::vec2(46.0, btn_h));
             let ta_resp = ui.interact(ta_rect, egui::Id::new("small_time_axis"), egui::Sense::click());
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
-                if *time_axis {
-                    *autofit = true;
-                    *nav_view = None;
-                }
+                if *time_axis { *autofit = true; *nav_view = None; }
             }
             if ta_resp.hovered() {
                 painter.rect_filled(ta_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
             }
             painter.text(ta_rect.center(), egui::Align2::CENTER_CENTER,
-                ta_label, egui::FontId::monospace(9.0), ta_col);
+                ta_label, egui::FontId::monospace(8.0), ta_col);
+
+            // "fit" button (time mode only)
+            if *time_axis {
+                let fit_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 4.0, cy - btn_h / 2.0), egui::vec2(30.0, btn_h));
+                let fit_resp = ui.interact(fit_rect, egui::Id::new("small_fit"), egui::Sense::click());
+                if fit_resp.clicked() { *autofit = true; }
+                if fit_resp.hovered() {
+                    painter.rect_filled(fit_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                }
+                painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER,
+                    "fit", egui::FontId::monospace(8.0), Palette::TEXT_DIM);
+            }
+
+            // Usage bars at right side of controls
+            if let Some(latest) = &usage.latest {
+                let bar_w = 70.0_f32;
+                let bar_h = 4.0_f32;
+                let label_w = 46.0_f32; // fixed width for "5h  9%" / "7d 36%"
+                let bar_x = inner.right() - bar_w - 4.0;
+                let label_x = bar_x - 2.0;
+                let usage_x = label_x - label_w - 2.0;
+
+                // "usage" label
+                painter.text(egui::pos2(usage_x, cy), egui::Align2::RIGHT_CENTER,
+                    "usage", egui::FontId::monospace(7.0), Palette::TEXT_DIM);
+
+                // 5h bar
+                let fill_5h = (latest.five_hour as f32 / 100.0).clamp(0.0, 1.0);
+                let bar_5h = egui::Rect::from_min_size(egui::pos2(bar_x, cy - bar_h - 1.0), egui::vec2(bar_w, bar_h));
+                painter.rect_filled(bar_5h, 1.0, egui::Color32::from_rgba_unmultiplied(60, 55, 45, 100));
+                painter.rect_filled(egui::Rect::from_min_size(bar_5h.left_top(), egui::vec2(bar_w * fill_5h, bar_h)),
+                    1.0, egui::Color32::from_rgb(220, 160, 60));
+                painter.text(egui::pos2(label_x, bar_5h.center().y), egui::Align2::RIGHT_CENTER,
+                    &format!("5h {:>3.0}%", latest.five_hour), egui::FontId::monospace(7.0), egui::Color32::from_rgb(220, 160, 60));
+
+                // 7d bar
+                let fill_7d = (latest.seven_day as f32 / 100.0).clamp(0.0, 1.0);
+                let bar_7d = egui::Rect::from_min_size(egui::pos2(bar_x, cy + 1.0), egui::vec2(bar_w, bar_h));
+                painter.rect_filled(bar_7d, 1.0, egui::Color32::from_rgba_unmultiplied(60, 55, 45, 100));
+                painter.rect_filled(egui::Rect::from_min_size(bar_7d.left_top(), egui::vec2(bar_w * fill_7d, bar_h)),
+                    1.0, egui::Color32::from_rgb(100, 160, 220));
+                painter.text(egui::pos2(label_x, bar_7d.center().y), egui::Align2::RIGHT_CENTER,
+                    &format!("7d {:>3.0}%", latest.seven_day), egui::FontId::monospace(7.0), egui::Color32::from_rgb(100, 160, 220));
+            }
         });
     });
 
-    // --- Row 1: Session Legend Row ---
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            let sess_col = egui::Color32::from_rgb(190, 120, 20);
-            let name_col = Palette::TEXT_BRIGHT;
-            let dim_col = Palette::TEXT_DIM;
+    // --- Row 1: Time Navigator ---
+    let mut all_x_min = f64::MAX;
+    let mut all_x_max = f64::MIN;
+    let mut nav_dots: Vec<(f64, egui::Color32)> = vec![];
+    let sess_col = egui::Color32::from_rgb(190, 120, 20);
+    for ev in &session.events {
+        if let Event::ApiCall { timestamp_secs, .. } = ev {
+            if *timestamp_secs > 0 {
+                let x = *timestamp_secs as f64 / 60.0;
+                all_x_min = all_x_min.min(x);
+                all_x_max = all_x_max.max(x);
+                nav_dots.push((x, sess_col));
+            }
+        }
+    }
+    if all_x_min > all_x_max { all_x_min = now_min - 60.0; all_x_max = now_min; }
+    let data_span = (all_x_max - all_x_min).max(1.0);
+    let full_min = all_x_min - data_span * 0.02;
+    let full_max = all_x_max + data_span * 0.02;
+    let full_span = full_max - full_min;
 
-            let inner = ui.available_rect_before_wrap();
-            draw_legend_row(ui, inner, legend_h, timeline_w, week_start_secs, week_span,
-                &session.project, sess_col, name_col, dim_col,
-                session.is_active, hidden.contains(&session.session_id),
-                session.last_input_tokens, session.total_cost_usd, &session.model,
-                None,
-                &[(session, sess_col)], hidden, Some(eye_w));
+    // Autofit
+    if *autofit {
+        if session.first_ts > 0 {
+            let fit_min = session.first_ts as f64 / 60.0;
+            let fit_max = session.last_ts as f64 / 60.0;
+            let span = (fit_max - fit_min).max(1.0);
+            *nav_view = Some((fit_min - span * 0.02, fit_max + span * 0.02));
+        }
+        *autofit = false;
+    }
+
+    if show_nav {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
+            let bar = ui.available_rect_before_wrap();
+            let resp = ui.interact(bar, egui::Id::new("small_nav_bar"), egui::Sense::click_and_drag());
+            let painter = ui.painter();
+
+            painter.rect_filled(bar, 1.0, egui::Color32::from_rgba_unmultiplied(18, 15, 10, 200));
+
+            let bar_w = bar.width();
+            let cy = bar.center().y;
+            for (x, col) in &nav_dots {
+                let frac = ((x - full_min) / full_span) as f32;
+                let px = bar.left() + frac * bar_w;
+                painter.circle_filled(egui::pos2(px, cy), 1.0, *col);
+            }
+
+            if is_time {
+                let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
+                let v0 = ((vmin - full_min) / full_span) as f32;
+                let v1 = ((vmax - full_min) / full_span) as f32;
+                let vp_left  = bar.left() + v0.clamp(0.0, 1.0) * bar_w;
+                let vp_right = bar.left() + v1.clamp(0.0, 1.0) * bar_w;
+
+                if vp_left > bar.left() {
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(bar.left_top(), egui::pos2(vp_left, bar.bottom())),
+                        0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+                }
+                if vp_right < bar.right() {
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(egui::pos2(vp_right, bar.top()), bar.right_bottom()),
+                        0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+                }
+                painter.rect_stroke(
+                    egui::Rect::from_min_max(egui::pos2(vp_left, bar.top()), egui::pos2(vp_right, bar.bottom())),
+                    1.0, egui::Stroke::new(0.5, Palette::TEXT_DIM));
+
+                // Drag to pan
+                if resp.dragged() {
+                    let dx_px = resp.drag_delta().x;
+                    let dx_min = (dx_px / bar_w) as f64 * full_span;
+                    let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
+                    let vspan = vmax - vmin;
+                    vmin += dx_min; vmax += dx_min;
+                    if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
+                    if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+                    *nav_view = Some((vmin, vmax));
+                }
+
+                // Scroll to zoom
+                let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
+                if resp.hovered() && scroll.abs() > 0.1 {
+                    let zoom_factor = 1.0 - (scroll as f64 * 0.003);
+                    let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
+                    let vspan = vmax - vmin;
+                    let mouse_frac = ui.input(|i| i.pointer.hover_pos())
+                        .map(|p| ((p.x - bar.left()) / bar_w).clamp(0.0, 1.0) as f64)
+                        .unwrap_or(0.5);
+                    let anchor = full_min + mouse_frac * full_span;
+                    let t = ((anchor - vmin) / vspan).clamp(0.0, 1.0);
+                    let new_span = (vspan * zoom_factor).clamp(1.0, full_span);
+                    let new_min = (anchor - t * new_span).max(full_min);
+                    let new_max = (new_min + new_span).min(full_max);
+                    let new_min = (new_max - new_span).max(full_min);
+                    *nav_view = Some((new_min, new_max));
+                }
+            }
         });
-    });
+    }
 
-    // --- Row 2: Three Mini Charts ---
-    // Build data for both charts from session events
+    // --- Row 2: Legend ---
+    if show_legend {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
+            panel_frame().show(ui, |ui| {
+                let name_col = Palette::TEXT_BRIGHT;
+                let dim_col = Palette::TEXT_DIM;
+
+                let inner = ui.available_rect_before_wrap();
+                draw_legend_row(ui, inner, legend_h_full, timeline_w, week_start_secs, week_span,
+                    &session.project, sess_col, name_col, dim_col,
+                    session.is_active, hidden.contains(&session.session_id),
+                    session.last_input_tokens, session.total_cost_usd, &session.model,
+                    None,
+                    &[(session, sess_col)], hidden, Some(eye_w));
+            });
+        });
+    }
+
+    // --- Row 3: Two charts (only if space) ---
+    if !show_charts { return; }
     struct TurnData { x: f64, cost: f64, total_cost: f64, toks: u64, total_toks: u64, idx: usize }
     let mut turns: Vec<TurnData> = vec![];
     let mut cum_cost = 0.0f64;
@@ -731,8 +898,9 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     let cursor_id = egui::Id::new("small_charts_cursor");
     let bar_w = if is_time { 0.5 } else { 0.8 };
     let line_style = if is_time { egui_plot::LineStyle::Dashed { length: 8.0 } } else { egui_plot::LineStyle::Solid };
+    let hovered_data_x = std::cell::Cell::new(None::<f64>);
 
-    // --- Cost chart ---
+    // Cost chart
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(cost_rect), |ui| {
         panel_frame().show(ui, |ui| {
             let cost_bars: Vec<Bar> = turns.iter()
@@ -756,36 +924,24 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 }
             });
 
-            // Current value at top-right
             ui.painter().text(
                 egui::pos2(cost_rect.right() - 4.0, cost_rect.top() + 2.0),
                 egui::Align2::RIGHT_TOP, &format_cost(cum_cost),
                 egui::FontId::monospace(10.0), Palette::TEXT_DIM);
 
-            // Pinned tooltip at top-left (solid bg)
+            // Capture hover x from this chart
             if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                 if cost_rect.contains(hover_pos) {
-                    let plot_x = plot_resp.response.hover_pos()
-                        .map(|p| plot_resp.transform.value_from_position(p).x);
-                    if let Some(px) = plot_x {
-                        if let Some(t) = turns.iter().min_by(|a, b|
-                            (a.x - px).abs().partial_cmp(&(b.x - px).abs()).unwrap()) {
-                            let tip = format!("t{}  {}  total {}", t.idx + 1, format_cost(t.cost), format_cost(t.total_cost));
-                            let font = egui::FontId::monospace(9.0);
-                            let galley = ui.painter().layout_no_wrap(tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
-                            let tip_rect = egui::Rect::from_min_size(
-                                egui::pos2(cost_rect.left() + 2.0, cost_rect.top() + 2.0),
-                                galley.size() + egui::vec2(8.0, 4.0));
-                            ui.painter().rect_filled(tip_rect, 2.0, egui::Color32::from_rgb(20, 18, 14));
-                            ui.painter().text(tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, &tip, font, Palette::TEXT_BRIGHT);
-                        }
+                    if let Some(px) = plot_resp.response.hover_pos()
+                        .map(|p| plot_resp.transform.value_from_position(p).x) {
+                        hovered_data_x.set(Some(px));
                     }
                 }
             }
         });
     });
 
-    // --- Token chart ---
+    // Token chart
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tok_rect), |ui| {
         panel_frame().show(ui, |ui| {
             let tok_bars: Vec<Bar> = turns.iter()
@@ -809,87 +965,73 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 }
             });
 
-            // Current value at top-right
             ui.painter().text(
                 egui::pos2(tok_rect.right() - 4.0, tok_rect.top() + 2.0),
                 egui::Align2::RIGHT_TOP, &format_tokens(cum_toks),
                 egui::FontId::monospace(10.0), Palette::TEXT_DIM);
 
-            // Pinned tooltip at top-left (solid bg)
+            // Capture hover x from this chart
             if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                 if tok_rect.contains(hover_pos) {
-                    let plot_x = plot_resp.response.hover_pos()
-                        .map(|p| plot_resp.transform.value_from_position(p).x);
-                    if let Some(px) = plot_x {
-                        if let Some(t) = turns.iter().min_by(|a, b|
-                            (a.x - px).abs().partial_cmp(&(b.x - px).abs()).unwrap()) {
-                            let tip = format!("t{}  {}  total {}", t.idx + 1, format_tokens(t.toks), format_tokens(t.total_toks));
-                            let font = egui::FontId::monospace(9.0);
-                            let galley = ui.painter().layout_no_wrap(tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
-                            let tip_rect = egui::Rect::from_min_size(
-                                egui::pos2(tok_rect.left() + 2.0, tok_rect.top() + 2.0),
-                                galley.size() + egui::vec2(8.0, 4.0));
-                            ui.painter().rect_filled(tip_rect, 2.0, egui::Color32::from_rgb(20, 18, 14));
-                            ui.painter().text(tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP, &tip, font, Palette::TEXT_BRIGHT);
-                        }
+                    if let Some(px) = plot_resp.response.hover_pos()
+                        .map(|p| plot_resp.transform.value_from_position(p).x) {
+                        hovered_data_x.set(Some(px));
                     }
                 }
             }
         });
     });
 
-    // --- Usage: vertical thermometer bars (0-100% fill, overlapping, largest behind) ---
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(usage_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            let inner = ui.available_rect_before_wrap();
-            let painter = ui.painter();
+    // Both tooltips + navigator cursor (triggered by hovering either chart)
+    if let Some(data_x) = hovered_data_x.get() {
+        if let Some(t) = turns.iter().min_by(|a, b|
+            (a.x - data_x).abs().partial_cmp(&(b.x - data_x).abs()).unwrap())
+        {
+            let font = egui::FontId::monospace(9.0);
+            let tip_bg = egui::Color32::from_rgb(20, 18, 14);
 
-            if let Some(latest) = &usage.latest {
-                let mut bars: Vec<(&str, f64, egui::Color32)> = vec![
-                    ("5h", latest.five_hour, egui::Color32::from_rgb(220, 160, 60)),
-                    ("7d", latest.seven_day, egui::Color32::from_rgb(100, 160, 220)),
-                ];
-                // Sort largest first (drawn first = behind)
-                bars.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            // Cost tooltip
+            let cost_tip = format!("t{}  {}  total {}", t.idx + 1, format_cost(t.cost), format_cost(t.total_cost));
+            let cost_galley = ui.painter().layout_no_wrap(cost_tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
+            let cost_tip_rect = egui::Rect::from_min_size(
+                egui::pos2(cost_rect.left() + 2.0, cost_rect.top() + 2.0),
+                cost_galley.size() + egui::vec2(8.0, 4.0));
+            ui.painter().rect_filled(cost_tip_rect, 2.0, tip_bg);
+            ui.painter().text(cost_tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP,
+                &cost_tip, font.clone(), Palette::TEXT_BRIGHT);
 
-                let bar_pad = 4.0;
-                let bar_w = (inner.width() - bar_pad * 2.0) * 0.6;
-                let bar_max_h = inner.height() - bar_pad * 2.0;
-                let bar_bottom = inner.bottom() - bar_pad;
-                for (i, (label, pct, col)) in bars.iter().enumerate() {
-                    let fill_h = ((*pct as f32) / 100.0).clamp(0.0, 1.0) * bar_max_h;
-                    // Offset each bar slightly so they overlap but are distinguishable
-                    let x_offset = i as f32 * 8.0;
-                    let bw = bar_w - i as f32 * 12.0; // inner bars narrower
-                    let bar_left = inner.left() + bar_pad + x_offset + (bar_w - bw) * 0.5;
+            // Token tooltip
+            let tok_tip = format!("t{}  {}  total {}", t.idx + 1, format_tokens(t.toks), format_tokens(t.total_toks));
+            let tok_galley = ui.painter().layout_no_wrap(tok_tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
+            let tok_tip_rect = egui::Rect::from_min_size(
+                egui::pos2(tok_rect.left() + 2.0, tok_rect.top() + 2.0),
+                tok_galley.size() + egui::vec2(8.0, 4.0));
+            ui.painter().rect_filled(tok_tip_rect, 2.0, tip_bg);
+            ui.painter().text(tok_tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP,
+                &tok_tip, font, Palette::TEXT_BRIGHT);
+        }
 
-                    let fill_rect = egui::Rect::from_min_max(
-                        egui::pos2(bar_left, bar_bottom - fill_h),
-                        egui::pos2(bar_left + bw, bar_bottom),
-                    );
-                    painter.rect_filled(fill_rect, 2.0, *col);
+        // Cursor line on navigator
+        let frac = ((data_x - full_min) / full_span) as f32;
+        let px = nav_rect.left() + frac * nav_rect.width();
+        if px >= nav_rect.left() && px <= nav_rect.right() {
+            ui.painter().line_segment(
+                [egui::pos2(px, nav_rect.top()), egui::pos2(px, nav_rect.bottom())],
+                egui::Stroke::new(1.0, Palette::TEXT_BRIGHT));
 
-                    // Label inside bar at top-left
-                    if fill_h > 14.0 {
-                        painter.text(
-                            egui::pos2(bar_left + 3.0, bar_bottom - fill_h + 2.0),
-                            egui::Align2::LEFT_TOP,
-                            &format!("{} {:.0}%", label, pct),
-                            egui::FontId::monospace(9.0),
-                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
-                        );
-                    }
-                }
-
-                // 100% reference line at top
-                painter.line_segment(
-                    [egui::pos2(inner.left() + bar_pad, inner.top() + bar_pad),
-                     egui::pos2(inner.left() + bar_pad + bar_w, inner.top() + bar_pad)],
-                    egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(200, 60, 60, 80)),
-                );
+            // Timestamp label under cursor line
+            if is_time {
+                let epoch_secs = (data_x * 60.0) as u64;
+                let label = format_epoch_local(epoch_secs);
+                let font = egui::FontId::monospace(7.0);
+                let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), Palette::TEXT_DIM);
+                let label_w = galley.size().x;
+                let label_x = px.clamp(nav_rect.left() + label_w * 0.5 + 1.0, nav_rect.right() - label_w * 0.5 - 1.0);
+                ui.painter().text(egui::pos2(label_x, nav_rect.bottom() + 1.0),
+                    egui::Align2::CENTER_TOP, &label, font, Palette::TEXT_DIM);
             }
-        });
-    });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,8 +1468,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         if btn_resp.hovered() {
                             ui.painter().rect_filled(btn_rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20));
                         }
-                        ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "→",
-                            egui::FontId::monospace(16.0), Palette::TEXT_DIM);
+                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y - 4.0),
+                            egui::Align2::CENTER_CENTER, "→",
+                            egui::FontId::monospace(18.0), Palette::TEXT_DIM);
+                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y + 10.0),
+                            egui::Align2::CENTER_CENTER, "detail",
+                            egui::FontId::monospace(7.0), Palette::TEXT_DIM);
 
                         draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
                             &s.project, sess_col, name_col, dim_col,
@@ -1445,8 +1591,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         if btn_resp.hovered() {
                             ui.painter().rect_filled(btn_rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20));
                         }
-                        ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "→",
-                            egui::FontId::monospace(16.0), Palette::TEXT_DIM);
+                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y - 4.0),
+                            egui::Align2::CENTER_CENTER, "→",
+                            egui::FontId::monospace(18.0), Palette::TEXT_DIM);
+                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y + 10.0),
+                            egui::Align2::CENTER_CENTER, "detail",
+                            egui::FontId::monospace(7.0), Palette::TEXT_DIM);
                     }
 
                     draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
@@ -1515,8 +1665,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             if btn_resp.hovered() {
                                 ui.painter().rect_filled(btn_rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20));
                             }
-                            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "→",
-                                egui::FontId::monospace(16.0), Palette::TEXT_DIM);
+                            ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y - 4.0),
+                                egui::Align2::CENTER_CENTER, "→",
+                                egui::FontId::monospace(18.0), Palette::TEXT_DIM);
+                            ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y + 10.0),
+                                egui::Align2::CENTER_CENTER, "detail",
+                                egui::FontId::monospace(7.0), Palette::TEXT_DIM);
 
                             // Session label: short id + active marker
                             let sid_short = if s.session_id.len() > 8 { &s.session_id[..8] } else { &s.session_id };
@@ -1730,88 +1884,6 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 });
         });
     });
-
-    // --- floating hover tooltip (all sessions, context-aware) ---
-    let hover_state: Option<HoverState> = ui.ctx().data(|d| d.get_temp(hover_id));
-    if let Some(hs) = hover_state {
-        let hx = hs.x;
-        if let Some(cursor) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-            let mut entries: Vec<(String, String)> = vec![];
-            for (name, _, turns) in &cd.session_turns {
-                let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
-                    (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
-                });
-                if let Some((idx, t)) = nearest {
-                    let snap = if turns.len() > 1 {
-                        let span = turns.last().unwrap().x - turns.first().unwrap().x;
-                        (span / turns.len() as f64).max(0.5)
-                    } else { 1.0 };
-                    if (t.x - hx).abs() <= snap {
-                        let detail = match hs.source {
-                            HoverSource::Cost => format!(
-                                "  t{} [{}] ctx {}  gen {}  (+{})",
-                                idx + 1, t.model_short,
-                                format_cost(t.in_cost), format_cost(t.out_cost),
-                                format_cost(t.cost_change),
-                            ),
-                            HoverSource::TotalCost => format!(
-                                "  t{} total {}  (+{})",
-                                idx + 1,
-                                format_cost(t.total_cost),
-                                format_cost(t.cost_change),
-                            ),
-                            HoverSource::Tokens => format!(
-                                "  t{} [{}] in {}  out {}",
-                                idx + 1, t.model_short,
-                                format_tokens(t.in_tok), format_tokens(t.out_tok),
-                            ),
-                            HoverSource::TotalTokens => format!(
-                                "  t{} total in {}  out {}",
-                                idx + 1,
-                                format_tokens(t.total_in_tok), format_tokens(t.total_out_tok),
-                            ),
-                            HoverSource::WeeklyCost | HoverSource::WeeklyRate => format!(
-                                "  t{} [{}] +{}  total {}",
-                                idx + 1, t.model_short,
-                                format_cost(t.cost_change),
-                                format_cost(t.total_cost),
-                            ),
-                        };
-                        entries.push((name.clone(), detail));
-                    }
-                }
-            }
-            if !entries.is_empty() {
-                let win_rect = ui.ctx().screen_rect();
-                let row_h = 15.0_f32;
-                let tip_h = row_h * (1.0 + entries.len() as f32 * 2.0) + 16.0;
-                let mut tip_pos = cursor + egui::vec2(14.0, -tip_h - 8.0);
-                tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
-
-                egui::Area::new(egui::Id::new("hud_float_tip"))
-                    .fixed_pos(tip_pos)
-                    .order(egui::Order::Tooltip)
-                    .show(ui.ctx(), |ui| {
-                        egui::Frame::none()
-                            .fill(egui::Color32::from_rgba_premultiplied(20, 18, 14, 240))
-                            .stroke(egui::Stroke::new(0.5, Palette::SEPARATOR))
-                            .rounding(5.0)
-                            .inner_margin(egui::Margin::same(8.0))
-                            .show(ui, |ui| {
-                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                                for (name, data) in &entries {
-                                    ui.add(egui::Label::new(
-                                        egui::RichText::new(name).monospace().size(12.0).color(Palette::TEXT_BRIGHT)
-                                    ));
-                                    ui.add(egui::Label::new(
-                                        egui::RichText::new(data).monospace().size(11.0).color(Palette::TEXT_DIM)
-                                    ));
-                                }
-                            });
-                    });
-            }
-        }
-    }
 
     // --- usage chart (5h + 7d utilization over time) ---
     // Clear session hover tooltip when pointer is over usage chart
@@ -2036,6 +2108,89 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             });
         });
     }
+
+    // --- floating hover tooltip (all sessions, context-aware) ---
+    // Placed after all charts so hover state from bottom charts is available same-frame.
+    let hover_state: Option<HoverState> = ui.ctx().data(|d| d.get_temp(hover_id));
+    if let Some(hs) = hover_state {
+        let hx = hs.x;
+        if let Some(cursor) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+            let mut entries: Vec<(String, String)> = vec![];
+            for (name, _, turns) in &cd.session_turns {
+                let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
+                    (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
+                });
+                if let Some((idx, t)) = nearest {
+                    let snap = if turns.len() > 1 {
+                        let span = turns.last().unwrap().x - turns.first().unwrap().x;
+                        (span / turns.len() as f64).max(0.5)
+                    } else { 1.0 };
+                    if (t.x - hx).abs() <= snap {
+                        let detail = match hs.source {
+                            HoverSource::Cost => format!(
+                                "  t{} [{}] ctx {}  gen {}  (+{})",
+                                idx + 1, t.model_short,
+                                format_cost(t.in_cost), format_cost(t.out_cost),
+                                format_cost(t.cost_change),
+                            ),
+                            HoverSource::TotalCost => format!(
+                                "  t{} total {}  (+{})",
+                                idx + 1,
+                                format_cost(t.total_cost),
+                                format_cost(t.cost_change),
+                            ),
+                            HoverSource::Tokens => format!(
+                                "  t{} [{}] in {}  out {}",
+                                idx + 1, t.model_short,
+                                format_tokens(t.in_tok), format_tokens(t.out_tok),
+                            ),
+                            HoverSource::TotalTokens => format!(
+                                "  t{} total in {}  out {}",
+                                idx + 1,
+                                format_tokens(t.total_in_tok), format_tokens(t.total_out_tok),
+                            ),
+                            HoverSource::WeeklyCost | HoverSource::WeeklyRate => format!(
+                                "  t{} [{}] +{}  total {}",
+                                idx + 1, t.model_short,
+                                format_cost(t.cost_change),
+                                format_cost(t.total_cost),
+                            ),
+                        };
+                        entries.push((name.clone(), detail));
+                    }
+                }
+            }
+            if !entries.is_empty() {
+                let win_rect = ui.ctx().screen_rect();
+                let row_h = 15.0_f32;
+                let tip_h = row_h * (1.0 + entries.len() as f32 * 2.0) + 16.0;
+                let mut tip_pos = cursor + egui::vec2(14.0, -tip_h - 8.0);
+                tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
+
+                egui::Area::new(egui::Id::new("hud_float_tip"))
+                    .fixed_pos(tip_pos)
+                    .order(egui::Order::Tooltip)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgba_premultiplied(20, 18, 14, 240))
+                            .stroke(egui::Stroke::new(0.5, Palette::SEPARATOR))
+                            .rounding(5.0)
+                            .inner_margin(egui::Margin::same(8.0))
+                            .show(ui, |ui| {
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                                for (name, data) in &entries {
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(name).monospace().size(12.0).color(Palette::TEXT_BRIGHT)
+                                    ));
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(data).monospace().size(11.0).color(Palette::TEXT_DIM)
+                                    ));
+                                }
+                            });
+                    });
+            }
+        }
+    }
 }
 
 fn draw_chart_label(ui: &mut egui::Ui, title: &str, top_label: &str, bot_label: &str) {
@@ -2208,13 +2363,19 @@ impl EguiOverlay for Hud {
             }
         }
 
-        // Resize window for small mode (compact 160px tall, full width)
+        // Resize window for small mode: shrink to 160px on entry, then user can resize freely
         if big_mode && self.small_mode_session.is_some() {
-            let (win_w, _) = glfw_backend.window.get_size();
-            let target_h = 160;
-            let (_, cur_h) = glfw_backend.window.get_size();
-            if cur_h != target_h {
-                glfw_backend.set_window_size([win_w as f32, target_h as f32]);
+            if self.pre_small_window_size.is_none() {
+                let (win_w, cur_h) = glfw_backend.window.get_size();
+                self.pre_small_window_size = Some((win_w, cur_h));
+                glfw_backend.set_window_size([win_w as f32, 160.0]);
+            }
+        } else if big_mode && self.small_mode_session.is_none() {
+            if let Some((sw, sh)) = self.pre_small_window_size.take() {
+                let (cur_w, cur_h) = glfw_backend.window.get_size();
+                if cur_h != sh || cur_w != sw {
+                    glfw_backend.set_window_size([sw as f32, sh as f32]);
+                }
             }
         }
 
