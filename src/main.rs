@@ -702,7 +702,7 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
             let ta_resp = ui.interact(ta_rect, egui::Id::new("small_time_axis"), egui::Sense::click());
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
-                if *time_axis { *autofit = true; *nav_view = None; }
+                *autofit = true; *nav_view = None;
             }
             if ta_resp.hovered() {
                 painter.rect_filled(ta_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
@@ -714,12 +714,13 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
             if *time_axis {
                 let fit_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 4.0, cy - btn_h / 2.0), egui::vec2(30.0, btn_h));
                 let fit_resp = ui.interact(fit_rect, egui::Id::new("small_fit"), egui::Sense::click());
-                if fit_resp.clicked() { *autofit = true; }
-                if fit_resp.hovered() {
+                if fit_resp.clicked() { *autofit = !*autofit; }
+                if *autofit || fit_resp.hovered() {
                     painter.rect_filled(fit_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
                 }
+                let fit_col = if *autofit { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
                 painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER,
-                    "fit", egui::FontId::monospace(8.0), Palette::TEXT_DIM);
+                    "fit", egui::FontId::monospace(8.0), fit_col);
             }
 
             // Usage bars at right side of controls
@@ -777,7 +778,7 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     let full_max = all_x_max + data_span * 0.02;
     let full_span = full_max - full_min;
 
-    // Autofit
+    // Autofit: recompute each frame while active (tracks latest data)
     if *autofit {
         if session.first_ts > 0 {
             let fit_min = session.first_ts as f64 / 60.0;
@@ -785,7 +786,6 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
             let span = (fit_max - fit_min).max(1.0);
             *nav_view = Some((fit_min - span * 0.02, fit_max + span * 0.02));
         }
-        *autofit = false;
     }
 
     if show_nav {
@@ -827,6 +827,7 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
 
                 // Drag to pan
                 if resp.dragged() {
+                    *autofit = false;
                     let dx_px = resp.drag_delta().x;
                     let dx_min = (dx_px / bar_w) as f64 * full_span;
                     let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
@@ -840,6 +841,7 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 // Scroll to zoom
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
                 if resp.hovered() && scroll.abs() > 0.1 {
+                    *autofit = false;
                     let zoom_factor = 1.0 - (scroll as f64 * 0.003);
                     let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
                     let vspan = vmax - vmin;
@@ -1153,10 +1155,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let ta_resp = ui.interact(ta_rect, egui::Id::new("ctrl_time_axis"), egui::Sense::click());
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
-                if *time_axis {
-                    *autofit = true;
-                    *nav_view = None;
-                }
+                *autofit = true;
+                *nav_view = None;
             }
             if ta_resp.hovered() {
                 painter.rect_filled(ta_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
@@ -1168,12 +1168,13 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if *time_axis {
                 let af_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 8.0, cy - btn_size.y / 2.0), egui::vec2(50.0, btn_size.y));
                 let af_resp = ui.interact(af_rect, egui::Id::new("ctrl_autofit"), egui::Sense::click());
-                if af_resp.clicked() { *autofit = true; }
-                if af_resp.hovered() {
+                if af_resp.clicked() { *autofit = !*autofit; }
+                if *autofit || af_resp.hovered() {
                     painter.rect_filled(af_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
                 }
+                let fit_col = if *autofit { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
                 painter.text(af_rect.center(), egui::Align2::CENTER_CENTER,
-                    "fit", egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+                    "fit", egui::FontId::monospace(10.0), fit_col);
             }
         });
     });
@@ -1207,7 +1208,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let full_max = all_x_max + data_span * 0.02;
     let full_span = full_max - full_min;
 
-    // Autofit: snap viewport to effectively visible sessions' time range
+    // Autofit: recompute each frame while active (tracks latest data)
     if *autofit {
         let mut fit_min = f64::MAX;
         let mut fit_max = f64::MIN;
@@ -1222,7 +1223,6 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let span = (fit_max - fit_min).max(1.0);
             *nav_view = Some((fit_min - span * 0.02, fit_max + span * 0.02));
         }
-        *autofit = false;
     }
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
@@ -1274,6 +1274,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
             // Handle drag: pan the viewport
             if resp.dragged() {
+                *autofit = false;
                 let dx_px = resp.drag_delta().x;
                 let dx_min = (dx_px / bar_w) as f64 * full_span;
                 let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
@@ -1289,6 +1290,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             // Handle scroll: zoom anchored to mouse position
             let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
             if resp.hovered() && scroll.abs() > 0.1 {
+                *autofit = false;
                 let zoom_factor = 1.0 - (scroll as f64 * 0.003);
                 let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
                 let vspan = vmax - vmin;
