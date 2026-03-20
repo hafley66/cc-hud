@@ -2230,7 +2230,10 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(weekly_total_rect), |ui| {
             panel_frame().show(ui, |ui| {
-                draw_chart_label(ui, "combined cost", "", "");
+                let total_label = if let Some(last) = cd.combined_cost_pts.last() {
+                    format_cost(last[1])
+                } else { String::new() };
+                draw_chart_label(ui, "combined cost", &total_label, "");
                 let mut p = base_plot("combined_cost")
                     .link_cursor(cursor_id, true, false)
                     .include_y(0.0)
@@ -2336,10 +2339,19 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     }
                 }
             }
+            // For WeeklyCost, compute cumulative combined cost at hovered x
+            let running_total_header: Option<String> = if matches!(hs.source, HoverSource::WeeklyCost) {
+                let pts = &cd.combined_cost_pts;
+                let idx = pts.partition_point(|p| p[0] <= hx);
+                let total = if idx > 0 { pts[idx - 1][1] } else if !pts.is_empty() { pts[0][1] } else { 0.0 };
+                Some(format!("total {}", format_cost(total)))
+            } else { None };
+
             if !entries.is_empty() {
                 let win_rect = ui.ctx().screen_rect();
                 let row_h = 15.0_f32;
-                let tip_h = row_h * (1.0 + entries.len() as f32 * 2.0) + 16.0;
+                let extra_rows = if running_total_header.is_some() { 1.0 } else { 0.0 };
+                let tip_h = row_h * (1.0 + extra_rows + entries.len() as f32 * 2.0) + 16.0;
                 let mut tip_pos = cursor + egui::vec2(14.0, -tip_h - 8.0);
                 tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
 
@@ -2354,6 +2366,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             .inner_margin(egui::Margin::same(8.0))
                             .show(ui, |ui| {
                                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                                if let Some(hdr) = &running_total_header {
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(hdr).monospace().size(12.0).color(Palette::INPUT_TINT)
+                                    ));
+                                }
                                 for (name, data) in &entries {
                                     ui.add(egui::Label::new(
                                         egui::RichText::new(name).monospace().size(12.0).color(Palette::TEXT_BRIGHT)
