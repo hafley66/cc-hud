@@ -1754,11 +1754,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
             p.show(ui, |pui| {
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.in_cost_bars)).color(Palette::INPUT_TINT).name("ctx$"));
+                    let fresh = BarChart::new(bars_to_egui(&cd.in_cost_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh$");
+                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("read$").stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create$").stack_on(&[&fresh, &read]);
+                    pui.bar_chart(fresh);
+                    pui.bar_chart(read);
+                    pui.bar_chart(create);
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).color(Palette::OUTPUT_TINT).name("gen$"));
                     render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
                     update_hover_src(pui, HoverSource::Cost);
-                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
         });
     });
@@ -1811,10 +1815,16 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
             p.show(ui, |pui| {
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.in_tok_bars)).color(Palette::INPUT_TINT).name("in"));
+                    let fresh = BarChart::new(bars_to_egui(&cd.in_tok_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh");
+                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("cached");
+                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create");
+                    let read = read.stack_on(&[&fresh]);
+                    let create = create.stack_on(&[&fresh, &read]);
+                    pui.bar_chart(fresh);
+                    pui.bar_chart(read);
+                    pui.bar_chart(create);
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_tok_bars)).color(Palette::OUTPUT_TINT).name("out"));
                     update_hover_src(pui, HoverSource::Tokens);
-                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
         });
     });
@@ -2047,57 +2057,55 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     if let Some(hs) = hover_state {
         let hx = hs.x;
         if let Some(cursor) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-            let mut entries: Vec<(String, String)> = vec![];
+            // (session_name, detail_text, optional breakdown fracs: fresh, read, create)
+            let mut entries: Vec<(String, String, Option<[f32; 3]>)> = vec![];
             for (name, _, turns) in &cd.session_turns {
                 let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
                     (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
                 });
                 if let Some((idx, t)) = nearest {
-                    {
-                        let detail = match hs.source {
-                            HoverSource::Cost => {
-                                let total_in = t.in_cost;
-                                let pct = |v: f64| if total_in > 0.0 { (v / total_in * 100.0).round() as u32 } else { 0 };
-                                let thinking_tag = if t.has_thinking { " [thinking]" } else { "" };
-                                format!(
-                                    "  t{} [{}]{} ctx {} (fresh {}% read {}% create {}%)  gen {}  (+{})",
-                                    idx + 1, t.model_short, thinking_tag,
-                                    format_cost(t.in_cost),
-                                    pct(t.fresh_input_cost), pct(t.cache_read_cost), pct(t.cache_create_cost),
-                                    format_cost(t.out_cost),
-                                    format_cost(t.cost_change),
-                                )
-                            }
-                            HoverSource::TotalCost => format!(
-                                "  t{} total {}  (+{})",
-                                idx + 1,
-                                format_cost(t.total_cost),
+                    let (detail, breakdown) = match hs.source {
+                        HoverSource::Cost => {
+                            let total_in = t.in_cost;
+                            let frac = |v: f64| if total_in > 0.0 { (v / total_in) as f32 } else { 0.0 };
+                            let pct = |v: f64| (frac(v) * 100.0).round() as u32;
+                            let thinking_tag = if t.has_thinking { " [thinking]" } else { "" };
+                            let fracs = [frac(t.fresh_input_cost), frac(t.cache_read_cost), frac(t.cache_create_cost)];
+                            (format!(
+                                "  t{} [{}]{} ctx {} (fresh {}% read {}% create {}%)  gen {}  (+{})",
+                                idx + 1, t.model_short, thinking_tag,
+                                format_cost(t.in_cost),
+                                pct(t.fresh_input_cost), pct(t.cache_read_cost), pct(t.cache_create_cost),
+                                format_cost(t.out_cost),
                                 format_cost(t.cost_change),
-                            ),
-                            HoverSource::Tokens => {
-                                let total_in = t.in_tok + t.cache_read_tok + t.cache_create_tok;
-                                format!(
-                                    "  t{} [{}] ctx {} (fresh {} read {} create {})  out {}",
-                                    idx + 1, t.model_short,
-                                    format_tokens(total_in),
-                                    format_tokens(t.in_tok), format_tokens(t.cache_read_tok), format_tokens(t.cache_create_tok),
-                                    format_tokens(t.out_tok),
-                                )
-                            }
-                            HoverSource::TotalTokens => format!(
-                                "  t{} total in {}  out {}",
-                                idx + 1,
-                                format_tokens(t.total_in_tok), format_tokens(t.total_out_tok),
-                            ),
-                            HoverSource::WeeklyCost | HoverSource::WeeklyRate => format!(
-                                "  t{} [{}] +{}  total {}",
+                            ), Some(fracs))
+                        }
+                        HoverSource::Tokens => {
+                            let total_in = (t.in_tok + t.cache_read_tok + t.cache_create_tok) as f64;
+                            let frac = |v: u64| if total_in > 0.0 { (v as f64 / total_in) as f32 } else { 0.0 };
+                            let fracs = [frac(t.in_tok), frac(t.cache_read_tok), frac(t.cache_create_tok)];
+                            (format!(
+                                "  t{} [{}] ctx {} (fresh {} read {} create {})  out {}",
                                 idx + 1, t.model_short,
-                                format_cost(t.cost_change),
-                                format_cost(t.total_cost),
-                            ),
-                        };
-                        entries.push((name.clone(), detail));
-                    }
+                                format_tokens(total_in as u64),
+                                format_tokens(t.in_tok), format_tokens(t.cache_read_tok), format_tokens(t.cache_create_tok),
+                                format_tokens(t.out_tok),
+                            ), Some(fracs))
+                        }
+                        HoverSource::TotalCost => (format!(
+                            "  t{} total {}  (+{})",
+                            idx + 1, format_cost(t.total_cost), format_cost(t.cost_change),
+                        ), None),
+                        HoverSource::TotalTokens => (format!(
+                            "  t{} total in {}  out {}",
+                            idx + 1, format_tokens(t.total_in_tok), format_tokens(t.total_out_tok),
+                        ), None),
+                        HoverSource::WeeklyCost | HoverSource::WeeklyRate => (format!(
+                            "  t{} [{}] +{}  total {}",
+                            idx + 1, t.model_short, format_cost(t.cost_change), format_cost(t.total_cost),
+                        ), None),
+                    };
+                    entries.push((name.clone(), detail, breakdown));
                 }
             }
             // Find nearby skill invocations
@@ -2120,9 +2128,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if !entries.is_empty() {
                 let win_rect = ui.ctx().screen_rect();
                 let row_h = 15.0_f32;
+                let bar_h = 6.0_f32;
+                let has_bars = entries.iter().any(|(_, _, b)| b.is_some());
+                let rows_per_entry = if has_bars { 3.0 } else { 2.0 }; // name + detail + bar
                 let extra_rows = (if running_total_header.is_some() { 1.0 } else { 0.0 })
                     + nearby_skills.len() as f32;
-                let tip_h = row_h * (1.0 + extra_rows + entries.len() as f32 * 2.0) + 16.0;
+                let tip_h = row_h * (1.0 + extra_rows + entries.len() as f32 * rows_per_entry) + 16.0;
                 let mut tip_pos = cursor + egui::vec2(14.0, -tip_h - 8.0);
                 tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
 
@@ -2142,13 +2153,55 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         egui::RichText::new(hdr).monospace().size(12.0).color(Palette::INPUT_TINT)
                                     ));
                                 }
-                                for (name, data) in &entries {
+                                for (name, data, breakdown) in &entries {
                                     ui.add(egui::Label::new(
                                         egui::RichText::new(name).monospace().size(12.0).color(Palette::TEXT_BRIGHT)
                                     ));
                                     ui.add(egui::Label::new(
                                         egui::RichText::new(data).monospace().size(11.0).color(Palette::TEXT_DIM)
                                     ));
+                                    // Stacked breakdown bar: [fresh | read | create]
+                                    if let Some([fresh, read, create]) = breakdown {
+                                        let (bar_resp, painter) = ui.allocate_painter(
+                                            egui::vec2(ui.available_width().min(240.0), bar_h),
+                                            egui::Sense::hover(),
+                                        );
+                                        let bar_rect = bar_resp.rect;
+                                        let bw = bar_rect.width();
+                                        let mut x = bar_rect.left();
+
+                                        // fresh: dark blue
+                                        let fw = bw * fresh;
+                                        if fw > 0.5 {
+                                            painter.rect_filled(
+                                                egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), egui::vec2(fw, bar_h)),
+                                                0.0, egui::Color32::from_rgb(60, 120, 200),
+                                            );
+                                        }
+                                        x += fw;
+
+                                        // cache read: medium blue
+                                        let rw = bw * read;
+                                        if rw > 0.5 {
+                                            painter.rect_filled(
+                                                egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), egui::vec2(rw, bar_h)),
+                                                0.0, egui::Color32::from_rgb(120, 180, 240),
+                                            );
+                                        }
+                                        x += rw;
+
+                                        // cache create: light blue/teal
+                                        let cw = bw * create;
+                                        if cw > 0.5 {
+                                            painter.rect_filled(
+                                                egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), egui::vec2(cw, bar_h)),
+                                                0.0, egui::Color32::from_rgb(160, 210, 250),
+                                            );
+                                        }
+
+                                        // Thin border
+                                        painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5, Palette::SEPARATOR));
+                                    }
                                 }
                                 for sk in &nearby_skills {
                                     let short = sk.rsplit(':').next().unwrap_or(sk);
@@ -2210,7 +2263,12 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
                 .include_y(cd.per_turn_in_cost_max * 1.1)
                 .include_y(-cd.per_turn_out_cost_max * 1.1)
                 .show(ui, |pui| {
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.in_cost_bars)).color(Palette::INPUT_TINT).name("in$"));
+                    let fresh = BarChart::new(bars_to_egui(&cd.in_cost_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh$");
+                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("read$").stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create$").stack_on(&[&fresh, &read]);
+                    pui.bar_chart(fresh);
+                    pui.bar_chart(read);
+                    pui.bar_chart(create);
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).color(Palette::OUTPUT_TINT).name("out$"));
                     render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
                 });
@@ -2224,7 +2282,12 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
                 .include_y(cd.in_max * 1.1)
                 .include_y(-cd.out_max * 1.1)
                 .show(ui, |pui| {
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.in_tok_bars)).color(Palette::INPUT_TINT).name("in"));
+                    let fresh = BarChart::new(bars_to_egui(&cd.in_tok_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh");
+                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("cached").stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create").stack_on(&[&fresh, &read]);
+                    pui.bar_chart(fresh);
+                    pui.bar_chart(read);
+                    pui.bar_chart(create);
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_tok_bars)).color(Palette::OUTPUT_TINT).name("out"));
                 });
         });

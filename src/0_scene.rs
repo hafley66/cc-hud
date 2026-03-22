@@ -406,6 +406,12 @@ pub struct ChartData {
     pub in_cost_cache_create_bars: Vec<BarData>,
     pub out_cost_bars: Vec<BarData>,
     pub in_tok_bars: Vec<BarData>,
+    /// Stacked token breakdown: fresh input tokens.
+    pub in_tok_fresh_bars: Vec<BarData>,
+    /// Stacked token breakdown: cache read tokens.
+    pub in_tok_cache_read_bars: Vec<BarData>,
+    /// Stacked token breakdown: cache create tokens.
+    pub in_tok_cache_create_bars: Vec<BarData>,
     pub out_tok_bars: Vec<BarData>,
     pub agent_xs: Vec<(f64, String)>,
     pub skill_xs: Vec<(f64, String)>,
@@ -444,6 +450,9 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let mut in_cost_cache_create_bars: Vec<BarData> = vec![];
     let mut out_cost_bars: Vec<BarData> = vec![];
     let mut in_tok_bars: Vec<BarData> = vec![];
+    let mut in_tok_fresh_bars: Vec<BarData> = vec![];
+    let mut in_tok_cache_read_bars: Vec<BarData> = vec![];
+    let mut in_tok_cache_create_bars: Vec<BarData> = vec![];
     let mut out_tok_bars: Vec<BarData> = vec![];
     let mut agent_xs: Vec<(f64, String)> = vec![];
     let mut skill_xs: Vec<(f64, String)> = vec![];
@@ -514,6 +523,9 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
 
                     // Token bars: total input (fresh + cached), not just fresh
                     in_tok_bars.push(BarData { x, height: total_in_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
+                    in_tok_fresh_bars.push(BarData { x, height: *input_tokens as f64, width: bar_w, color: Color::rgba(60, 120, 200, 220) });
+                    in_tok_cache_read_bars.push(BarData { x, height: *cache_read_tokens as f64, width: bar_w, color: Color::rgba(120, 180, 240, 140) });
+                    in_tok_cache_create_bars.push(BarData { x, height: *cache_create_tokens as f64, width: bar_w, color: Color::rgba(160, 200, 250, 100) });
                     out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: Color::rgba(220, 160, 60, 180) });
 
                     total_in_cost += input_cost_usd;
@@ -603,7 +615,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
 
     ChartData {
         in_cost_bars, in_cost_fresh_bars, in_cost_cache_read_bars, in_cost_cache_create_bars,
-        out_cost_bars, in_tok_bars, out_tok_bars, agent_xs, skill_xs,
+        out_cost_bars, in_tok_bars, in_tok_fresh_bars, in_tok_cache_read_bars, in_tok_cache_create_bars,
+        out_tok_bars, agent_xs, skill_xs,
         per_turn_in_cost_max, per_turn_out_cost_max, in_max, out_max, tool_list, skill_list, read_list, agent_list,
         total_cost_lines, total_cost_max, total_tok_lines, total_tok_max,
         combined_cost_pts, combined_cost_max, cost_rate_pts, cost_rate_max,
