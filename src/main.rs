@@ -1744,11 +1744,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let panel_hl_id = egui::Id::new("panel_highlight");
     let panel_hl: PanelHighlight = ui.ctx().data(|d| d.get_temp(panel_hl_id).unwrap_or_default());
 
-    // Don't clear hover state every frame -- let it persist so tooltip stays visible
-    // when mouse is stationary. Charts overwrite when cursor is inside them.
-    // Clear only if pointer left the window entirely.
-    if ui.ctx().input(|i| i.pointer.hover_pos()).is_none() {
-        ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
+    // Clear hover state when pointer is outside chart areas or left the window.
+    let all_charts_rect = cost_rect.union(tok_rect).union(total_cost_rect).union(total_tok_rect);
+    match ui.ctx().input(|i| i.pointer.hover_pos()) {
+        None => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
+        Some(pos) if !all_charts_rect.contains(pos) => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
+        _ => {}
     }
 
     // Screen-space containment check + source tracking.

@@ -179,9 +179,11 @@ fn parse_iso_secs(s: &str) -> u64 {
 
 #[derive(Debug, Deserialize)]
 struct JsonlMessage {
+    id: Option<String>,
     model: Option<String>,
     usage: Option<JsonlUsage>,
     content: Option<Vec<ContentBlock>>,
+    stop_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,6 +428,20 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
     let mut events = Vec::new();
     let reader = BufReader::new(&file);
 
+    // Accumulate streaming partials per message ID.
+    // Claude Code writes multiple JSONL entries for a single API call:
+    //   - thinking partial (stop_reason=null, stale usage)
+    //   - text partial (stop_reason=null, stale usage)
+    //   - final entry (stop_reason!=null, real cumulative usage)
+    // We collect tool/thinking data from all partials and emit events
+    // only when we see the final entry with real usage.
+    struct Pending {
+        has_thinking: bool,
+        tool_events: Vec<Event>,
+        timestamp_secs: u64,
+    }
+    let mut pending: std::collections::HashMap<String, Pending> = std::collections::HashMap::new();
+
     for line in reader.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() { continue; }
@@ -444,11 +460,22 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
         if parsed.msg_type.as_deref() != Some("assistant") { continue; }
         let Some(msg) = parsed.message else { continue; };
 
-        let mut has_thinking = false;
+        let msg_id = msg.id.clone().unwrap_or_default();
+        let is_final = msg.stop_reason.is_some();
+        let timestamp_secs = parsed.timestamp.as_deref().map(parse_iso_secs).unwrap_or(0);
+
+        // Get or create pending state for this message ID
+        let p = pending.entry(msg_id.clone()).or_insert_with(|| Pending {
+            has_thinking: false,
+            tool_events: Vec::new(),
+            timestamp_secs,
+        });
+
+        // Accumulate content block data from this partial
         if let Some(content) = &msg.content {
             for block in content {
                 if block.block_type.as_deref() == Some("thinking") {
-                    has_thinking = true;
+                    p.has_thinking = true;
                 }
                 if block.block_type.as_deref() == Some("tool_use") {
                     let name = block.name.clone().unwrap_or_else(|| "?".to_string());
@@ -464,14 +491,14 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        events.push(Event::AgentSpawn { seq: state.seq, subagent_type, description });
+                        p.tool_events.push(Event::AgentSpawn { seq: state.seq, subagent_type, description });
                     } else if name == "Skill" {
                         let skill = block.input.as_ref()
                             .and_then(|v| v.get("skill"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("?")
                             .to_string();
-                        events.push(Event::SkillUse { seq: state.seq, skill });
+                        p.tool_events.push(Event::SkillUse { seq: state.seq, skill });
                     } else if name == "Read" {
                         let file_path = block.input.as_ref()
                             .and_then(|v| v.get("file_path"))
@@ -484,16 +511,26 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
                         } else {
                             None
                         };
-                        events.push(Event::ToolUse { seq: state.seq, name });
+                        p.tool_events.push(Event::ToolUse { seq: state.seq, name });
                         if let Some(cat) = category {
-                            events.push(Event::ReadFile { seq: state.seq, category: cat.to_string() });
+                            p.tool_events.push(Event::ReadFile { seq: state.seq, category: cat.to_string() });
                         }
                     } else {
-                        events.push(Event::ToolUse { seq: state.seq, name });
+                        p.tool_events.push(Event::ToolUse { seq: state.seq, name });
                     }
                 }
             }
         }
+
+        // Only emit ApiCall on the final entry (real usage) or if no message ID
+        if !is_final && !msg_id.is_empty() { continue; }
+
+        let p = pending.remove(&msg_id).unwrap_or(Pending {
+            has_thinking: false, tool_events: Vec::new(), timestamp_secs,
+        });
+
+        // Flush accumulated tool events
+        events.extend(p.tool_events);
 
         if let Some(usage) = msg.usage {
             let model = msg.model.unwrap_or_default();
@@ -508,10 +545,9 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
             state.cumulative_output_cost += out_cost;
             state.seq += 1;
 
-            let timestamp_secs = parsed.timestamp.as_deref().map(parse_iso_secs).unwrap_or(0);
             events.push(Event::ApiCall {
                 seq: state.seq,
-                timestamp_secs,
+                timestamp_secs: p.timestamp_secs,
                 input_tokens: usage.input_tokens,
                 output_tokens: usage.output_tokens,
                 cache_read_tokens: usage.cache_read_input_tokens,
@@ -521,7 +557,7 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
                 cumulative_input_cost: state.cumulative_input_cost,
                 cumulative_output_cost: state.cumulative_output_cost,
                 model,
-                has_thinking,
+                has_thinking: p.has_thinking,
             });
         }
     }
