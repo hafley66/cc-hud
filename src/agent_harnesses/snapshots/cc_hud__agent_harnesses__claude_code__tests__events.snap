@@ -1,5 +1,5 @@
 ---
-source: tests/ingest_snapshot.rs
+source: src/agent_harnesses/claude_code.rs
 expression: events
 ---
 - ToolUse:

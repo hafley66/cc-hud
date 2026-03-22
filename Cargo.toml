@@ -20,4 +20,4 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication"] }
 
 [dev-dependencies]
-insta = { version = "1", features = ["yaml", "redactions"] }
+insta = { version = "1", features = ["yaml"] }
