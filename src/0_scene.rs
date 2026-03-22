@@ -394,6 +394,12 @@ pub struct TurnInfo {
     pub total_out_tok: u64,
     pub model_short: String,
     pub has_thinking: bool,
+    /// Total context tokens this turn (input + cache_read + cache_create)
+    pub context_tokens: u64,
+    /// Context window limit for this model
+    pub context_limit: u64,
+    /// True if context_tokens dropped from previous turn (compaction happened)
+    pub is_reset: bool,
 }
 
 pub struct ChartData {
@@ -536,6 +542,11 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                     total_out_tok += output_tokens;
 
                     let cur_total = total_in_cost + total_out_cost;
+                    let context_tokens = total_in_tokens;
+                    let context_limit = claude_code::model_context_window(model);
+                    let prev_context = turns.last().map(|t| t.context_tokens).unwrap_or(0);
+                    let is_reset = context_tokens < prev_context.saturating_sub(prev_context / 4);
+
                     turns.push(TurnInfo {
                         x,
                         in_cost: *input_cost_usd,
@@ -553,6 +564,9 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                         total_out_tok,
                         model_short: short_model_label(model).to_string(),
                         has_thinking: *has_thinking,
+                        context_tokens,
+                        context_limit,
+                        is_reset,
                     });
                     prev_total_cost = cur_total;
                     last_x = x;

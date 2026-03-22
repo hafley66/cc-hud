@@ -4,6 +4,7 @@ mod geometry;
 mod anchors;
 mod agent_harnesses;
 mod usage;
+mod energy;
 #[path = "0_scene.rs"]
 mod scene;
 #[path = "1_render_egui.rs"]
@@ -2098,11 +2099,29 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         if let Some(cursor) = ui.ctx().input(|i| i.pointer.hover_pos()) {
             // (session_name, detail_text, optional breakdown fracs: fresh, read, create)
             let mut entries: Vec<(String, String, Option<[f32; 3]>)> = vec![];
+            // Context info from nearest turn (for footer): (context_tokens, context_limit, burn_rate_per_turn, is_reset)
+            let mut context_footer: Option<(u64, u64, f64, bool)> = None;
             for (name, _, turns) in &cd.session_turns {
                 let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
                     (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
                 });
                 if let Some((idx, t)) = nearest {
+                    // Compute context burn rate: avg context growth per turn over recent window
+                    let window = 5;
+                    let start = idx.saturating_sub(window);
+                    let burn_rate = if idx > start {
+                        let ctx_start = turns[start].context_tokens;
+                        let ctx_end = t.context_tokens;
+                        if ctx_end > ctx_start {
+                            (ctx_end - ctx_start) as f64 / (idx - start) as f64
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    };
+                    context_footer = Some((t.context_tokens, t.context_limit, burn_rate, t.is_reset));
+
                     let (detail, breakdown) = match hs.source {
                         HoverSource::Cost => {
                             let total_in = t.in_cost;
@@ -2171,9 +2190,17 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let has_bars = entries.iter().any(|(_, _, b)| b.is_some());
                 let rows_per_entry = if has_bars { 3.0 } else { 2.0 }; // name + detail + bar
                 let extra_rows = (if running_total_header.is_some() { 1.0 } else { 0.0 })
-                    + nearby_skills.len() as f32;
+                    + nearby_skills.len() as f32
+                    + if context_footer.is_some() { 1.0 } else { 0.0 };
                 let tip_h = row_h * (1.0 + extra_rows + entries.len() as f32 * rows_per_entry) + 16.0;
-                let mut tip_pos = cursor + egui::vec2(14.0, -tip_h - 8.0);
+                let tip_w = 280.0; // estimated tooltip width (240px bar + 16px margins + padding)
+                let offset = 14.0;
+                let x_offset = if cursor.x + tip_w + offset > win_rect.right() {
+                    -tip_w - offset // flip to left if would overflow right edge
+                } else {
+                    offset // default to right
+                };
+                let mut tip_pos = cursor + egui::vec2(x_offset, -tip_h - 8.0);
                 tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
 
                 egui::Area::new(egui::Id::new("hud_float_tip"))
@@ -2246,6 +2273,34 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     let short = sk.rsplit(':').next().unwrap_or(sk);
                                     ui.add(egui::Label::new(
                                         egui::RichText::new(format!("  skill: {}", short)).monospace().size(11.0).color(Palette::SKILL_MARKER)
+                                    ));
+                                }
+
+                                // Context usage footer: fill %, remaining, countdown
+                                if let Some((ctx_tok, ctx_limit, burn_rate, is_reset)) = context_footer {
+                                    let pct = if ctx_limit > 0 { (ctx_tok as f64 / ctx_limit as f64 * 100.0).round() as u32 } else { 0 };
+                                    let remaining = ctx_limit.saturating_sub(ctx_tok);
+                                    let countdown = if burn_rate > 0.0 {
+                                        let turns_left = remaining as f64 / burn_rate;
+                                        format!("~{} turns", turns_left.round() as u64)
+                                    } else {
+                                        "--".to_string()
+                                    };
+                                    let reset_tag = if is_reset { " [RESET]" } else { "" };
+                                    let ctx_line = format!(
+                                        "  ctx {}% ({}/{})  remaining {}  til compact: {}{}",
+                                        pct, format_tokens(ctx_tok), format_tokens(ctx_limit),
+                                        format_tokens(remaining), countdown, reset_tag,
+                                    );
+                                    let ctx_color = if pct >= 80 {
+                                        egui::Color32::from_rgb(220, 80, 60) // red when close to limit
+                                    } else if pct >= 60 {
+                                        egui::Color32::from_rgb(220, 180, 60) // yellow
+                                    } else {
+                                        Palette::TEXT_DIM
+                                    };
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(ctx_line).monospace().size(10.0).color(ctx_color)
                                     ));
                                 }
                             });

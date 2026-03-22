@@ -1,0 +1,7 @@
+---
+source: src/energy.rs
+expression: "format!(\"api_cost: ${:.2}\\nlocal_electricity: ${:.4}\\nmarkup: {:.1}x\",\ne.api_cost_usd, e.local_cost_usd, e.api_markup_ratio)"
+---
+api_cost: $75.00
+local_electricity: $1.0119
+markup: 74.1x

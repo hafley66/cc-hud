@@ -1,0 +1,14 @@
+---
+source: src/energy.rs
+expression: fmt_estimate(&e)
+---
+server_joules:        9000.0000 [3000.0000 .. 27000.0000]
+facility_joules:      10800.0000 [3600.0000 .. 32400.0000]
+facility_kwh:         0.00300000 [0.00100000 .. 0.00900000]
+carbon_grams:         1.800000 [0.600000 .. 5.400000]
+local_gpu_seconds:    714.2857
+local_kwh:            0.05952381
+local_cost_usd:       0.02500000
+solar_offset_seconds: 158.82 [52.94 .. 476.47]
+api_cost_usd:         0.1500
+api_markup_ratio:     6.00

@@ -1,0 +1,6 @@
+---
+source: src/energy.rs
+expression: "format!(\"opus_sonnet_ratio: {opus_sonnet:.3}\\nopus_haiku_ratio: {opus_haiku:.3}\")"
+---
+opus_sonnet_ratio: 5.556
+opus_haiku_ratio: 33.333

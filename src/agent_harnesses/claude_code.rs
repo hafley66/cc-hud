@@ -2,8 +2,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::energy::{EnergyConfig, SessionEnergy};
+
 // Pricing per million tokens (USD)
 // cache_read = 0.1x input, cache_create_5m = 1.25x input
+/// Context window size (input token limit) by model.
+pub fn model_context_window(model: &str) -> u64 {
+    match model {
+        m if m.contains("opus-4-6") || m.contains("opus-4-5") => 1_000_000,
+        m if m.contains("opus") => 200_000,
+        m if m.contains("sonnet") => 200_000,
+        m if m.contains("haiku") => 200_000,
+        _ => 200_000,
+    }
+}
+
 pub fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
     // (input, output, cache_read, cache_create_5m) per 1M tokens
     match model {
@@ -131,6 +144,8 @@ pub struct SessionData {
     pub model: String,   // most recent model used
     pub last_input_tokens: u64, // input tokens of most recent API call (context fullness)
     pub subagents: Vec<SubagentData>,
+    #[serde(skip)]
+    pub energy: SessionEnergy,
 }
 
 /// All data the HUD renders from.
@@ -575,6 +590,7 @@ fn build_session_data(
     is_active: bool,
     subagents: Vec<SubagentData>,
 ) -> SessionData {
+    let energy_config = EnergyConfig::default();
     let mut total_input_cost = 0.0;
     let mut total_output_cost = 0.0;
     let mut total_input = 0u64;
@@ -588,10 +604,11 @@ fn build_session_data(
     let mut last_ts = 0u64;
     let mut last_model = String::new();
     let mut last_input_tokens = 0u64;
+    let mut session_energy = SessionEnergy::default();
 
     for ev in &events {
         match ev {
-            Event::ApiCall { input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, cumulative_input_cost, cumulative_output_cost, timestamp_secs, model, .. } => {
+            Event::ApiCall { input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, input_cost_usd, output_cost_usd, cumulative_input_cost, cumulative_output_cost, timestamp_secs, model, .. } => {
                 last_model = model.clone();
                 last_input_tokens = input_tokens + cache_read_tokens + cache_create_tokens;
                 total_input_cost = *cumulative_input_cost;
@@ -603,6 +620,10 @@ fn build_session_data(
                     if first_ts == 0 { first_ts = *timestamp_secs; }
                     last_ts = *timestamp_secs;
                 }
+                session_energy.add_call(
+                    *input_tokens, *output_tokens, *cache_read_tokens, *cache_create_tokens,
+                    model, input_cost_usd + output_cost_usd, &energy_config,
+                );
             }
             Event::ToolUse { name, .. } => {
                 *tool_counts.entry(name.clone()).or_default() += 1;
@@ -640,6 +661,7 @@ fn build_session_data(
         model: last_model,
         last_input_tokens,
         subagents,
+        energy: session_energy,
     }
 }
 

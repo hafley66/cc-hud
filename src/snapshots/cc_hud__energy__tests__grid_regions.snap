@@ -1,0 +1,11 @@
+---
+source: src/energy.rs
+expression: "lines.join(\"\\n\")"
+---
+France (nuclear): 85 gCO2eq/kWh
+Oregon: 200 gCO2eq/kWh
+Ireland: 298 gCO2eq/kWh
+Virginia: 350 gCO2eq/kWh
+US avg: 367 gCO2eq/kWh
+World avg: 442 gCO2eq/kWh
+Ohio: 449 gCO2eq/kWh
