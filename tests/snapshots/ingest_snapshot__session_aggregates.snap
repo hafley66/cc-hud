@@ -1,0 +1,35 @@
+---
+source: tests/ingest_snapshot.rs
+expression: "&serde_json::json!({\n    \"session_id\": sd.session_id, \"total_cost_usd\":\n    (sd.total_cost_usd * 100000.0).round() / 100000.0, \"total_input_cost\":\n    (sd.total_input_cost * 100000.0).round() / 100000.0, \"total_output_cost\":\n    (sd.total_output_cost * 100000.0).round() / 100000.0, \"total_input\":\n    sd.total_input, \"total_output\": sd.total_output, \"api_call_count\":\n    sd.api_call_count, \"agent_count\": sd.agent_count, \"tool_counts\":\n    tool_counts, \"skill_counts\": skill_counts, \"read_counts\": read_counts,\n    \"model\": sd.model, \"is_active\": sd.is_active,\n})"
+---
+agent_count: 2
+api_call_count: 9
+is_active: true
+model: claude-opus-4-6
+read_counts:
+  - - CLAUDE.md
+    - 1
+  - - memory
+    - 2
+session_id: test-session-001
+skill_counts:
+  - - "hafley:git-commit"
+    - 1
+  - - "hafley:load-session"
+    - 1
+tool_counts:
+  - - Bash
+    - 1
+  - - Edit
+    - 1
+  - - Grep
+    - 2
+  - - Read
+    - 5
+  - - Write
+    - 1
+total_cost_usd: 0.64303
+total_input: 9147
+total_input_cost: 0.60018
+total_output: 1834
+total_output_cost: 0.04285

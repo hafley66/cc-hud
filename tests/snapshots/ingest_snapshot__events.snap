@@ -1,0 +1,165 @@
+---
+source: tests/ingest_snapshot.rs
+expression: events
+---
+- ToolUse:
+    seq: 1
+    name: Grep
+- ToolUse:
+    seq: 2
+    name: Read
+- ApiCall:
+    seq: 3
+    timestamp_secs: 1774031127
+    input_tokens: 9114
+    output_tokens: 250
+    cache_read_tokens: 9114
+    cache_create_tokens: 12144
+    input_cost_usd: 0.126027
+    output_cost_usd: 0.00625
+    cumulative_input_cost: 0.126027
+    cumulative_output_cost: 0.00625
+    model: claude-opus-4-6
+- ToolUse:
+    seq: 4
+    name: Read
+- ReadFile:
+    seq: 4
+    category: CLAUDE.md
+- ToolUse:
+    seq: 5
+    name: Read
+- ReadFile:
+    seq: 5
+    category: memory
+- ApiCall:
+    seq: 6
+    timestamp_secs: 1774031170
+    input_tokens: 3
+    output_tokens: 120
+    cache_read_tokens: 21258
+    cache_create_tokens: 168
+    input_cost_usd: 0.011694
+    output_cost_usd: 0.003
+    cumulative_input_cost: 0.137721
+    cumulative_output_cost: 0.009250000000000001
+    model: claude-opus-4-6
+- ToolUse:
+    seq: 7
+    name: Edit
+- ToolUse:
+    seq: 8
+    name: Bash
+- ApiCall:
+    seq: 9
+    timestamp_secs: 1774031220
+    input_tokens: 1
+    output_tokens: 180
+    cache_read_tokens: 57444
+    cache_create_tokens: 500
+    input_cost_usd: 0.031852
+    output_cost_usd: 0.0045
+    cumulative_input_cost: 0.169573
+    cumulative_output_cost: 0.013750000000000002
+    model: claude-opus-4-6
+- AgentSpawn:
+    seq: 10
+    subagent_type: Explore
+    description: Find skill/tool usage in ingest
+- ApiCall:
+    seq: 11
+    timestamp_secs: 1774031310
+    input_tokens: 3
+    output_tokens: 237
+    cache_read_tokens: 9114
+    cache_create_tokens: 49784
+    input_cost_usd: 0.315722
+    output_cost_usd: 0.005925
+    cumulative_input_cost: 0.48529500000000003
+    cumulative_output_cost: 0.019675
+    model: claude-opus-4-6
+- AgentSpawn:
+    seq: 12
+    subagent_type: claude-code-guide
+    description: Search web for dashboard tools
+- ApiCall:
+    seq: 13
+    timestamp_secs: 1774031400
+    input_tokens: 5
+    output_tokens: 150
+    cache_read_tokens: 30000
+    cache_create_tokens: 1000
+    input_cost_usd: 0.021275
+    output_cost_usd: 0.00375
+    cumulative_input_cost: 0.5065700000000001
+    cumulative_output_cost: 0.023425
+    model: claude-opus-4-6
+- SkillUse:
+    seq: 14
+    skill: "hafley:git-commit"
+- ApiCall:
+    seq: 15
+    timestamp_secs: 1774031460
+    input_tokens: 1
+    output_tokens: 57
+    cache_read_tokens: 57444
+    cache_create_tokens: 168
+    input_cost_usd: 0.029777
+    output_cost_usd: 0.001425
+    cumulative_input_cost: 0.5363470000000001
+    cumulative_output_cost: 0.02485
+    model: claude-opus-4-6
+- SkillUse:
+    seq: 16
+    skill: "hafley:load-session"
+- ApiCall:
+    seq: 17
+    timestamp_secs: 1774031520
+    input_tokens: 2
+    output_tokens: 40
+    cache_read_tokens: 58000
+    cache_create_tokens: 100
+    input_cost_usd: 0.029635
+    output_cost_usd: 0.001
+    cumulative_input_cost: 0.5659820000000001
+    cumulative_output_cost: 0.02585
+    model: claude-opus-4-6
+- ToolUse:
+    seq: 18
+    name: Read
+- ReadFile:
+    seq: 18
+    category: memory
+- ToolUse:
+    seq: 19
+    name: Grep
+- ApiCall:
+    seq: 20
+    timestamp_secs: 1774031580
+    input_tokens: 10
+    output_tokens: 300
+    cache_read_tokens: 5000
+    cache_create_tokens: 200
+    input_cost_usd: 0.00228
+    output_cost_usd: 0.0045
+    cumulative_input_cost: 0.568262
+    cumulative_output_cost: 0.030350000000000002
+    model: claude-sonnet-4-6
+- ToolUse:
+    seq: 21
+    name: Read
+- ToolUse:
+    seq: 22
+    name: Write
+- ApiCall:
+    seq: 23
+    timestamp_secs: 1774031700
+    input_tokens: 8
+    output_tokens: 500
+    cache_read_tokens: 60000
+    cache_create_tokens: 300
+    input_cost_usd: 0.031915
+    output_cost_usd: 0.0125
+    cumulative_input_cost: 0.6001770000000001
+    cumulative_output_cost: 0.04285
+    model: claude-opus-4-6

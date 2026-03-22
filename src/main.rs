@@ -147,6 +147,7 @@ impl Palette {
     const TEXT_DIM: egui::Color32 = egui::Color32::from_rgba_premultiplied(130, 120, 100, 180);
     const TEXT_BRIGHT: egui::Color32 = egui::Color32::from_rgba_premultiplied(240, 230, 200, 255);
     const AGENT_MARKER: egui::Color32 = egui::Color32::from_rgba_premultiplied(180, 60, 60, 60);
+    const SKILL_MARKER: egui::Color32 = egui::Color32::from_rgba_premultiplied(60, 180, 120, 60);
     const INPUT_TINT: egui::Color32 = egui::Color32::from_rgba_premultiplied(100, 160, 220, 180);
     const OUTPUT_TINT: egui::Color32 = egui::Color32::from_rgba_premultiplied(220, 160, 60, 180);
     const TOOL_BAR: egui::Color32 = egui::Color32::from_rgba_premultiplied(71, 77, 88, 160);
@@ -230,11 +231,14 @@ struct ChartData {
     in_tok_bars: Vec<Bar>,
     out_tok_bars: Vec<Bar>,
     agent_xs: Vec<f64>,
+    skill_xs: Vec<(f64, String)>,  // (x_position, skill_name)
     per_turn_in_cost_max: f64,
     per_turn_out_cost_max: f64,
     in_max: f64,
     out_max: f64,
     tool_list: Vec<(String, u32)>,
+    skill_list: Vec<(String, u32)>,
+    read_list: Vec<(String, u32)>,
     /// Per-session cumulative cost lines: (color, points)
     total_cost_lines: Vec<(egui::Color32, Vec<[f64; 2]>)>,
     total_cost_max: f64,
@@ -258,11 +262,14 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
     let mut in_max = 100.0_f64;
     let mut out_max = 100.0_f64;
     let mut agg_tools: HashMap<String, u32> = HashMap::new();
+    let mut agg_skills: HashMap<String, u32> = HashMap::new();
+    let mut agg_reads: HashMap<String, u32> = HashMap::new();
     let mut in_cost_bars: Vec<Bar> = vec![];
     let mut out_cost_bars: Vec<Bar> = vec![];
     let mut in_tok_bars: Vec<Bar> = vec![];
     let mut out_tok_bars: Vec<Bar> = vec![];
     let mut agent_xs: Vec<f64> = vec![];
+    let mut skill_xs: Vec<(f64, String)> = vec![];
     let mut session_turns: Vec<(String, egui::Color32, Vec<TurnInfo>)> = vec![];
 
     // Pre-compute time span + total api calls for adaptive bar width
@@ -289,6 +296,12 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
 
         for (name, count) in &session.tool_counts {
             *agg_tools.entry(name.clone()).or_default() += count;
+        }
+        for (name, count) in &session.skill_counts {
+            *agg_skills.entry(name.clone()).or_default() += count;
+        }
+        for (name, count) in &session.read_counts {
+            *agg_reads.entry(name.clone()).or_default() += count;
         }
 
         let mut turns: Vec<TurnInfo> = vec![];
@@ -346,6 +359,7 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
                     api_idx += 1;
                 }
                 Event::AgentSpawn { .. } => { agent_xs.push(last_x + 0.15); }
+                Event::SkillUse { skill, .. } => { skill_xs.push((last_x + 0.10, skill.clone())); }
                 _ => {}
             }
         }
@@ -355,6 +369,10 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
 
     let mut tool_list: Vec<(String, u32)> = agg_tools.into_iter().collect();
     tool_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut skill_list: Vec<(String, u32)> = agg_skills.into_iter().collect();
+    skill_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut read_list: Vec<(String, u32)> = agg_reads.into_iter().collect();
+    read_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     // Per-session cumulative lines
     let mut total_cost_lines: Vec<(egui::Color32, Vec<[f64; 2]>)> = vec![];
@@ -399,8 +417,8 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
     let cost_rate_max = all_cost_events.iter().map(|(_, c)| *c).fold(0.001_f64, f64::max);
 
     ChartData {
-        in_cost_bars, out_cost_bars, in_tok_bars, out_tok_bars, agent_xs,
-        per_turn_in_cost_max, per_turn_out_cost_max, in_max, out_max, tool_list,
+        in_cost_bars, out_cost_bars, in_tok_bars, out_tok_bars, agent_xs, skill_xs,
+        per_turn_in_cost_max, per_turn_out_cost_max, in_max, out_max, tool_list, skill_list, read_list,
         total_cost_lines, total_cost_max, total_tok_lines, total_tok_max,
         combined_cost_pts, combined_cost_max, cost_rate_pts, cost_rate_max,
         session_turns,
@@ -410,6 +428,22 @@ fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -
 // ---------------------------------------------------------------------------
 // Shared plot factory — all interactive behaviors off, transparent bg
 // ---------------------------------------------------------------------------
+
+fn draw_bar_row(ui: &mut egui::Ui, label: &str, count: u32, max_count: f32, name_w: f32, bar_max_w: f32, bar_color: egui::Color32) {
+    let row_h = 16.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+    let painter = ui.painter();
+    let cy = rect.center().y;
+    painter.text(egui::pos2(rect.left(), cy), egui::Align2::LEFT_CENTER, label, egui::FontId::monospace(10.5), Palette::TEXT);
+    let bar_w = (count as f32 / max_count) * bar_max_w;
+    if bar_w > 0.5 {
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(rect.left() + name_w, rect.top() + row_h * 0.25), egui::vec2(bar_w, row_h * 0.5)),
+            2.0, bar_color,
+        );
+    }
+    painter.text(egui::pos2(rect.left() + name_w + bar_max_w + 4.0, cy), egui::Align2::LEFT_CENTER, &count.to_string(), egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+}
 
 fn base_plot(id: &str) -> Plot<'_> {
     Plot::new(id)
@@ -1967,6 +2001,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     for x in &cd.agent_xs {
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5).name("agent"));
                     }
+                    for (x, _) in &cd.skill_xs {
+                        pui.vline(VLine::new(*x).color(Palette::SKILL_MARKER).width(0.5).name("skill"));
+                    }
                     update_hover_src(pui, HoverSource::Cost);
                     // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
@@ -1997,6 +2034,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     }
                     for x in &cd.agent_xs {
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5));
+                    }
+                    for (x, _) in &cd.skill_xs {
+                        pui.vline(VLine::new(*x).color(Palette::SKILL_MARKER).width(0.5));
                     }
                     update_hover_src(pui, HoverSource::TotalCost);
                     // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
@@ -2170,57 +2210,56 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
         }
     }
-    // --- tool breakdown ---
+    // --- tool / skill / reads breakdown (scrollable) ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tool_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            let inner = ui.available_rect_before_wrap();
-            let painter = ui.painter();
+            ui.style_mut().visuals.override_text_color = Some(Palette::TEXT);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
 
-            painter.text(
-                egui::pos2(inner.left(), inner.top()),
-                egui::Align2::LEFT_TOP,
-                "tool calls",
-                egui::FontId::monospace(10.0),
-                Palette::TEXT_DIM,
-            );
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    let avail_w = ui.available_width();
+                    let name_w = 60.0_f32;
+                    let count_w = 28.0_f32;
+                    let bar_max_w = (avail_w - name_w - count_w - 4.0).max(10.0);
 
-            if cd.tool_list.is_empty() { return; }
-            let max_count = cd.tool_list[0].1.max(1) as f32;
-            let n = cd.tool_list.len();
-            let list_top = inner.top() + 16.0;
-            let row_h = ((inner.height() - 16.0) / n as f32).min(26.0);
-            let name_w = 44.0_f32;
-            let count_w = 28.0_f32;
-            let bar_max_w = inner.width() - name_w - count_w - 4.0;
+                    // --- tool calls ---
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("tool calls").monospace().size(10.0).color(Palette::TEXT_DIM)
+                    ));
+                    if !cd.tool_list.is_empty() {
+                        let max_count = cd.tool_list[0].1.max(1) as f32;
+                        for (name, count) in &cd.tool_list {
+                            draw_bar_row(ui, name, *count, max_count, name_w, bar_max_w, Palette::TOOL_BAR);
+                        }
+                    }
 
-            for (i, (name, count)) in cd.tool_list.iter().enumerate() {
-                let y = list_top + i as f32 * row_h;
-                let cy = y + row_h * 0.5;
+                    // --- skills ---
+                    if !cd.skill_list.is_empty() {
+                        ui.add_space(6.0);
+                        ui.add(egui::Label::new(
+                            egui::RichText::new("skills").monospace().size(10.0).color(Palette::TEXT_DIM)
+                        ));
+                        let sk_max = cd.skill_list[0].1.max(1) as f32;
+                        for (name, count) in &cd.skill_list {
+                            let short = name.rsplit(':').next().unwrap_or(name);
+                            draw_bar_row(ui, short, *count, sk_max, name_w, bar_max_w, Palette::SKILL_MARKER);
+                        }
+                    }
 
-                painter.text(
-                    egui::pos2(inner.left(), cy),
-                    egui::Align2::LEFT_CENTER,
-                    name,
-                    egui::FontId::monospace(10.5),
-                    Palette::TEXT,
-                );
-
-                let bar_w = (*count as f32 / max_count) * bar_max_w;
-                if bar_w > 0.5 {
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(egui::pos2(inner.left() + name_w, y + row_h * 0.25), egui::vec2(bar_w, row_h * 0.5)),
-                        2.0, Palette::TOOL_BAR,
-                    );
-                }
-
-                painter.text(
-                    egui::pos2(inner.left() + name_w + bar_max_w + 4.0, cy),
-                    egui::Align2::LEFT_CENTER,
-                    &count.to_string(),
-                    egui::FontId::monospace(10.0),
-                    Palette::TEXT_DIM,
-                );
-            }
+                    // --- file reads (CLAUDE.md, memory) ---
+                    if !cd.read_list.is_empty() {
+                        ui.add_space(6.0);
+                        ui.add(egui::Label::new(
+                            egui::RichText::new("reads").monospace().size(10.0).color(Palette::TEXT_DIM)
+                        ));
+                        let rd_max = cd.read_list[0].1.max(1) as f32;
+                        for (name, count) in &cd.read_list {
+                            draw_bar_row(ui, name, *count, rd_max, name_w, bar_max_w, Palette::INPUT_TINT);
+                        }
+                    }
+                });
         });
     });
 
@@ -2300,11 +2339,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
                 });
                 if let Some((idx, t)) = nearest {
-                    let snap = if turns.len() > 1 {
-                        let span = turns.last().unwrap().x - turns.first().unwrap().x;
-                        (span / turns.len() as f64).max(0.5)
-                    } else { 1.0 };
-                    if (t.x - hx).abs() <= snap {
+                    {
                         let detail = match hs.source {
                             HoverSource::Cost => format!(
                                 "  t{} [{}] ctx {}  gen {}  (+{})",
@@ -2339,6 +2374,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     }
                 }
             }
+            // Find nearby skill invocations
+            let nearby_skills: Vec<&str> = cd.skill_xs.iter()
+                .filter(|(x, _)| {
+                    let snap = if entries.len() > 1 { 1.5 } else { 0.5 };
+                    (x - hx).abs() <= snap
+                })
+                .map(|(_, name)| name.as_str())
+                .collect();
+
             // For WeeklyCost, compute cumulative combined cost at hovered x
             let running_total_header: Option<String> = if matches!(hs.source, HoverSource::WeeklyCost) {
                 let pts = &cd.combined_cost_pts;
@@ -2350,7 +2394,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if !entries.is_empty() {
                 let win_rect = ui.ctx().screen_rect();
                 let row_h = 15.0_f32;
-                let extra_rows = if running_total_header.is_some() { 1.0 } else { 0.0 };
+                let extra_rows = (if running_total_header.is_some() { 1.0 } else { 0.0 })
+                    + nearby_skills.len() as f32;
                 let tip_h = row_h * (1.0 + extra_rows + entries.len() as f32 * 2.0) + 16.0;
                 let mut tip_pos = cursor + egui::vec2(14.0, -tip_h - 8.0);
                 tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
@@ -2377,6 +2422,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     ));
                                     ui.add(egui::Label::new(
                                         egui::RichText::new(data).monospace().size(11.0).color(Palette::TEXT_DIM)
+                                    ));
+                                }
+                                for sk in &nearby_skills {
+                                    let short = sk.rsplit(':').next().unwrap_or(sk);
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(format!("  skill: {}", short)).monospace().size(11.0).color(Palette::SKILL_MARKER)
                                     ));
                                 }
                             });
@@ -2438,6 +2489,9 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData) {
                     for x in &cd.agent_xs {
                         pui.vline(VLine::new(*x).color(Palette::AGENT_MARKER).width(0.5));
                     }
+                    for (x, _) in &cd.skill_xs {
+                        pui.vline(VLine::new(*x).color(Palette::SKILL_MARKER).width(0.5));
+                    }
                 });
         });
     });
@@ -2484,6 +2538,10 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData) {
             if data.sessions.iter().any(|s| s.agent_count > 0) {
                 painter.line_segment([egui::pos2(inner.right() - 30.0, inner.bottom() - 4.0), egui::pos2(inner.right() - 30.0, inner.bottom() - 8.0)], egui::Stroke::new(1.5, Palette::AGENT_MARKER));
                 painter.text(egui::pos2(inner.right() - 27.0, inner.bottom() - 6.0), egui::Align2::LEFT_CENTER, "agt", egui::FontId::monospace(6.0), Palette::AGENT_MARKER);
+            }
+            if data.sessions.iter().any(|s| !s.skill_counts.is_empty()) {
+                painter.line_segment([egui::pos2(inner.right() - 60.0, inner.bottom() - 4.0), egui::pos2(inner.right() - 60.0, inner.bottom() - 8.0)], egui::Stroke::new(1.5, Palette::SKILL_MARKER));
+                painter.text(egui::pos2(inner.right() - 57.0, inner.bottom() - 6.0), egui::Align2::LEFT_CENTER, "skill", egui::FontId::monospace(6.0), Palette::SKILL_MARKER);
             }
         });
     });

@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -30,7 +30,7 @@ fn compute_cost_split(model: &str, input: u64, output: u64, cache_read: u64, cac
 }
 
 /// One event in the session timeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Event {
     /// An assistant API call with token usage.
     ApiCall {
@@ -51,9 +51,21 @@ pub enum Event {
         seq: u32,
         name: String,
     },
+    /// A skill invocation (Skill tool with extracted skill name).
+    SkillUse {
+        seq: u32,
+        skill: String,
+    },
+    /// A notable file read (CLAUDE.md, memory, etc.)
+    ReadFile {
+        seq: u32,
+        category: String, // "CLAUDE.md", "memory", etc.
+    },
     /// A subagent spawn.
     AgentSpawn {
         seq: u32,
+        subagent_type: String,
+        description: String,
     },
 }
 
@@ -62,13 +74,15 @@ impl Event {
         match self {
             Event::ApiCall { seq, .. } => *seq,
             Event::ToolUse { seq, .. } => *seq,
+            Event::SkillUse { seq, .. } => *seq,
+            Event::ReadFile { seq, .. } => *seq,
             Event::AgentSpawn { seq, .. } => *seq,
         }
     }
 }
 
 /// Per-subagent data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SubagentData {
     pub agent_id: String,
     pub agent_type: String,
@@ -79,12 +93,14 @@ pub struct SubagentData {
     pub total_output: u64,
     pub api_call_count: u32,
     pub tool_counts: HashMap<String, u32>,
+    pub skill_counts: HashMap<String, u32>,
+    pub read_counts: HashMap<String, u32>,
     pub first_ts: u64,
     pub last_ts: u64,
 }
 
 /// Per-session data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionData {
     pub session_id: String,
     pub cwd: String,
@@ -97,6 +113,8 @@ pub struct SessionData {
     pub total_input: u64,
     pub total_output: u64,
     pub tool_counts: HashMap<String, u32>,
+    pub skill_counts: HashMap<String, u32>,
+    pub read_counts: HashMap<String, u32>,
     pub api_call_count: u32,
     pub agent_count: u32,
     pub is_active: bool,
@@ -108,7 +126,7 @@ pub struct SessionData {
 }
 
 /// All data the HUD renders from.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct HudData {
     pub sessions: Vec<SessionData>,
 }
@@ -173,6 +191,7 @@ struct ContentBlock {
     #[serde(rename = "type")]
     block_type: Option<String>,
     name: Option<String>,
+    input: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,7 +202,7 @@ struct AgentMeta {
     description: String,
 }
 
-struct TailState {
+pub struct TailState {
     offset: u64,
     seq: u32,
     cumulative_input_cost: f64,
@@ -315,6 +334,8 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
         let mut total_output = 0u64;
         let mut api_calls = 0u32;
         let mut tool_counts: HashMap<String, u32> = HashMap::new();
+        let mut skill_counts: HashMap<String, u32> = HashMap::new();
+        let mut read_counts: HashMap<String, u32> = HashMap::new();
         let mut first_ts = 0u64;
         let mut last_ts = 0u64;
         let mut last_model = String::new();
@@ -336,6 +357,12 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
                 Event::ToolUse { name, .. } => {
                     *tool_counts.entry(name.clone()).or_default() += 1;
                 }
+                Event::SkillUse { skill, .. } => {
+                    *skill_counts.entry(skill.clone()).or_default() += 1;
+                }
+                Event::ReadFile { category, .. } => {
+                    *read_counts.entry(category.clone()).or_default() += 1;
+                }
                 Event::AgentSpawn { .. } => {}
             }
         }
@@ -350,6 +377,8 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
             total_output,
             api_call_count: api_calls,
             tool_counts,
+            skill_counts,
+            read_counts,
             first_ts,
             last_ts,
         });
@@ -360,7 +389,7 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
     subagents
 }
 
-fn parse_jsonl_full(path: &str) -> (Vec<Event>, TailState) {
+pub fn parse_jsonl_full(path: &str) -> (Vec<Event>, TailState) {
     let mut state = TailState {
         offset: 0, seq: 0, cumulative_input_cost: 0.0, cumulative_output_cost: 0.0,
     };
@@ -400,7 +429,40 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
                     let name = block.name.clone().unwrap_or_else(|| "?".to_string());
                     state.seq += 1;
                     if name == "Agent" {
-                        events.push(Event::AgentSpawn { seq: state.seq });
+                        let subagent_type = block.input.as_ref()
+                            .and_then(|v| v.get("subagent_type"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("general-purpose")
+                            .to_string();
+                        let description = block.input.as_ref()
+                            .and_then(|v| v.get("description"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        events.push(Event::AgentSpawn { seq: state.seq, subagent_type, description });
+                    } else if name == "Skill" {
+                        let skill = block.input.as_ref()
+                            .and_then(|v| v.get("skill"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string();
+                        events.push(Event::SkillUse { seq: state.seq, skill });
+                    } else if name == "Read" {
+                        let file_path = block.input.as_ref()
+                            .and_then(|v| v.get("file_path"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let category = if file_path.contains("CLAUDE.md") {
+                            Some("CLAUDE.md")
+                        } else if file_path.contains("/memory/") || file_path.contains("MEMORY.md") {
+                            Some("memory")
+                        } else {
+                            None
+                        };
+                        events.push(Event::ToolUse { seq: state.seq, name });
+                        if let Some(cat) = category {
+                            events.push(Event::ReadFile { seq: state.seq, category: cat.to_string() });
+                        }
                     } else {
                         events.push(Event::ToolUse { seq: state.seq, name });
                     }
@@ -442,7 +504,7 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
     events
 }
 
-fn build_session_data(
+pub fn build_session_data(
     session_id: &str,
     cwd: &str,
     project: &str,
@@ -456,6 +518,8 @@ fn build_session_data(
     let mut total_input = 0u64;
     let mut total_output = 0u64;
     let mut tool_counts: HashMap<String, u32> = HashMap::new();
+    let mut skill_counts: HashMap<String, u32> = HashMap::new();
+    let mut read_counts: HashMap<String, u32> = HashMap::new();
     let mut api_calls = 0u32;
     let mut agents = 0u32;
     let mut first_ts = 0u64;
@@ -481,6 +545,12 @@ fn build_session_data(
             Event::ToolUse { name, .. } => {
                 *tool_counts.entry(name.clone()).or_default() += 1;
             }
+            Event::SkillUse { skill, .. } => {
+                *skill_counts.entry(skill.clone()).or_default() += 1;
+            }
+            Event::ReadFile { category, .. } => {
+                *read_counts.entry(category.clone()).or_default() += 1;
+            }
             Event::AgentSpawn { .. } => { agents += 1; }
         }
     }
@@ -497,6 +567,8 @@ fn build_session_data(
         total_input,
         total_output,
         tool_counts,
+        skill_counts,
+        read_counts,
         api_call_count: api_calls,
         agent_count: agents,
         is_active,
