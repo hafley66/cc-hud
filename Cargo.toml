@@ -3,10 +3,23 @@ name = "cc-hud"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["egui-backend"]
+egui-backend = ["dep:egui", "dep:egui_plot", "dep:egui_overlay"]
+iced-backend = ["dep:iced", "dep:plotters", "dep:plotters-iced"]
+
 [dependencies]
-egui = "0.29"
-egui_plot = "0.29"
-egui_overlay = { version = "0.9", default-features = false, features = ["egui_default", "glfw_default", "wgpu"] }
+# egui backend (default)
+egui = { version = "0.29", optional = true }
+egui_plot = { version = "0.29", optional = true }
+egui_overlay = { version = "0.9", default-features = false, features = ["egui_default", "glfw_default", "wgpu"], optional = true }
+
+# iced backend
+iced = { version = "0.13", features = ["canvas", "tokio"], optional = true }
+plotters = { version = "0.3", default-features = false, features = ["area_series", "line_series"], optional = true }
+plotters-iced = { version = "0.11", optional = true }
+
+# shared
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -18,6 +31,16 @@ core-graphics = "0.25"
 libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication"] }
+
+[[bin]]
+name = "cc-hud"
+path = "src/main.rs"
+required-features = ["egui-backend"]
+
+[[bin]]
+name = "cc-hud-iced"
+path = "src/main_iced.rs"
+required-features = ["iced-backend"]
 
 [dev-dependencies]
 insta = { version = "1", features = ["yaml"] }
