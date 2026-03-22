@@ -20,6 +20,7 @@ expression: events
     cumulative_input_cost: 0.126027
     cumulative_output_cost: 0.00625
     model: claude-opus-4-6
+    has_thinking: false
 - ToolUse:
     seq: 4
     name: Read
@@ -44,6 +45,7 @@ expression: events
     cumulative_input_cost: 0.137721
     cumulative_output_cost: 0.009250000000000001
     model: claude-opus-4-6
+    has_thinking: false
 - ToolUse:
     seq: 7
     name: Edit
@@ -62,6 +64,7 @@ expression: events
     cumulative_input_cost: 0.169573
     cumulative_output_cost: 0.013750000000000002
     model: claude-opus-4-6
+    has_thinking: false
 - AgentSpawn:
     seq: 10
     subagent_type: Explore
@@ -78,6 +81,7 @@ expression: events
     cumulative_input_cost: 0.48529500000000003
     cumulative_output_cost: 0.019675
     model: claude-opus-4-6
+    has_thinking: false
 - AgentSpawn:
     seq: 12
     subagent_type: claude-code-guide
@@ -94,6 +98,7 @@ expression: events
     cumulative_input_cost: 0.5065700000000001
     cumulative_output_cost: 0.023425
     model: claude-opus-4-6
+    has_thinking: false
 - SkillUse:
     seq: 14
     skill: "hafley:git-commit"
@@ -109,6 +114,7 @@ expression: events
     cumulative_input_cost: 0.5363470000000001
     cumulative_output_cost: 0.02485
     model: claude-opus-4-6
+    has_thinking: false
 - SkillUse:
     seq: 16
     skill: "hafley:load-session"
@@ -124,6 +130,7 @@ expression: events
     cumulative_input_cost: 0.5659820000000001
     cumulative_output_cost: 0.02585
     model: claude-opus-4-6
+    has_thinking: false
 - ToolUse:
     seq: 18
     name: Read
@@ -145,6 +152,7 @@ expression: events
     cumulative_input_cost: 0.568262
     cumulative_output_cost: 0.030350000000000002
     model: claude-sonnet-4-6
+    has_thinking: false
 - ToolUse:
     seq: 21
     name: Read
@@ -163,3 +171,7 @@ expression: events
     cumulative_input_cost: 0.6001770000000001
     cumulative_output_cost: 0.04285
     model: claude-opus-4-6
+    has_thinking: true
+- Compaction:
+    seq: 24
+    timestamp_secs: 1774031760

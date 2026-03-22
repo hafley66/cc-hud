@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 // Pricing per million tokens (USD)
 // cache_read = 0.1x input, cache_create_5m = 1.25x input
-fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
+pub fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
     // (input, output, cache_read, cache_create_5m) per 1M tokens
     match model {
         // Opus 4.6 / 4.5: $5 in, $25 out
@@ -45,6 +45,8 @@ pub enum Event {
         cumulative_input_cost: f64,
         cumulative_output_cost: f64,
         model: String,
+        /// True when this API call included extended thinking content.
+        has_thinking: bool,
     },
     /// A tool invocation.
     ToolUse {
@@ -67,6 +69,11 @@ pub enum Event {
         subagent_type: String,
         description: String,
     },
+    /// Context compaction boundary.
+    Compaction {
+        seq: u32,
+        timestamp_secs: u64,
+    },
 }
 
 impl Event {
@@ -77,6 +84,7 @@ impl Event {
             Event::SkillUse { seq, .. } => *seq,
             Event::ReadFile { seq, .. } => *seq,
             Event::AgentSpawn { seq, .. } => *seq,
+            Event::Compaction { seq, .. } => *seq,
         }
     }
 }
@@ -145,6 +153,8 @@ struct SessionFile {
 struct JsonlLine {
     #[serde(rename = "type")]
     msg_type: Option<String>,
+    #[serde(default)]
+    subtype: Option<String>,
     message: Option<JsonlMessage>,
     timestamp: Option<String>,
 }
@@ -364,6 +374,7 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
                     *read_counts.entry(category.clone()).or_default() += 1;
                 }
                 Event::AgentSpawn { .. } => {}
+                Event::Compaction { .. } => {}
             }
         }
 
@@ -420,11 +431,25 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
         if line.trim().is_empty() { continue; }
         let Ok(parsed) = serde_json::from_str::<JsonlLine>(&line) else { continue };
 
+        // Handle compact_boundary system events
+        if parsed.msg_type.as_deref() == Some("system")
+            && parsed.subtype.as_deref() == Some("compact_boundary")
+        {
+            state.seq += 1;
+            let timestamp_secs = parsed.timestamp.as_deref().map(parse_iso_secs).unwrap_or(0);
+            events.push(Event::Compaction { seq: state.seq, timestamp_secs });
+            continue;
+        }
+
         if parsed.msg_type.as_deref() != Some("assistant") { continue; }
         let Some(msg) = parsed.message else { continue; };
 
+        let mut has_thinking = false;
         if let Some(content) = &msg.content {
             for block in content {
+                if block.block_type.as_deref() == Some("thinking") {
+                    has_thinking = true;
+                }
                 if block.block_type.as_deref() == Some("tool_use") {
                     let name = block.name.clone().unwrap_or_else(|| "?".to_string());
                     state.seq += 1;
@@ -496,6 +521,7 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
                 cumulative_input_cost: state.cumulative_input_cost,
                 cumulative_output_cost: state.cumulative_output_cost,
                 model,
+                has_thinking,
             });
         }
     }
@@ -552,6 +578,7 @@ fn build_session_data(
                 *read_counts.entry(category.clone()).or_default() += 1;
             }
             Event::AgentSpawn { .. } => { agents += 1; }
+            Event::Compaction { .. } => {}
         }
     }
 
@@ -766,14 +793,20 @@ mod tests {
         let mut has_skill = false;
         let mut has_read_file = false;
         let mut has_agent = false;
+        let mut has_compaction = false;
+        let mut has_thinking = false;
 
         for ev in &events {
             match ev {
-                Event::ApiCall { .. } => has_api = true,
+                Event::ApiCall { has_thinking: t, .. } => {
+                    has_api = true;
+                    if *t { has_thinking = true; }
+                }
                 Event::ToolUse { .. } => has_tool = true,
                 Event::SkillUse { .. } => has_skill = true,
                 Event::ReadFile { .. } => has_read_file = true,
                 Event::AgentSpawn { .. } => has_agent = true,
+                Event::Compaction { .. } => has_compaction = true,
             }
         }
 
@@ -782,5 +815,7 @@ mod tests {
         assert!(has_skill, "fixture must contain SkillUse events");
         assert!(has_read_file, "fixture must contain ReadFile events");
         assert!(has_agent, "fixture must contain AgentSpawn events");
+        assert!(has_compaction, "fixture must contain Compaction events");
+        assert!(has_thinking, "fixture must contain ApiCall with has_thinking=true");
     }
 }

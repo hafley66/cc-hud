@@ -1756,7 +1756,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             p.show(ui, |pui| {
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.in_cost_bars)).color(Palette::INPUT_TINT).name("ctx$"));
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).color(Palette::OUTPUT_TINT).name("gen$"));
-                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &panel_hl.key));
+                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
                     update_hover_src(pui, HoverSource::Cost);
                     // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
@@ -1785,7 +1785,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     for (color, points) in &cd.total_cost_lines {
                         pui.line(egui_plot::Line::new(points.clone()).color(scene_to_egui(*color)).width(2.0));
                     }
-                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &panel_hl.key));
+                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
                     update_hover_src(pui, HoverSource::TotalCost);
                     // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
                 });
@@ -2055,23 +2055,35 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 if let Some((idx, t)) = nearest {
                     {
                         let detail = match hs.source {
-                            HoverSource::Cost => format!(
-                                "  t{} [{}] ctx {}  gen {}  (+{})",
-                                idx + 1, t.model_short,
-                                format_cost(t.in_cost), format_cost(t.out_cost),
-                                format_cost(t.cost_change),
-                            ),
+                            HoverSource::Cost => {
+                                let total_in = t.in_cost;
+                                let pct = |v: f64| if total_in > 0.0 { (v / total_in * 100.0).round() as u32 } else { 0 };
+                                let thinking_tag = if t.has_thinking { " [thinking]" } else { "" };
+                                format!(
+                                    "  t{} [{}]{} ctx {} (fresh {}% read {}% create {}%)  gen {}  (+{})",
+                                    idx + 1, t.model_short, thinking_tag,
+                                    format_cost(t.in_cost),
+                                    pct(t.fresh_input_cost), pct(t.cache_read_cost), pct(t.cache_create_cost),
+                                    format_cost(t.out_cost),
+                                    format_cost(t.cost_change),
+                                )
+                            }
                             HoverSource::TotalCost => format!(
                                 "  t{} total {}  (+{})",
                                 idx + 1,
                                 format_cost(t.total_cost),
                                 format_cost(t.cost_change),
                             ),
-                            HoverSource::Tokens => format!(
-                                "  t{} [{}] in {}  out {}",
-                                idx + 1, t.model_short,
-                                format_tokens(t.in_tok), format_tokens(t.out_tok),
-                            ),
+                            HoverSource::Tokens => {
+                                let total_in = t.in_tok + t.cache_read_tok + t.cache_create_tok;
+                                format!(
+                                    "  t{} [{}] ctx {} (fresh {} read {} create {})  out {}",
+                                    idx + 1, t.model_short,
+                                    format_tokens(total_in),
+                                    format_tokens(t.in_tok), format_tokens(t.cache_read_tok), format_tokens(t.cache_create_tok),
+                                    format_tokens(t.out_tok),
+                                )
+                            }
                             HoverSource::TotalTokens => format!(
                                 "  t{} total in {}  out {}",
                                 idx + 1,
@@ -2200,7 +2212,7 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
                 .show(ui, |pui| {
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.in_cost_bars)).color(Palette::INPUT_TINT).name("in$"));
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).color(Palette::OUTPUT_TINT).name("out$"));
-                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &panel_hl.key));
+                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
                 });
         });
     });

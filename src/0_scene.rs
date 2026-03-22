@@ -206,10 +206,11 @@ pub enum Node {
 pub fn build_markers(
     agent_xs: &[(f64, String)],
     skill_xs: &[(f64, String)],
+    compaction_xs: &[f64],
     highlight_key: &str,
 ) -> Vec<Marker> {
     let has_hl = !highlight_key.is_empty();
-    let mut out = Vec::with_capacity(agent_xs.len() + skill_xs.len());
+    let mut out = Vec::with_capacity(agent_xs.len() + skill_xs.len() + compaction_xs.len());
 
     for (x, atype) in agent_xs {
         let is_hl = has_hl && highlight_key == format!("agent:{}", atype);
@@ -231,6 +232,16 @@ pub fn build_markers(
             (Color::rgba(60, 180, 120, 20), 0.3)
         } else {
             (Color::rgba(60, 180, 120, 60), 0.5)
+        };
+        out.push(Marker { x: *x, color, width });
+    }
+
+    // Compaction boundaries: yellow dashed-style
+    for x in compaction_xs {
+        let (color, width) = if has_hl {
+            (Color::rgba(220, 200, 60, 30), 0.5)
+        } else {
+            (Color::rgba(220, 200, 60, 100), 1.0)
         };
         out.push(Marker { x: *x, color, width });
     }
@@ -359,7 +370,7 @@ pub fn format_tokens(n: u64) -> String {
 
 // ---- chart data (framework-agnostic) ----
 
-use crate::agent_harnesses::claude_code::{Event, HudData};
+use crate::agent_harnesses::claude_code::{self, Event, HudData};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Default)]
@@ -370,14 +381,29 @@ pub struct TurnInfo {
     pub cost_change: f64,
     pub in_tok: u64,
     pub out_tok: u64,
+    pub cache_read_tok: u64,
+    pub cache_create_tok: u64,
+    /// Cost from fresh (uncached) input tokens only.
+    pub fresh_input_cost: f64,
+    /// Cost from cache read tokens.
+    pub cache_read_cost: f64,
+    /// Cost from cache creation tokens.
+    pub cache_create_cost: f64,
     pub total_cost: f64,
     pub total_in_tok: u64,
     pub total_out_tok: u64,
     pub model_short: String,
+    pub has_thinking: bool,
 }
 
 pub struct ChartData {
     pub in_cost_bars: Vec<BarData>,
+    /// Stacked breakdown of input cost: fresh (uncached) portion.
+    pub in_cost_fresh_bars: Vec<BarData>,
+    /// Stacked breakdown: cache read portion (stacked on fresh).
+    pub in_cost_cache_read_bars: Vec<BarData>,
+    /// Stacked breakdown: cache create portion (stacked on fresh + read).
+    pub in_cost_cache_create_bars: Vec<BarData>,
     pub out_cost_bars: Vec<BarData>,
     pub in_tok_bars: Vec<BarData>,
     pub out_tok_bars: Vec<BarData>,
@@ -399,6 +425,7 @@ pub struct ChartData {
     pub combined_cost_max: f64,
     pub cost_rate_pts: Vec<[f64; 2]>,
     pub cost_rate_max: f64,
+    pub compaction_xs: Vec<f64>,
     pub session_turns: Vec<(String, Color, Vec<TurnInfo>)>,
 }
 
@@ -412,11 +439,15 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let mut agg_reads: HashMap<String, u32> = HashMap::new();
     let mut agg_agents: HashMap<String, u32> = HashMap::new();
     let mut in_cost_bars: Vec<BarData> = vec![];
+    let mut in_cost_fresh_bars: Vec<BarData> = vec![];
+    let mut in_cost_cache_read_bars: Vec<BarData> = vec![];
+    let mut in_cost_cache_create_bars: Vec<BarData> = vec![];
     let mut out_cost_bars: Vec<BarData> = vec![];
     let mut in_tok_bars: Vec<BarData> = vec![];
     let mut out_tok_bars: Vec<BarData> = vec![];
     let mut agent_xs: Vec<(f64, String)> = vec![];
     let mut skill_xs: Vec<(f64, String)> = vec![];
+    let mut compaction_xs: Vec<f64> = vec![];
     let mut session_turns: Vec<(String, Color, Vec<TurnInfo>)> = vec![];
 
     let mut total_api_calls = 0usize;
@@ -456,24 +487,38 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         for ev in &session.events {
             match ev {
                 Event::ApiCall { input_cost_usd, output_cost_usd, input_tokens, output_tokens,
-                                 cache_read_tokens, cache_create_tokens, timestamp_secs, model, .. } => {
-                    let _total_input = input_tokens + cache_read_tokens + cache_create_tokens;
+                                 cache_read_tokens, cache_create_tokens, timestamp_secs, model, has_thinking, .. } => {
                     let x = if time_axis { *timestamp_secs as f64 / 60.0 } else { api_idx as f64 };
                     let bar_w = if time_axis { time_bar_w } else { 0.8 };
 
+                    // Compute per-component input cost breakdown
+                    let (pi, _po, pcr, pcc) = claude_code::model_pricing(model);
+                    let fresh_cost = (*input_tokens as f64 * pi) / 1_000_000.0;
+                    let cr_cost = (*cache_read_tokens as f64 * pcr) / 1_000_000.0;
+                    let cc_cost = (*cache_create_tokens as f64 * pcc) / 1_000_000.0;
+
                     per_turn_in_cost_max = per_turn_in_cost_max.max(*input_cost_usd);
                     per_turn_out_cost_max = per_turn_out_cost_max.max(*output_cost_usd);
-                    in_max = in_max.max(*input_tokens as f64);
+                    let total_in_tokens = input_tokens + cache_read_tokens + cache_create_tokens;
+                    in_max = in_max.max(total_in_tokens as f64);
                     out_max = out_max.max(*output_tokens as f64);
 
+                    // Total input cost bar (composite color)
                     in_cost_bars.push(BarData { x, height: *input_cost_usd, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
                     out_cost_bars.push(BarData { x, height: -(*output_cost_usd), width: bar_w, color: Color::rgba(220, 160, 60, 180) });
-                    in_tok_bars.push(BarData { x, height: *input_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
+
+                    // Stacked input cost breakdown: fresh (bottom), cache_read (middle), cache_create (top)
+                    in_cost_fresh_bars.push(BarData { x, height: fresh_cost, width: bar_w, color: Color::rgba(60, 120, 200, 220) });
+                    in_cost_cache_read_bars.push(BarData { x, height: cr_cost, width: bar_w, color: Color::rgba(120, 180, 240, 140) });
+                    in_cost_cache_create_bars.push(BarData { x, height: cc_cost, width: bar_w, color: Color::rgba(160, 200, 250, 100) });
+
+                    // Token bars: total input (fresh + cached), not just fresh
+                    in_tok_bars.push(BarData { x, height: total_in_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
                     out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: Color::rgba(220, 160, 60, 180) });
 
                     total_in_cost += input_cost_usd;
                     total_out_cost += output_cost_usd;
-                    total_in_tok += input_tokens;
+                    total_in_tok += total_in_tokens;
                     total_out_tok += output_tokens;
 
                     let cur_total = total_in_cost + total_out_cost;
@@ -484,10 +529,16 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                         cost_change: cur_total - prev_total_cost,
                         in_tok: *input_tokens,
                         out_tok: *output_tokens,
+                        cache_read_tok: *cache_read_tokens,
+                        cache_create_tok: *cache_create_tokens,
+                        fresh_input_cost: fresh_cost,
+                        cache_read_cost: cr_cost,
+                        cache_create_cost: cc_cost,
                         total_cost: cur_total,
                         total_in_tok,
                         total_out_tok,
                         model_short: short_model_label(model).to_string(),
+                        has_thinking: *has_thinking,
                     });
                     prev_total_cost = cur_total;
                     last_x = x;
@@ -495,6 +546,10 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                 }
                 Event::AgentSpawn { subagent_type, .. } => { agent_xs.push((last_x + 0.15, subagent_type.clone())); }
                 Event::SkillUse { skill, .. } => { skill_xs.push((last_x + 0.10, skill.clone())); }
+                Event::Compaction { timestamp_secs, .. } => {
+                    let x = if time_axis { *timestamp_secs as f64 / 60.0 } else { api_idx as f64 };
+                    compaction_xs.push(x);
+                }
                 _ => {}
             }
         }
@@ -547,10 +602,11 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let cost_rate_max = all_cost_events.iter().map(|(_, c)| *c).fold(0.001_f64, f64::max);
 
     ChartData {
-        in_cost_bars, out_cost_bars, in_tok_bars, out_tok_bars, agent_xs, skill_xs,
+        in_cost_bars, in_cost_fresh_bars, in_cost_cache_read_bars, in_cost_cache_create_bars,
+        out_cost_bars, in_tok_bars, out_tok_bars, agent_xs, skill_xs,
         per_turn_in_cost_max, per_turn_out_cost_max, in_max, out_max, tool_list, skill_list, read_list, agent_list,
         total_cost_lines, total_cost_max, total_tok_lines, total_tok_max,
         combined_cost_pts, combined_cost_max, cost_rate_pts, cost_rate_max,
-        session_turns,
+        compaction_xs, session_turns,
     }
 }
