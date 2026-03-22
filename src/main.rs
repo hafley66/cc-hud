@@ -198,6 +198,44 @@ use scene::build_chart_data;
 
 
 // ---------------------------------------------------------------------------
+// Grid spacer for token axes: picks 1-2-5 steps (e.g. 1k, 2k, 5k, 10k, 50k)
+// ---------------------------------------------------------------------------
+
+fn token_grid_spacer(input: egui_plot::GridInput) -> Vec<egui_plot::GridMark> {
+    let range = (input.bounds.1 - input.bounds.0).abs();
+    if range < 1.0 { return vec![]; }
+
+    // Target ~4-6 grid lines in the visible range
+    let raw_step = range / 5.0;
+
+    // Round to nearest 1-2-5 sequence
+    let mag = 10.0_f64.powf(raw_step.log10().floor());
+    let norm = raw_step / mag;
+    let step = if norm <= 1.5 { mag } else if norm <= 3.5 { 2.0 * mag } else if norm <= 7.5 { 5.0 * mag } else { 10.0 * mag };
+
+    // Sub-steps for thinner lines (half and fifth of main step)
+    let sub_step = step / 2.0;
+
+    let lo = input.bounds.0.min(input.bounds.1);
+    let hi = input.bounds.0.max(input.bounds.1);
+
+    let mut marks = vec![];
+    // Start from a multiple of step below lo
+    let start = (lo / sub_step).floor() as i64;
+    let end = (hi / sub_step).ceil() as i64;
+    for i in start..=end {
+        let value = i as f64 * sub_step;
+        if value < lo - sub_step || value > hi + sub_step { continue; }
+        let is_major = (value / step).round() * step == value || (value - (value / step).round() * step).abs() < step * 0.01;
+        marks.push(egui_plot::GridMark {
+            value,
+            step_size: if is_major { step } else { sub_step },
+        });
+    }
+    marks
+}
+
+// ---------------------------------------------------------------------------
 // Shared plot factory — all interactive behaviors off, transparent bg
 // ---------------------------------------------------------------------------
 
@@ -1755,12 +1793,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             }
             p.show(ui, |pui| {
                     let fresh = BarChart::new(bars_to_egui(&cd.in_cost_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh$");
-                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("read$").stack_on(&[&fresh]);
-                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create$").stack_on(&[&fresh, &read]);
+                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("read$").stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create$").stack_on(&[&fresh, &read]);
                     pui.bar_chart(fresh);
                     pui.bar_chart(read);
                     pui.bar_chart(create);
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).color(Palette::OUTPUT_TINT).name("gen$"));
+                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).name("gen$"));
                     render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
                     update_hover_src(pui, HoverSource::Cost);
                 });
@@ -1802,13 +1840,13 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             draw_chart_label(ui, "tokens / turn", "in", "out");
             let mut p = base_plot("tok_big")
                 .link_cursor(cursor_id, true, false)
-                .include_y(cd.in_max)
-                .include_y(-cd.out_max)
+                .auto_bounds(egui::Vec2b::new(true, true))
                 .y_axis_formatter(move |v, _| {
                     let abs = v.value.abs();
                     if abs < 0.5 { return String::new(); }
                     format_tokens(abs.round() as u64)
                 })
+                .y_grid_spacer(token_grid_spacer)
                 .show_axes([false, true])
                 .show_grid(true);
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
@@ -1816,14 +1854,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             }
             p.show(ui, |pui| {
                     let fresh = BarChart::new(bars_to_egui(&cd.in_tok_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh");
-                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("cached");
-                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create");
+                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("cached");
+                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create");
                     let read = read.stack_on(&[&fresh]);
                     let create = create.stack_on(&[&fresh, &read]);
                     pui.bar_chart(fresh);
                     pui.bar_chart(read);
                     pui.bar_chart(create);
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_tok_bars)).color(Palette::OUTPUT_TINT).name("out"));
+                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_tok_bars)).name("out"));
                     update_hover_src(pui, HoverSource::Tokens);
                 });
         });
@@ -2180,22 +2218,22 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         }
                                         x += fw;
 
-                                        // cache read: medium blue
+                                        // cache read: green
                                         let rw = bw * read;
                                         if rw > 0.5 {
                                             painter.rect_filled(
                                                 egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), egui::vec2(rw, bar_h)),
-                                                0.0, egui::Color32::from_rgb(120, 180, 240),
+                                                0.0, egui::Color32::from_rgb(80, 180, 100),
                                             );
                                         }
                                         x += rw;
 
-                                        // cache create: light blue/teal
+                                        // cache create: orange
                                         let cw = bw * create;
                                         if cw > 0.5 {
                                             painter.rect_filled(
                                                 egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), egui::vec2(cw, bar_h)),
-                                                0.0, egui::Color32::from_rgb(160, 210, 250),
+                                                0.0, egui::Color32::from_rgb(220, 160, 60),
                                             );
                                         }
 
@@ -2264,12 +2302,12 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
                 .include_y(-cd.per_turn_out_cost_max * 1.1)
                 .show(ui, |pui| {
                     let fresh = BarChart::new(bars_to_egui(&cd.in_cost_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh$");
-                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("read$").stack_on(&[&fresh]);
-                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create$").stack_on(&[&fresh, &read]);
+                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("read$").stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create$").stack_on(&[&fresh, &read]);
                     pui.bar_chart(fresh);
                     pui.bar_chart(read);
                     pui.bar_chart(create);
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).color(Palette::OUTPUT_TINT).name("out$"));
+                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).name("out$"));
                     render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
                 });
         });
@@ -2283,12 +2321,12 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
                 .include_y(-cd.out_max * 1.1)
                 .show(ui, |pui| {
                     let fresh = BarChart::new(bars_to_egui(&cd.in_tok_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh");
-                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(120, 180, 240)).name("cached").stack_on(&[&fresh]);
-                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(160, 210, 250)).name("create").stack_on(&[&fresh, &read]);
+                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("cached").stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create").stack_on(&[&fresh, &read]);
                     pui.bar_chart(fresh);
                     pui.bar_chart(read);
                     pui.bar_chart(create);
-                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_tok_bars)).color(Palette::OUTPUT_TINT).name("out"));
+                    pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_tok_bars)).name("out"));
                 });
         });
     });

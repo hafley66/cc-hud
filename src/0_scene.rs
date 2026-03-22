@@ -514,19 +514,21 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
 
                     // Total input cost bar (composite color)
                     in_cost_bars.push(BarData { x, height: *input_cost_usd, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
-                    out_cost_bars.push(BarData { x, height: -(*output_cost_usd), width: bar_w, color: Color::rgba(220, 160, 60, 180) });
+                    let out_cost_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
+                    out_cost_bars.push(BarData { x, height: -(*output_cost_usd), width: bar_w, color: out_cost_color });
 
                     // Stacked input cost breakdown: fresh (bottom), cache_read (middle), cache_create (top)
                     in_cost_fresh_bars.push(BarData { x, height: fresh_cost, width: bar_w, color: Color::rgba(60, 120, 200, 220) });
-                    in_cost_cache_read_bars.push(BarData { x, height: cr_cost, width: bar_w, color: Color::rgba(120, 180, 240, 140) });
-                    in_cost_cache_create_bars.push(BarData { x, height: cc_cost, width: bar_w, color: Color::rgba(160, 200, 250, 100) });
+                    in_cost_cache_read_bars.push(BarData { x, height: cr_cost, width: bar_w, color: Color::rgba(80, 180, 100, 160) });
+                    in_cost_cache_create_bars.push(BarData { x, height: cc_cost, width: bar_w, color: Color::rgba(220, 160, 60, 160) });
 
                     // Token bars: total input (fresh + cached), not just fresh
                     in_tok_bars.push(BarData { x, height: total_in_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
                     in_tok_fresh_bars.push(BarData { x, height: *input_tokens as f64, width: bar_w, color: Color::rgba(60, 120, 200, 220) });
-                    in_tok_cache_read_bars.push(BarData { x, height: *cache_read_tokens as f64, width: bar_w, color: Color::rgba(120, 180, 240, 140) });
-                    in_tok_cache_create_bars.push(BarData { x, height: *cache_create_tokens as f64, width: bar_w, color: Color::rgba(160, 200, 250, 100) });
-                    out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: Color::rgba(220, 160, 60, 180) });
+                    in_tok_cache_read_bars.push(BarData { x, height: *cache_read_tokens as f64, width: bar_w, color: Color::rgba(80, 180, 100, 160) });
+                    in_tok_cache_create_bars.push(BarData { x, height: *cache_create_tokens as f64, width: bar_w, color: Color::rgba(220, 160, 60, 160) });
+                    let out_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
+                    out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: out_color });
 
                     total_in_cost += input_cost_usd;
                     total_out_cost += output_cost_usd;
