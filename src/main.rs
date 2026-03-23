@@ -154,7 +154,7 @@ impl Palette {
 
 /// Which chart region the hover originated from.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate }
+enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate, Energy, Carbon, EnergyTotal }
 
 /// Session time ranges highlighted from legend hover (stored as minutes-from-epoch).
 #[derive(Clone, Default)]
@@ -1053,10 +1053,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let legend_row_h = 42.0_f32;
     let row_gap = 3.0_f32;
     let legend_h = (h * 0.30).clamp(100.0, 220.0);
-    // Row 3: weekly strip (thin)
-    let weekly_h = (h * 0.17).max(50.0);
-    // Row 2: per-turn + running total charts
-    let chart_h = h - controls_h - gap - nav_h - gap - legend_h - weekly_h - gap * 2.0;
+    // Row 4-5: energy per-turn + energy totals (two rows)
+    let energy_per_turn_h = (h * 0.09).clamp(50.0, 100.0);
+    let energy_total_h = (h * 0.09).clamp(50.0, 100.0);
+    // Row 6: weekly strip (thin)
+    let weekly_h = (h * 0.12).max(45.0);
+    // Row 2-3: per-turn + running total charts (cost/tokens)
+    let chart_h = h - controls_h - gap - nav_h - gap - legend_h
+        - energy_per_turn_h - energy_total_h - weekly_h - gap * 4.0;
 
     let legend_rect = egui::Rect::from_min_size(egui::pos2(x0, after_nav_y), egui::vec2(w, legend_h));
 
@@ -1078,7 +1082,18 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let right_x = x0 + cost_w + tok_w + gap * 2.0;
     let usage_rect   = egui::Rect::from_min_size(egui::pos2(right_x, chart_y), egui::vec2(tool_w, usage_chart_h));
     let tool_rect    = egui::Rect::from_min_size(egui::pos2(right_x, chart_y + usage_chart_h + gap), egui::vec2(tool_w, tool_h));
-    let weekly_y     = chart_y + chart_h + gap;
+    // Row 4: per-turn energy (Wh) + per-turn carbon (gCO2), split 50/50
+    let energy_y = chart_y + chart_h + gap;
+    let energy_half = (w - gap) / 2.0;
+    let energy_wh_rect = egui::Rect::from_min_size(egui::pos2(x0, energy_y), egui::vec2(energy_half, energy_per_turn_h));
+    let carbon_g_rect = egui::Rect::from_min_size(egui::pos2(x0 + energy_half + gap, energy_y), egui::vec2(energy_half, energy_per_turn_h));
+
+    // Row 5: cumulative energy + cumulative carbon, split 50/50
+    let energy_total_y = energy_y + energy_per_turn_h + gap;
+    let energy_total_rect = egui::Rect::from_min_size(egui::pos2(x0, energy_total_y), egui::vec2(energy_half, energy_total_h));
+    let carbon_total_rect = egui::Rect::from_min_size(egui::pos2(x0 + energy_half + gap, energy_total_y), egui::vec2(energy_half, energy_total_h));
+
+    let weekly_y     = energy_total_y + energy_total_h + gap;
     let weekly_half  = (w - gap) / 2.0;
     let weekly_total_rect  = egui::Rect::from_min_size(egui::pos2(x0, weekly_y), egui::vec2(weekly_half, weekly_h));
     let weekly_rate_rect = egui::Rect::from_min_size(egui::pos2(x0 + weekly_half + gap, weekly_y), egui::vec2(weekly_half, weekly_h));
@@ -1746,15 +1761,25 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let panel_hl: PanelHighlight = ui.ctx().data(|d| d.get_temp(panel_hl_id).unwrap_or_default());
 
     // Clear hover state when pointer is outside chart areas or left the window.
-    let all_charts_rect = cost_rect.union(tok_rect).union(total_cost_rect).union(total_tok_rect);
+    let all_charts_rect = cost_rect.union(tok_rect).union(total_cost_rect).union(total_tok_rect)
+        .union(energy_wh_rect).union(carbon_g_rect).union(energy_total_rect).union(carbon_total_rect)
+        .union(weekly_total_rect).union(weekly_rate_rect);
     match ui.ctx().input(|i| i.pointer.hover_pos()) {
         None => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
         Some(pos) if !all_charts_rect.contains(pos) => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
         _ => {}
     }
 
-    // Screen-space containment check + source tracking.
-    let update_hover_src = |pui: &egui_plot::PlotUi, source: HoverSource| {
+    // Previous frame's hover x for drawing highlight VLine across all charts.
+    let prev_hover: Option<HoverState> = ui.ctx().data(|d| d.get_temp(hover_id));
+    let hover_vline_color = egui::Color32::from_rgba_unmultiplied(200, 190, 165, 35);
+
+    // Screen-space containment check + source tracking + highlight VLine.
+    let update_hover_src = |pui: &mut egui_plot::PlotUi, source: HoverSource| {
+        // Draw highlight VLine from previous frame's hover position
+        if let Some(hs) = &prev_hover {
+            pui.vline(VLine::new(hs.x).color(hover_vline_color).width(1.0));
+        }
         let Some(hover_pos) = pui.ctx().input(|i| i.pointer.hover_pos()) else { return };
         let b = pui.plot_bounds();
         let s_min = pui.screen_from_plot(egui_plot::PlotPoint::new(b.min()[0], b.min()[1]));
@@ -2027,6 +2052,140 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         });
     });
 
+    // --- Row 4: per-turn energy (Wh) + per-turn carbon (gCO2) ---
+    // Precompute session totals for labels + silly units
+    let total_wh: f64 = cd.total_energy_lines.iter()
+        .filter_map(|(_, pts)| pts.last().map(|p| p[1])).sum();
+    let total_co2: f64 = cd.total_carbon_lines.iter()
+        .filter_map(|(_, pts)| pts.last().map(|p| p[1])).sum();
+
+    // Silly unit equivalences
+    // 1 smartphone charge = 12 Wh, 1 LED bulb hour = 10 Wh
+    let phone_charges = total_wh / 12.0;
+    let led_hours = total_wh / 10.0;
+    // 1 mile driven (avg US car) = 404 gCO2, 1 gallon gas = 8887 gCO2
+    let miles_driven = total_co2 / 404.0;
+    let gallons_gas = total_co2 / 8887.0;
+
+    let wh_silly = if total_wh > 12.0 { format!("{:.1} phone charges", phone_charges) }
+        else if total_wh > 0.01 { format!("{:.1} LED-bulb hrs", led_hours) }
+        else { String::new() };
+    let co2_silly = if total_co2 > 404.0 { format!("{:.2} miles driven", miles_driven) }
+        else if total_co2 > 0.01 { format!("{:.4} gal gas", gallons_gas) }
+        else { String::new() };
+
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(energy_wh_rect), |ui| {
+        panel_frame().show(ui, |ui| {
+            let wh_label = if total_wh > 0.001 { format!("{:.2} Wh", total_wh) } else { String::new() };
+            draw_chart_label(ui, "energy / turn", &wh_label, &wh_silly);
+            let mut p = base_plot("energy_wh")
+                .link_cursor(cursor_id, true, false)
+                .include_y(0.0)
+                .include_y(cd.energy_wh_max)
+                .y_axis_formatter(move |v, _| {
+                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
+                })
+                .show_axes([false, true])
+                .show_grid(true);
+            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+            }
+            p.show(ui, |pui| {
+                pui.bar_chart(BarChart::new(bars_to_egui(&cd.energy_wh_bars))
+                    .color(egui::Color32::from_rgb(120, 200, 80)).name("Wh"));
+                update_hover_src(pui, HoverSource::Energy);
+            });
+        });
+    });
+
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(carbon_g_rect), |ui| {
+        panel_frame().show(ui, |ui| {
+            let co2_label = if total_co2 > 0.001 { format!("{:.2} gCO\u{2082}", total_co2) } else { String::new() };
+            draw_chart_label(ui, "carbon / turn", &co2_label, &co2_silly);
+            let mut p = base_plot("carbon_g")
+                .link_cursor(cursor_id, true, false)
+                .include_y(0.0)
+                .include_y(cd.carbon_g_max)
+                .y_axis_formatter(move |v, _| {
+                    if v.value < 1e-9 { String::new() } else { format!("{:.3}", v.value) }
+                })
+                .show_axes([false, true])
+                .show_grid(true);
+            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+            }
+            p.show(ui, |pui| {
+                pui.bar_chart(BarChart::new(bars_to_egui(&cd.carbon_g_bars))
+                    .color(egui::Color32::from_rgb(180, 140, 220)).name("gCO\u{2082}"));
+                update_hover_src(pui, HoverSource::Carbon);
+            });
+        });
+    });
+
+    // --- Row 5: cumulative energy + cumulative carbon ---
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(energy_total_rect), |ui| {
+        panel_frame().show(ui, |ui| {
+            let top = if total_wh > 0.001 { format!("{:.2} Wh", total_wh) } else { String::new() };
+            // Solar offset: how long a 400W panel needs to run to produce this energy
+            let total_kwh = total_wh / 1000.0;
+            let solar_secs = if total_kwh > 0.0 {
+                total_kwh / energy::SOLAR_US_AVG.kwh_per_second()
+            } else { 0.0 };
+            let solar_label = if solar_secs > 3600.0 { format!("{:.1}h solar", solar_secs / 3600.0) }
+                else if solar_secs > 60.0 { format!("{:.0}m solar", solar_secs / 60.0) }
+                else if solar_secs > 0.5 { format!("{:.0}s solar", solar_secs) }
+                else { String::new() };
+            draw_chart_label(ui, "total energy", &top, &solar_label);
+            let mut p = base_plot("energy_total")
+                .link_cursor(cursor_id, true, false)
+                .include_y(0.0)
+                .include_y(cd.total_energy_max)
+                .y_axis_formatter(move |v, _| {
+                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
+                })
+                .show_axes([is_time, true])
+                .show_grid(true);
+            if is_time { p = p.x_axis_formatter(time_x_fmt); }
+            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+            }
+            p.show(ui, |pui| {
+                for (color, pts) in &cd.total_energy_lines {
+                    pui.line(egui_plot::Line::new(pts.clone())
+                        .color(scene_to_egui(*color)).width(2.0).name("Wh"));
+                }
+                update_hover_src(pui, HoverSource::EnergyTotal);
+            });
+        });
+    });
+
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(carbon_total_rect), |ui| {
+        panel_frame().show(ui, |ui| {
+            let top = if total_co2 > 0.001 { format!("{:.2} gCO\u{2082}", total_co2) } else { String::new() };
+            draw_chart_label(ui, "total carbon", &top, &co2_silly);
+            let mut p = base_plot("carbon_total")
+                .link_cursor(cursor_id, true, false)
+                .include_y(0.0)
+                .include_y(cd.total_carbon_max)
+                .y_axis_formatter(move |v, _| {
+                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
+                })
+                .show_axes([is_time, true])
+                .show_grid(true);
+            if is_time { p = p.x_axis_formatter(time_x_fmt); }
+            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+            }
+            p.show(ui, |pui| {
+                for (color, pts) in &cd.total_carbon_lines {
+                    pui.line(egui_plot::Line::new(pts.clone())
+                        .color(scene_to_egui(*color)).width(2.0).name("gCO\u{2082}"));
+                }
+                update_hover_src(pui, HoverSource::EnergyTotal);
+            });
+        });
+    });
+
     // --- bottom row: combined cost + cost rate (from ChartData, same x-domain) ---
     {
         let rate_label = if is_time { "cost/hr" } else { "cost/turn" };
@@ -2097,11 +2256,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     if let Some(hs) = hover_state {
         let hx = hs.x;
         if let Some(cursor) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-            // (session_name, detail_text, optional breakdown fracs: fresh, read, create)
-            let mut entries: Vec<(String, String, Option<[f32; 3]>)> = vec![];
+            // (session_name, session_color, detail_text, optional breakdown fracs)
+            let mut entries: Vec<(String, egui::Color32, String, Option<[f32; 3]>)> = vec![];
             // Context info from nearest turn (for footer): (context_tokens, context_limit, burn_rate_per_turn, is_reset)
             let mut context_footer: Option<(u64, u64, f64, bool)> = None;
-            for (name, _, turns) in &cd.session_turns {
+            for (name, sess_color, turns) in &cd.session_turns {
                 let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
                     (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
                 });
@@ -2162,8 +2321,35 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             "  t{} [{}] +{}  total {}",
                             idx + 1, t.model_short, format_cost(t.cost_change), format_cost(t.total_cost),
                         ), None),
+                        HoverSource::Energy => {
+                            let wh = t.energy.facility_kwh.mid * 1000.0;
+                            (format!(
+                                "  t{} [{}] {:.2} Wh  ({:.2}..{:.2})",
+                                idx + 1, t.model_short, wh,
+                                t.energy.facility_kwh.low * 1000.0,
+                                t.energy.facility_kwh.high * 1000.0,
+                            ), None)
+                        }
+                        HoverSource::Carbon => {
+                            let cg = t.energy.carbon_grams.mid;
+                            (format!(
+                                "  t{} [{}] {:.3} gCO\u{2082}  ({:.3}..{:.3})",
+                                idx + 1, t.model_short, cg,
+                                t.energy.carbon_grams.low,
+                                t.energy.carbon_grams.high,
+                            ), None)
+                        }
+                        HoverSource::EnergyTotal => {
+                            let wh = t.cumulative_energy.facility_kwh.mid * 1000.0;
+                            let cg = t.cumulative_energy.carbon_grams.mid;
+                            (format!(
+                                "  t{} total {:.1} Wh  {:.1} gCO\u{2082}",
+                                idx + 1, wh, cg,
+                            ), None)
+                        }
                     };
-                    entries.push((name.clone(), detail, breakdown));
+                    let sc = scene_to_egui(*sess_color);
+                    entries.push((name.clone(), sc, detail, breakdown));
                 }
             }
             // Find nearby skill invocations
@@ -2187,7 +2373,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let win_rect = ui.ctx().screen_rect();
                 let row_h = 15.0_f32;
                 let bar_h = 6.0_f32;
-                let has_bars = entries.iter().any(|(_, _, b)| b.is_some());
+                let has_bars = entries.iter().any(|(_, _, _, b)| b.is_some());
                 let rows_per_entry = if has_bars { 3.0 } else { 2.0 }; // name + detail + bar
                 let extra_rows = (if running_total_header.is_some() { 1.0 } else { 0.0 })
                     + nearby_skills.len() as f32
@@ -2219,9 +2405,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         egui::RichText::new(hdr).monospace().size(12.0).color(Palette::INPUT_TINT)
                                     ));
                                 }
-                                for (name, data, breakdown) in &entries {
+                                for (name, sess_color, data, breakdown) in &entries {
                                     ui.add(egui::Label::new(
-                                        egui::RichText::new(name).monospace().size(12.0).color(Palette::TEXT_BRIGHT)
+                                        egui::RichText::new(name).monospace().size(12.0).color(*sess_color)
                                     ));
                                     ui.add(egui::Label::new(
                                         egui::RichText::new(data).monospace().size(11.0).color(Palette::TEXT_DIM)
@@ -2282,13 +2468,13 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     let remaining = ctx_limit.saturating_sub(ctx_tok);
                                     let countdown = if burn_rate > 0.0 {
                                         let turns_left = remaining as f64 / burn_rate;
-                                        format!("~{} turns", turns_left.round() as u64)
+                                        format!("  til compact: ~{} turns", turns_left.round() as u64)
                                     } else {
-                                        "--".to_string()
+                                        String::new()
                                     };
                                     let reset_tag = if is_reset { " [RESET]" } else { "" };
                                     let ctx_line = format!(
-                                        "  ctx {}% ({}/{})  remaining {}  til compact: {}{}",
+                                        "  ctx {}% ({}/{})  remaining {}{}{}",
                                         pct, format_tokens(ctx_tok), format_tokens(ctx_limit),
                                         format_tokens(remaining), countdown, reset_tag,
                                     );

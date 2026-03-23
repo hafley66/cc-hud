@@ -371,6 +371,7 @@ pub fn format_tokens(n: u64) -> String {
 // ---- chart data (framework-agnostic) ----
 
 use crate::agent_harnesses::claude_code::{self, Event, HudData};
+use crate::energy::{self, EnergyConfig, EnergyEstimate, ModelTier, TokenCounts};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Default)]
@@ -400,6 +401,10 @@ pub struct TurnInfo {
     pub context_limit: u64,
     /// True if context_tokens dropped from previous turn (compaction happened)
     pub is_reset: bool,
+    /// Per-turn energy estimate (midpoint values)
+    pub energy: EnergyEstimate,
+    /// Cumulative energy up to this turn
+    pub cumulative_energy: EnergyEstimate,
 }
 
 pub struct ChartData {
@@ -439,6 +444,21 @@ pub struct ChartData {
     pub cost_rate_max: f64,
     pub compaction_xs: Vec<f64>,
     pub session_turns: Vec<(String, Color, Vec<TurnInfo>)>,
+    /// Per-turn energy bars (Wh midpoint)
+    pub energy_wh_bars: Vec<BarData>,
+    /// Per-turn carbon bars (gCO2 midpoint)
+    pub carbon_g_bars: Vec<BarData>,
+    /// Per-turn local cost bars (USD)
+    pub local_cost_bars: Vec<BarData>,
+    pub energy_wh_max: f64,
+    pub carbon_g_max: f64,
+    pub local_cost_max: f64,
+    /// Cumulative energy lines per session: (color, kWh_mid points)
+    pub total_energy_lines: Vec<(Color, Vec<[f64; 2]>)>,
+    /// Cumulative carbon lines per session: (color, gCO2_mid points)
+    pub total_carbon_lines: Vec<(Color, Vec<[f64; 2]>)>,
+    pub total_energy_max: f64,
+    pub total_carbon_max: f64,
 }
 
 pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -> ChartData {
@@ -464,6 +484,13 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let mut skill_xs: Vec<(f64, String)> = vec![];
     let mut compaction_xs: Vec<f64> = vec![];
     let mut session_turns: Vec<(String, Color, Vec<TurnInfo>)> = vec![];
+    let mut energy_wh_bars: Vec<BarData> = vec![];
+    let mut carbon_g_bars: Vec<BarData> = vec![];
+    let mut local_cost_bars: Vec<BarData> = vec![];
+    let mut energy_wh_max = 0.001_f64;
+    let mut carbon_g_max = 0.001_f64;
+    let mut local_cost_max = 0.0001_f64;
+    let energy_config = EnergyConfig::default();
 
     let mut total_api_calls = 0usize;
     let (mut ts_min, mut ts_max) = (u64::MAX, 0u64);
@@ -480,7 +507,7 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         }
     }
     let time_span_min = if ts_max > ts_min { (ts_max - ts_min) as f64 / 60.0 } else { 60.0 };
-    let time_bar_w = (time_span_min / total_api_calls.max(1) as f64).max(time_span_min / 300.0).min(time_span_min / 10.0);
+    let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.6).max(time_span_min / 300.0).min(time_span_min / 60.0);
 
     for (si, session) in data.sessions.iter().enumerate() {
         if hidden.contains(&session.session_id) { continue; }
@@ -498,6 +525,7 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         let mut total_out_tok = 0u64;
         let mut api_idx = 0usize;
         let mut last_x = 0f64;
+        let mut cum_energy = EnergyEstimate::default();
 
         for ev in &session.events {
             match ev {
@@ -536,6 +564,30 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                     let out_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
                     out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: out_color });
 
+                    // Per-turn energy estimate
+                    let turn_tokens = TokenCounts {
+                        input_tokens: *input_tokens,
+                        output_tokens: *output_tokens,
+                        cache_read_tokens: *cache_read_tokens,
+                        cache_create_tokens: *cache_create_tokens,
+                    };
+                    let tier = ModelTier::from_model_str(model);
+                    let api_cost = input_cost_usd + output_cost_usd;
+                    let turn_energy = energy::estimate(&turn_tokens, tier, api_cost, &energy_config);
+
+                    // Energy bars: Wh (not kWh) for readable per-turn values
+                    let wh = turn_energy.facility_kwh.mid * 1000.0;
+                    let cg = turn_energy.carbon_grams.mid;
+                    let lc = turn_energy.local_cost_usd;
+                    energy_wh_bars.push(BarData { x, height: wh, width: bar_w, color: Color::rgba(120, 200, 80, 200) });
+                    carbon_g_bars.push(BarData { x, height: cg, width: bar_w, color: Color::rgba(180, 140, 220, 200) });
+                    local_cost_bars.push(BarData { x, height: lc, width: bar_w, color: Color::rgba(220, 180, 80, 180) });
+                    energy_wh_max = energy_wh_max.max(wh);
+                    carbon_g_max = carbon_g_max.max(cg);
+                    local_cost_max = local_cost_max.max(lc);
+
+                    cum_energy.accumulate(&turn_energy);
+
                     total_in_cost += input_cost_usd;
                     total_out_cost += output_cost_usd;
                     total_in_tok += total_in_tokens;
@@ -567,6 +619,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                         context_tokens,
                         context_limit,
                         is_reset,
+                        energy: turn_energy,
+                        cumulative_energy: cum_energy.clone(),
                     });
                     prev_total_cost = cur_total;
                     last_x = x;
@@ -609,6 +663,26 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         total_tok_lines.push((*color, in_tok_pts, out_tok_pts));
     }
 
+    let mut total_energy_lines: Vec<(Color, Vec<[f64; 2]>)> = vec![];
+    let mut total_carbon_lines: Vec<(Color, Vec<[f64; 2]>)> = vec![];
+    let mut total_energy_max = 0.001_f64;
+    let mut total_carbon_max = 0.001_f64;
+    for (_, color, turns) in &session_turns {
+        if turns.is_empty() { continue; }
+        let energy_pts: Vec<[f64; 2]> = turns.iter()
+            .map(|t| [t.x, t.cumulative_energy.facility_kwh.mid * 1000.0]) // Wh
+            .collect();
+        let carbon_pts: Vec<[f64; 2]> = turns.iter()
+            .map(|t| [t.x, t.cumulative_energy.carbon_grams.mid])
+            .collect();
+        if let Some(last) = turns.last() {
+            total_energy_max = total_energy_max.max(last.cumulative_energy.facility_kwh.mid * 1000.0);
+            total_carbon_max = total_carbon_max.max(last.cumulative_energy.carbon_grams.mid);
+        }
+        total_energy_lines.push((*color, energy_pts));
+        total_carbon_lines.push((*color, carbon_pts));
+    }
+
     let mut all_cost_events: Vec<(f64, f64)> = vec![];
     for (_, _, turns) in &session_turns {
         for t in turns { all_cost_events.push((t.x, t.cost_change)); }
@@ -637,5 +711,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         total_cost_lines, total_cost_max, total_tok_lines, total_tok_max,
         combined_cost_pts, combined_cost_max, cost_rate_pts, cost_rate_max,
         compaction_xs, session_turns,
+        energy_wh_bars, carbon_g_bars, local_cost_bars,
+        energy_wh_max, carbon_g_max, local_cost_max,
+        total_energy_lines, total_carbon_lines, total_energy_max, total_carbon_max,
     }
 }

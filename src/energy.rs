@@ -331,6 +331,26 @@ pub struct EnergyEstimate {
     pub api_markup_ratio: f64,
 }
 
+impl EnergyEstimate {
+    /// Accumulate another estimate into this one (for running totals).
+    pub fn accumulate(&mut self, other: &EnergyEstimate) {
+        self.server_joules += other.server_joules;
+        self.facility_joules += other.facility_joules;
+        self.facility_kwh += other.facility_kwh;
+        self.carbon_grams += other.carbon_grams;
+        self.local_gpu_seconds += other.local_gpu_seconds;
+        self.local_kwh += other.local_kwh;
+        self.local_cost_usd += other.local_cost_usd;
+        self.solar_offset_seconds += other.solar_offset_seconds;
+        self.api_cost_usd += other.api_cost_usd;
+        self.api_markup_ratio = if self.local_cost_usd > 0.0 {
+            self.api_cost_usd / self.local_cost_usd
+        } else {
+            f64::INFINITY
+        };
+    }
+}
+
 /// Compute energy estimates from token counts.
 pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config: &EnergyConfig) -> EnergyEstimate {
     let j_out = output_joules_per_token(tier);
