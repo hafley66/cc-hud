@@ -446,19 +446,19 @@ pub struct ChartData {
     pub session_turns: Vec<(String, Color, Vec<TurnInfo>)>,
     /// Per-turn energy bars (Wh midpoint)
     pub energy_wh_bars: Vec<BarData>,
-    /// Per-turn carbon bars (gCO2 midpoint)
-    pub carbon_g_bars: Vec<BarData>,
+    /// Per-turn water bars (mL midpoint)
+    pub water_ml_bars: Vec<BarData>,
     /// Per-turn local cost bars (USD)
     pub local_cost_bars: Vec<BarData>,
     pub energy_wh_max: f64,
-    pub carbon_g_max: f64,
+    pub water_ml_max: f64,
     pub local_cost_max: f64,
-    /// Cumulative energy lines per session: (color, kWh_mid points)
+    /// Cumulative energy lines per session: (color, Wh_mid points)
     pub total_energy_lines: Vec<(Color, Vec<[f64; 2]>)>,
-    /// Cumulative carbon lines per session: (color, gCO2_mid points)
-    pub total_carbon_lines: Vec<(Color, Vec<[f64; 2]>)>,
+    /// Cumulative water lines per session: (color, mL_mid points)
+    pub total_water_lines: Vec<(Color, Vec<[f64; 2]>)>,
     pub total_energy_max: f64,
-    pub total_carbon_max: f64,
+    pub total_water_max: f64,
 }
 
 pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -> ChartData {
@@ -485,10 +485,10 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let mut compaction_xs: Vec<f64> = vec![];
     let mut session_turns: Vec<(String, Color, Vec<TurnInfo>)> = vec![];
     let mut energy_wh_bars: Vec<BarData> = vec![];
-    let mut carbon_g_bars: Vec<BarData> = vec![];
+    let mut water_ml_bars: Vec<BarData> = vec![];
     let mut local_cost_bars: Vec<BarData> = vec![];
     let mut energy_wh_max = 0.001_f64;
-    let mut carbon_g_max = 0.001_f64;
+    let mut water_ml_max = 0.001_f64;
     let mut local_cost_max = 0.0001_f64;
     let energy_config = EnergyConfig::default();
 
@@ -577,13 +577,13 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
 
                     // Energy bars: Wh (not kWh) for readable per-turn values
                     let wh = turn_energy.facility_kwh.mid * 1000.0;
-                    let cg = turn_energy.carbon_grams.mid;
+                    let wml = turn_energy.water_total_ml.mid;
                     let lc = turn_energy.local_cost_usd;
                     energy_wh_bars.push(BarData { x, height: wh, width: bar_w, color: Color::rgba(120, 200, 80, 200) });
-                    carbon_g_bars.push(BarData { x, height: cg, width: bar_w, color: Color::rgba(180, 140, 220, 200) });
+                    water_ml_bars.push(BarData { x, height: wml, width: bar_w, color: Color::rgba(100, 160, 220, 200) });
                     local_cost_bars.push(BarData { x, height: lc, width: bar_w, color: Color::rgba(220, 180, 80, 180) });
                     energy_wh_max = energy_wh_max.max(wh);
-                    carbon_g_max = carbon_g_max.max(cg);
+                    water_ml_max = water_ml_max.max(wml);
                     local_cost_max = local_cost_max.max(lc);
 
                     cum_energy.accumulate(&turn_energy);
@@ -664,23 +664,23 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     }
 
     let mut total_energy_lines: Vec<(Color, Vec<[f64; 2]>)> = vec![];
-    let mut total_carbon_lines: Vec<(Color, Vec<[f64; 2]>)> = vec![];
+    let mut total_water_lines: Vec<(Color, Vec<[f64; 2]>)> = vec![];
     let mut total_energy_max = 0.001_f64;
-    let mut total_carbon_max = 0.001_f64;
+    let mut total_water_max = 0.001_f64;
     for (_, color, turns) in &session_turns {
         if turns.is_empty() { continue; }
         let energy_pts: Vec<[f64; 2]> = turns.iter()
             .map(|t| [t.x, t.cumulative_energy.facility_kwh.mid * 1000.0]) // Wh
             .collect();
-        let carbon_pts: Vec<[f64; 2]> = turns.iter()
-            .map(|t| [t.x, t.cumulative_energy.carbon_grams.mid])
+        let water_pts: Vec<[f64; 2]> = turns.iter()
+            .map(|t| [t.x, t.cumulative_energy.water_total_ml.mid])
             .collect();
         if let Some(last) = turns.last() {
             total_energy_max = total_energy_max.max(last.cumulative_energy.facility_kwh.mid * 1000.0);
-            total_carbon_max = total_carbon_max.max(last.cumulative_energy.carbon_grams.mid);
+            total_water_max = total_water_max.max(last.cumulative_energy.water_total_ml.mid);
         }
         total_energy_lines.push((*color, energy_pts));
-        total_carbon_lines.push((*color, carbon_pts));
+        total_water_lines.push((*color, water_pts));
     }
 
     let mut all_cost_events: Vec<(f64, f64)> = vec![];
@@ -711,8 +711,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         total_cost_lines, total_cost_max, total_tok_lines, total_tok_max,
         combined_cost_pts, combined_cost_max, cost_rate_pts, cost_rate_max,
         compaction_xs, session_turns,
-        energy_wh_bars, carbon_g_bars, local_cost_bars,
-        energy_wh_max, carbon_g_max, local_cost_max,
-        total_energy_lines, total_carbon_lines, total_energy_max, total_carbon_max,
+        energy_wh_bars, water_ml_bars, local_cost_bars,
+        energy_wh_max, water_ml_max, local_cost_max,
+        total_energy_lines, total_water_lines, total_energy_max, total_water_max,
     }
 }

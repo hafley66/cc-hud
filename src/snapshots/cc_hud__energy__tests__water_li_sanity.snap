@@ -1,0 +1,8 @@
+---
+source: src/energy.rs
+expression: "format!(\"total_water_ml: {:.1}\\nper_query_ml: {:.1}\\nonsite_ml: {:.1}\\noffsite_ml: {:.1}\",\ne.water_total_ml.mid, per_query, e.water_onsite_ml.mid,\ne.water_offsite_ml.mid)"
+---
+total_water_ml: 396.0
+per_query_ml: 13.2
+onsite_ml: 216.0
+offsite_ml: 180.0

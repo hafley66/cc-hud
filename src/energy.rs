@@ -1,15 +1,66 @@
-/// Energy, carbon, and local cost projection from API token usage.
+/// Energy, carbon, water, and local cost projection from API token usage.
 ///
 /// Pure computation module. No UI dependencies. Takes token counts and model tier,
-/// returns physical estimates (joules, kWh, gCO2, USD, seconds-of-solar).
+/// returns physical estimates (joules, kWh, gCO2, mL water, USD, seconds-of-solar).
 ///
-/// Research basis (March 2026):
-/// - Per-token energy: TokenPowerBench (arxiv 2512.03024), "From Words to Watts" (2310.03003),
-///   "Where Do the Joules Go?" (2601.22076), Epoch AI estimates
-/// - Carbon intensity: EPA eGRID 2023, Electricity Maps, CO2.js/Ember annual averages
-/// - Solar: NREL ATB 2024, EIA capacity factors by state
-/// - Local GPU: TokenPowerBench 4090 benchmarks, llm-tracker.info
-/// - Electricity pricing: EIA retail sales data 2025-2026
+/// # Research basis (March 2026)
+///
+/// ## Per-token energy
+/// - TokenPowerBench (arxiv 2512.03024): H100 FP8 benchmarks for Llama-3 8B/70B
+/// - "From Words to Watts" (arxiv 2310.03003): LLM energy measurement methodology
+/// - "Where Do the Joules Go?" (arxiv 2601.22076): prefill ~3.4% of total, decode dominates
+/// - Epoch AI estimates: model size/FLOP scaling laws
+///
+/// ## Carbon intensity
+/// - EPA eGRID 2023: US subregion emission rates (RFCE, RFCW, NWPP, etc.)
+/// - Electricity Maps / CO2.js / Ember: annual country/region averages
+/// - lowcarbonpower.org: state-level clean energy percentages
+///
+/// ## Water consumption
+/// Two independent components, both scale linearly with facility_kwh:
+///
+/// ### On-site (datacenter cooling, WUE = L/kWh of IT load)
+/// - AWS: 0.15 L/kWh (AWS Sustainability Report 2024, aws.amazon.com/sustainability)
+/// - Microsoft: 0.30 L/kWh global avg (Datacenter Efficiency FY2024,
+///   datacenters.microsoft.com/sustainability/efficiency)
+///   - Regional: EMEA 0.10, Americas 0.55, Asia Pacific 1.65
+/// - Google: ~1.1 L/kWh estimated (Wemhoff, Villanova Univ., via devsustainability.com;
+///   Google does not publish fleet WUE. Consumed ~21.2B liters across all DCs in 2024.)
+/// - Industry average: 1.8 L/kWh (EESI, Meta sustainability reporting)
+///
+/// ### Off-site (power generation cooling, L consumed/kWh delivered)
+/// - Coal: ~2.0 L/kWh (Thunder Said Energy 2023, thundersaidenergy.com)
+/// - Nuclear: ~2.1 L/kWh (Thunder Said Energy 2023)
+/// - Natural gas CCGT: ~1.2 L/kWh (Thunder Said Energy 2023)
+/// - Solar PV: ~0.1 L/kWh (panel washing only)
+/// - Wind: ~0 L/kWh
+/// - US grid avg: ~1.5 L/kWh blended (EIA fuel mix + per-source consumption)
+/// - NREL reference: docs.nrel.gov/docs/fy04osti/33905.pdf (consumptive water by source)
+///
+/// ### Validation against published estimates
+/// - Li et al. 2023 "Making AI Less Thirsty" (arxiv 2304.03271, CACM 2024):
+///   ~500 mL for 20-50 ChatGPT queries at ~0.004 kWh each.
+///   Our model reproduces: 30 queries * 0.004 kWh * (1.8 WUE + 1.5 grid) * 1000 = 396 mL
+///   = 13.2 mL/query, within their 10-25 mL/query range.
+/// - Jegham et al. 2025 "How Hungry is AI?" (arxiv 2505.09598):
+///   Infrastructure-aware benchmarks. Claude 3.7 Sonnet ranked highest eco-efficiency.
+/// - OpenAI (Altman, June 2025): ~0.3 mL per avg ChatGPT query (likely hyperscale + clean grid)
+/// - Goedecke 2024: ~2-3.5 mL per GPT-4o medium query (seangoedecke.com)
+///
+/// ### Uncertainty
+/// On-site WUE varies ~12x across providers (0.15 to 1.8 L/kWh).
+/// Off-site grid water varies ~42x (0.05 to 2.1 L/kWh) by fuel mix.
+/// We propagate the same 3x confidence band from the energy estimate, since water
+/// scales linearly from facility_kwh and the WUE/grid values are point estimates.
+///
+/// ## Solar
+/// - NREL ATB 2024, EIA capacity factors by state
+///
+/// ## Local GPU
+/// - TokenPowerBench 4090 benchmarks, llm-tracker.info
+///
+/// ## Electricity pricing
+/// - EIA retail sales data 2025-2026
 
 // ---------------------------------------------------------------------------
 // Model tiers
@@ -221,6 +272,80 @@ impl SolarProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Water usage (liters per kWh of IT load)
+// ---------------------------------------------------------------------------
+
+/// Datacenter Water Usage Effectiveness: liters of water evaporated on-site per kWh of IT load.
+/// Sources: AWS Sustainability Report 2024, Microsoft Datacenter Efficiency FY2024,
+/// Wemhoff/Villanova 2023 (Google est.), EESI/Meta (industry avg).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WueProfile {
+    /// AWS global fleet, 2024. Source: aws.amazon.com/sustainability
+    Aws,
+    /// Microsoft global average, FY2024. Source: datacenters.microsoft.com/sustainability/efficiency
+    Microsoft,
+    /// Google third-party estimate. Source: Wemhoff, Villanova via devsustainability.com
+    GoogleEst,
+    /// Industry average. Source: EESI, Meta sustainability reporting
+    IndustryAvg,
+    /// User-provided L/kWh
+    Custom(f64),
+}
+
+impl WueProfile {
+    /// On-site water consumption in liters per kWh of IT load.
+    pub fn liters_per_kwh(&self) -> f64 {
+        match self {
+            WueProfile::Aws => 0.15,
+            WueProfile::Microsoft => 0.30,
+            WueProfile::GoogleEst => 1.10,
+            WueProfile::IndustryAvg => 1.80,
+            WueProfile::Custom(v) => *v,
+        }
+    }
+}
+
+/// Off-site (power generation) water consumption in liters per kWh, by grid fuel mix.
+/// Sources: Thunder Said Energy 2023, NREL (CSP), various (solar PV, wind).
+///
+/// Sanity check (Li et al. 2023, arXiv 2304.03271 "Making AI Less Thirsty"):
+///   ~500 mL for 20-50 ChatGPT queries at ~0.004 kWh each = ~4.2 L/kWh total.
+///   Decomposes as ~1.8 (industry WUE) + ~2.4 (grid) for non-hyperscale DCs.
+///   For AWS (0.15 WUE + 1.5 grid = 1.65 L/kWh): same queries yield ~200 mL.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GridWaterIntensity {
+    /// US national average grid mix. ~1.5 L/kWh consumption (not withdrawal).
+    UsAverage,
+    /// Wind/solar-dominant grid. ~0.05 L/kWh (panel washing only).
+    Renewables,
+    /// Coal-heavy grid. ~2.0 L/kWh. Source: Thunder Said Energy 2023.
+    Coal,
+    /// Nuclear-heavy grid (e.g. France). ~2.1 L/kWh. Source: Thunder Said Energy 2023.
+    Nuclear,
+    /// Natural gas CCGT. ~1.2 L/kWh. Source: Thunder Said Energy 2023.
+    NaturalGas,
+    /// User-provided L/kWh
+    Custom(f64),
+}
+
+impl GridWaterIntensity {
+    /// Off-site water consumption in liters per kWh of electricity delivered.
+    pub fn liters_per_kwh(&self) -> f64 {
+        match self {
+            GridWaterIntensity::UsAverage => 1.50,
+            GridWaterIntensity::Renewables => 0.05,
+            GridWaterIntensity::Coal => 2.00,
+            GridWaterIntensity::Nuclear => 2.10,
+            GridWaterIntensity::NaturalGas => 1.20,
+            GridWaterIntensity::Custom(v) => *v,
+        }
+    }
+}
+
+pub const DEFAULT_WUE: WueProfile = WueProfile::Aws;
+pub const DEFAULT_GRID_WATER: GridWaterIntensity = GridWaterIntensity::UsAverage;
+
+// ---------------------------------------------------------------------------
 // Config (user overrides with defaults)
 // ---------------------------------------------------------------------------
 
@@ -230,6 +355,8 @@ pub struct EnergyConfig {
     pub pue: f64,
     pub solar: SolarProfile,
     pub local_gpu: GpuProfile,
+    pub wue: WueProfile,
+    pub grid_water: GridWaterIntensity,
 }
 
 impl Default for EnergyConfig {
@@ -240,6 +367,8 @@ impl Default for EnergyConfig {
             pue: DEFAULT_PUE,
             solar: SOLAR_US_AVG,
             local_gpu: GPU_4090,
+            wue: DEFAULT_WUE,
+            grid_water: DEFAULT_GRID_WATER,
         }
     }
 }
@@ -325,6 +454,16 @@ pub struct EnergyEstimate {
     /// Seconds of solar panel output to offset server energy
     pub solar_offset_seconds: Ranged,
 
+    /// On-site water (datacenter cooling), milliliters. facility_kwh * WUE * 1000.
+    /// Sources: AWS/Microsoft sustainability reports, EESI. See WueProfile.
+    pub water_onsite_ml: Ranged,
+    /// Off-site water (power generation cooling), milliliters. facility_kwh * grid_water * 1000.
+    /// Sources: Thunder Said Energy 2023, NREL. See GridWaterIntensity.
+    pub water_offsite_ml: Ranged,
+    /// Total water = on-site + off-site, milliliters.
+    /// Sanity: Li et al. 2023 reports ~500 mL / 20-50 queries at industry-avg facilities.
+    pub water_total_ml: Ranged,
+
     /// API cost for reference (passed through, not computed here)
     pub api_cost_usd: f64,
     /// Ratio of API cost to local electricity cost
@@ -342,6 +481,9 @@ impl EnergyEstimate {
         self.local_kwh += other.local_kwh;
         self.local_cost_usd += other.local_cost_usd;
         self.solar_offset_seconds += other.solar_offset_seconds;
+        self.water_onsite_ml += other.water_onsite_ml;
+        self.water_offsite_ml += other.water_offsite_ml;
+        self.water_total_ml += other.water_total_ml;
         self.api_cost_usd += other.api_cost_usd;
         self.api_markup_ratio = if self.local_cost_usd > 0.0 {
             self.api_cost_usd / self.local_cost_usd
@@ -388,6 +530,14 @@ pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config
         Ranged { low: f64::INFINITY, mid: f64::INFINITY, high: f64::INFINITY }
     };
 
+    // Water: on-site (DC cooling) + off-site (power plant cooling), in milliliters.
+    // On-site scales with facility_kwh (same confidence band as energy).
+    // Off-site also scales with facility_kwh (power consumed = power plant water used).
+    // Total inherits the energy confidence band since WUE and grid water are point estimates.
+    let water_onsite_ml = facility_kwh.scale(config.wue.liters_per_kwh() * 1000.0);
+    let water_offsite_ml = facility_kwh.scale(config.grid_water.liters_per_kwh() * 1000.0);
+    let water_total_ml = water_onsite_ml + water_offsite_ml;
+
     // API markup
     let api_markup_ratio = if local_cost_usd > 0.0 {
         api_cost_usd / local_cost_usd
@@ -404,6 +554,9 @@ pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config
         local_kwh,
         local_cost_usd,
         solar_offset_seconds,
+        water_onsite_ml,
+        water_offsite_ml,
+        water_total_ml,
         api_cost_usd,
         api_markup_ratio,
     }
@@ -441,22 +594,7 @@ impl SessionEnergy {
         };
         let tier = ModelTier::from_model_str(model);
         let call_est = estimate(&tokens, tier, api_cost_usd, config);
-
-        self.cumulative.server_joules += call_est.server_joules;
-        self.cumulative.facility_joules += call_est.facility_joules;
-        self.cumulative.facility_kwh += call_est.facility_kwh;
-        self.cumulative.carbon_grams += call_est.carbon_grams;
-        self.cumulative.local_gpu_seconds += call_est.local_gpu_seconds;
-        self.cumulative.local_kwh += call_est.local_kwh;
-        self.cumulative.local_cost_usd += call_est.local_cost_usd;
-        self.cumulative.solar_offset_seconds += call_est.solar_offset_seconds;
-        self.cumulative.api_cost_usd += call_est.api_cost_usd;
-        // Recompute markup from cumulative totals
-        self.cumulative.api_markup_ratio = if self.cumulative.local_cost_usd > 0.0 {
-            self.cumulative.api_cost_usd / self.cumulative.local_cost_usd
-        } else {
-            f64::INFINITY
-        };
+        self.cumulative.accumulate(&call_est);
         self.call_count += 1;
     }
 }
@@ -481,6 +619,9 @@ local_gpu_seconds:    {:.4}
 local_kwh:            {:.8}
 local_cost_usd:       {:.8}
 solar_offset_seconds: {:.2} [{:.2} .. {:.2}]
+water_onsite_ml:      {:.4} [{:.4} .. {:.4}]
+water_offsite_ml:     {:.4} [{:.4} .. {:.4}]
+water_total_ml:       {:.4} [{:.4} .. {:.4}]
 api_cost_usd:         {:.4}
 api_markup_ratio:     {:.2}",
             e.server_joules.mid, e.server_joules.low, e.server_joules.high,
@@ -491,6 +632,9 @@ api_markup_ratio:     {:.2}",
             e.local_kwh,
             e.local_cost_usd,
             e.solar_offset_seconds.mid, e.solar_offset_seconds.low, e.solar_offset_seconds.high,
+            e.water_onsite_ml.mid, e.water_onsite_ml.low, e.water_onsite_ml.high,
+            e.water_offsite_ml.mid, e.water_offsite_ml.low, e.water_offsite_ml.high,
+            e.water_total_ml.mid, e.water_total_ml.low, e.water_total_ml.high,
             e.api_cost_usd,
             e.api_markup_ratio,
         )
@@ -518,7 +662,79 @@ api_markup_ratio:     {:.2}",
         assert!((e.server_joules.low - 5_000_000.0 / 3.0).abs() < 1.0);
         assert!((e.server_joules.high - 5_000_000.0 * 3.0).abs() < 1.0);
 
+        // Water: 1.667 kWh * WUE_AWS(0.15) * 1000 = 250.0 mL on-site
+        //        1.667 kWh * US_AVG(1.50) * 1000 = 2500.0 mL off-site
+        //        Total = 2750.0 mL
+        assert!((e.water_onsite_ml.mid - 250.0).abs() < 1.0,
+            "On-site water: {} mL, expected ~250", e.water_onsite_ml.mid);
+        assert!((e.water_offsite_ml.mid - 2500.0).abs() < 1.0,
+            "Off-site water: {} mL, expected ~2500", e.water_offsite_ml.mid);
+        assert!((e.water_total_ml.mid - 2750.0).abs() < 2.0,
+            "Total water: {} mL, expected ~2750", e.water_total_ml.mid);
+
         assert_snapshot!("opus_1m_output", fmt_estimate(&e));
+    }
+
+    /// Water estimation: verify against Li et al. 2023 "Making AI Less Thirsty".
+    /// They report ~500 mL for 20-50 queries at industry-avg facilities.
+    /// We reproduce their assumptions: WUE=1.8, grid_water=1.5, 30 queries, 0.004 kWh each.
+    /// Expected: 30 * 0.004 * (1.8 + 1.5) * 1000 = 396 mL (within their 10-25 mL/query range).
+    #[test]
+    fn water_li_et_al_sanity_check() {
+        // Simulate 30 GPT-3.5-class queries, each ~0.004 kWh facility energy.
+        // Use industry-avg WUE to match their assumptions.
+        let config = EnergyConfig {
+            wue: WueProfile::IndustryAvg,   // 1.8 L/kWh
+            grid_water: GridWaterIntensity::UsAverage, // 1.5 L/kWh
+            ..Default::default()
+        };
+        // 0.004 kWh = 14,400 J facility. At PUE 1.2, server = 12,000 J.
+        // At Sonnet 0.9 J/output_tok, that's ~13,333 output tokens per query.
+        // 30 queries * 13,333 = ~400,000 output tokens total.
+        let tokens = TokenCounts {
+            output_tokens: 400_000,
+            ..Default::default()
+        };
+        let e = estimate(&tokens, ModelTier::Sonnet, 0.0, &config);
+
+        // Verify facility energy is ~0.12 kWh (30 * 0.004)
+        assert!((e.facility_kwh.mid - 0.12).abs() < 0.001,
+            "Facility kWh: {}, expected ~0.12", e.facility_kwh.mid);
+
+        // Total water: 0.12 * (1.8 + 1.5) * 1000 = 396 mL
+        // Li et al. range: 500 mL for 20-50 queries (10-25 mL each)
+        // Our 30-query estimate of 396 mL = 13.2 mL/query, within their range.
+        assert!(e.water_total_ml.mid > 300.0 && e.water_total_ml.mid < 500.0,
+            "Total water {} mL should be 300-500 mL range matching Li et al.", e.water_total_ml.mid);
+
+        let per_query = e.water_total_ml.mid / 30.0;
+        assert!(per_query > 10.0 && per_query < 25.0,
+            "Per-query water {} mL should be in Li et al. 10-25 mL range", per_query);
+
+        assert_snapshot!("water_li_sanity", format!(
+            "total_water_ml: {:.1}\nper_query_ml: {:.1}\nonsite_ml: {:.1}\noffsite_ml: {:.1}",
+            e.water_total_ml.mid, per_query, e.water_onsite_ml.mid, e.water_offsite_ml.mid
+        ));
+    }
+
+    /// Water scales linearly with WUE profile choice.
+    #[test]
+    fn water_wue_profiles() {
+        let tokens = TokenCounts { output_tokens: 100_000, ..Default::default() };
+
+        let aws = estimate(&tokens, ModelTier::Sonnet, 0.0, &EnergyConfig {
+            wue: WueProfile::Aws, ..Default::default()
+        });
+        let industry = estimate(&tokens, ModelTier::Sonnet, 0.0, &EnergyConfig {
+            wue: WueProfile::IndustryAvg, ..Default::default()
+        });
+
+        let ratio = industry.water_onsite_ml.mid / aws.water_onsite_ml.mid;
+        assert!((ratio - 12.0).abs() < 0.01, "Industry/AWS on-site ratio: {ratio}, expected 12x (1.8/0.15)");
+
+        // Off-site should be identical (same grid_water default)
+        assert!((industry.water_offsite_ml.mid - aws.water_offsite_ml.mid).abs() < 0.001,
+            "Off-site water should be identical regardless of WUE");
     }
 
     /// Validate tier scaling: Opus output should be ~5.56x Sonnet, ~33.3x Haiku.
@@ -762,6 +978,9 @@ api_markup_ratio:     {:.2}",
             ("facility_kwh", e.facility_kwh),
             ("carbon_grams", e.carbon_grams),
             ("solar_offset_seconds", e.solar_offset_seconds),
+            ("water_onsite_ml", e.water_onsite_ml),
+            ("water_offsite_ml", e.water_offsite_ml),
+            ("water_total_ml", e.water_total_ml),
         ] {
             assert!(r.low < r.mid, "{name}: low ({}) < mid ({})", r.low, r.mid);
             assert!(r.mid < r.high, "{name}: mid ({}) < high ({})", r.mid, r.high);

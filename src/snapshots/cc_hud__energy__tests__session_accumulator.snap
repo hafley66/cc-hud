@@ -10,5 +10,8 @@ local_gpu_seconds:    4857.1429
 local_kwh:            0.40476190
 local_cost_usd:       0.06880952
 solar_offset_seconds: 869.12 [289.71 .. 2607.35]
+water_onsite_ml:      2.4625 [0.8208 .. 7.3875]
+water_offsite_ml:     24.6250 [8.2083 .. 73.8750]
+water_total_ml:       27.0875 [9.0292 .. 81.2625]
 api_cost_usd:         0.8000
 api_markup_ratio:     11.63

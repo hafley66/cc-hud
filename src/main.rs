@@ -154,7 +154,7 @@ impl Palette {
 
 /// Which chart region the hover originated from.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate, Energy, Carbon, EnergyTotal }
+enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate, Energy, Water }
 
 /// Session time ranges highlighted from legend hover (stored as minutes-from-epoch).
 #[derive(Clone, Default)]
@@ -1053,14 +1053,13 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let legend_row_h = 42.0_f32;
     let row_gap = 3.0_f32;
     let legend_h = (h * 0.30).clamp(100.0, 220.0);
-    // Row 4-5: energy per-turn + energy totals (two rows)
-    let energy_per_turn_h = (h * 0.09).clamp(50.0, 100.0);
-    let energy_total_h = (h * 0.09).clamp(50.0, 100.0);
-    // Row 6: weekly strip (thin)
+    // Row 3: energy/water per-turn bars with cumulative line overlay (right Y)
+    let energy_row_h = (h * 0.14).clamp(60.0, 130.0);
+    // Row 4: weekly strip (thin)
     let weekly_h = (h * 0.12).max(45.0);
-    // Row 2-3: per-turn + running total charts (cost/tokens)
+    // Row 2: per-turn cost/token bars with cumulative line overlay (right Y)
     let chart_h = h - controls_h - gap - nav_h - gap - legend_h
-        - energy_per_turn_h - energy_total_h - weekly_h - gap * 4.0;
+        - energy_row_h - weekly_h - gap * 3.0;
 
     let legend_rect = egui::Rect::from_min_size(egui::pos2(x0, after_nav_y), egui::vec2(w, legend_h));
 
@@ -1069,34 +1068,21 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let tool_w  = w - cost_w - tok_w - gap * 2.0;
     let chart_y = after_nav_y + legend_h + gap;
 
-    // Cost column: per-turn (top 60%) + running total (bottom 40%), gap between
-    let per_turn_h = (chart_h * 0.60).floor();
-    let stacked_h = chart_h - per_turn_h - gap;
-
-    let cost_rect     = egui::Rect::from_min_size(egui::pos2(x0, chart_y), egui::vec2(cost_w, per_turn_h));
-    let total_cost_rect = egui::Rect::from_min_size(egui::pos2(x0, chart_y + per_turn_h + gap), egui::vec2(cost_w, stacked_h));
-    let tok_rect     = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, chart_y), egui::vec2(tok_w, per_turn_h));
-    let total_tok_rect = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, chart_y + per_turn_h + gap), egui::vec2(tok_w, stacked_h));
+    let cost_rect     = egui::Rect::from_min_size(egui::pos2(x0, chart_y), egui::vec2(cost_w, chart_h));
+    let tok_rect     = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, chart_y), egui::vec2(tok_w, chart_h));
     let usage_chart_h = (chart_h * 0.45).floor();
     let tool_h = chart_h - usage_chart_h - gap;
     let right_x = x0 + cost_w + tok_w + gap * 2.0;
     let usage_rect   = egui::Rect::from_min_size(egui::pos2(right_x, chart_y), egui::vec2(tool_w, usage_chart_h));
     let tool_rect    = egui::Rect::from_min_size(egui::pos2(right_x, chart_y + usage_chart_h + gap), egui::vec2(tool_w, tool_h));
-    // Row 4: per-turn energy (Wh) + per-turn carbon (gCO2), split 50/50
+    // Row 3: per-turn energy (Wh) + per-turn water (mL), each with cumulative overlay
     let energy_y = chart_y + chart_h + gap;
     let energy_half = (w - gap) / 2.0;
-    let energy_wh_rect = egui::Rect::from_min_size(egui::pos2(x0, energy_y), egui::vec2(energy_half, energy_per_turn_h));
-    let carbon_g_rect = egui::Rect::from_min_size(egui::pos2(x0 + energy_half + gap, energy_y), egui::vec2(energy_half, energy_per_turn_h));
+    let energy_wh_rect = egui::Rect::from_min_size(egui::pos2(x0, energy_y), egui::vec2(energy_half, energy_row_h));
+    let water_ml_rect = egui::Rect::from_min_size(egui::pos2(x0 + energy_half + gap, energy_y), egui::vec2(energy_half, energy_row_h));
 
-    // Row 5: cumulative energy + cumulative carbon, split 50/50
-    let energy_total_y = energy_y + energy_per_turn_h + gap;
-    let energy_total_rect = egui::Rect::from_min_size(egui::pos2(x0, energy_total_y), egui::vec2(energy_half, energy_total_h));
-    let carbon_total_rect = egui::Rect::from_min_size(egui::pos2(x0 + energy_half + gap, energy_total_y), egui::vec2(energy_half, energy_total_h));
-
-    let weekly_y     = energy_total_y + energy_total_h + gap;
-    let weekly_half  = (w - gap) / 2.0;
-    let weekly_total_rect  = egui::Rect::from_min_size(egui::pos2(x0, weekly_y), egui::vec2(weekly_half, weekly_h));
-    let weekly_rate_rect = egui::Rect::from_min_size(egui::pos2(x0 + weekly_half + gap, weekly_y), egui::vec2(weekly_half, weekly_h));
+    let totals_y = energy_y + energy_row_h + gap;
+    let totals_rect = egui::Rect::from_min_size(egui::pos2(x0, totals_y), egui::vec2(w, weekly_h));
 
     // Context window size (tokens). Could be made configurable.
     const CTX_WINDOW: u64 = 200_000;
@@ -1761,9 +1747,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let panel_hl: PanelHighlight = ui.ctx().data(|d| d.get_temp(panel_hl_id).unwrap_or_default());
 
     // Clear hover state when pointer is outside chart areas or left the window.
-    let all_charts_rect = cost_rect.union(tok_rect).union(total_cost_rect).union(total_tok_rect)
-        .union(energy_wh_rect).union(carbon_g_rect).union(energy_total_rect).union(carbon_total_rect)
-        .union(weekly_total_rect).union(weekly_rate_rect);
+    let all_charts_rect = cost_rect.union(tok_rect)
+        .union(energy_wh_rect).union(water_ml_rect)
+        .union(totals_rect);
     match ui.ctx().input(|i| i.pointer.hover_pos()) {
         None => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
         Some(pos) if !all_charts_rect.contains(pos) => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
@@ -1801,10 +1787,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         }
     };
 
-    // --- cost per-turn chart (ctx cost up / gen cost down) ---
+    // --- cost per-turn chart with total cost overlay (right Y) ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(cost_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            draw_chart_label(ui, "cost / turn", "ctx$", "gen$");
+            let total_label = if let Some(last) = cd.combined_cost_pts.last() {
+                format!("total {}", format_cost(last[1]))
+            } else { String::new() };
+            draw_chart_label(ui, "cost / turn", "ctx$  gen$", &total_label);
+            // Scale cumulative lines into bar Y-range: map [0..total_cost_max] -> [0..per_turn_in_cost_max]
+            let cost_scale = if cd.total_cost_max > 0.0 { cd.per_turn_in_cost_max / cd.total_cost_max } else { 1.0 };
             let mut p = base_plot("cost_big")
                 .link_cursor(cursor_id, true, false)
                 .include_y(cd.per_turn_in_cost_max)
@@ -1818,7 +1809,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
-            p.show(ui, |pui| {
+            let inner_rect = p.show(ui, |pui| {
                     let fresh = BarChart::new(bars_to_egui(&cd.in_cost_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh$");
                     let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("read$").stack_on(&[&fresh]);
                     let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create$").stack_on(&[&fresh, &read]);
@@ -1826,45 +1817,46 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     pui.bar_chart(read);
                     pui.bar_chart(create);
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).name("gen$"));
-                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
-                    update_hover_src(pui, HoverSource::Cost);
-                });
-        });
-    });
-
-    // --- total cost chart ---
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(total_cost_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            draw_chart_label(ui, "total cost", "", "");
-            let mut p = base_plot("total_cost_big")
-                .link_cursor(cursor_id, true, false)
-                .include_y(0.0)
-                .include_y(cd.total_cost_max)
-                .y_axis_formatter(move |v, _| {
-                    if v.value < 1e-9 { String::new() } else { format_cost(v.value) }
-                })
-                .show_axes([is_time, true])
-                .show_grid(true);
-            if is_time { p = p.x_axis_formatter(time_x_fmt); }
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-            }
-            p
-                .show(ui, |pui| {
+                    // Overlay: total cost lines scaled into bar coordinate space
                     for (color, points) in &cd.total_cost_lines {
-                        pui.line(egui_plot::Line::new(points.clone()).color(scene_to_egui(*color)).width(2.0));
+                        let scaled: Vec<[f64; 2]> = points.iter().map(|[x, y]| [*x, y * cost_scale]).collect();
+                        pui.line(egui_plot::Line::new(scaled)
+                            .color(scene_to_egui(*color).gamma_multiply(0.5)).width(1.5));
                     }
                     render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
-                    update_hover_src(pui, HoverSource::TotalCost);
-                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
-                });
+                    update_hover_src(pui, HoverSource::Cost);
+                }).response.rect;
+            // Right Y-axis labels for total cost
+            if cd.total_cost_max > 0.001 {
+                let painter = ui.painter();
+                let font = egui::FontId::monospace(9.0);
+                let right_x = inner_rect.right() - 2.0;
+                for frac in [0.25, 0.5, 0.75, 1.0] {
+                    let val = cd.total_cost_max * frac;
+                    // Map value to Y pixel: top of rect = max, bottom center = 0
+                    let y_frac = 1.0 - (frac as f32 * cd.per_turn_in_cost_max as f32 / (cd.per_turn_in_cost_max + cd.per_turn_out_cost_max) as f32);
+                    let py = inner_rect.top() + y_frac * inner_rect.height();
+                    painter.text(
+                        egui::pos2(right_x, py),
+                        egui::Align2::RIGHT_CENTER,
+                        format_cost(val),
+                        font.clone(),
+                        egui::Color32::from_rgba_unmultiplied(180, 180, 160, 120),
+                    );
+                }
+            }
         });
     });
 
-    // --- token per-turn chart ---
+    // --- token per-turn chart with total token overlay (right Y) ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tok_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            draw_chart_label(ui, "tokens / turn", "in", "out");
+            let total_tok_label = if cd.total_tok_max > 0.0 {
+                format!("total {}", format_tokens(cd.total_tok_max as u64))
+            } else { String::new() };
+            draw_chart_label(ui, "tokens / turn", "in  out", &total_tok_label);
+            // Scale total token lines into bar Y-range
+            let tok_scale = if cd.total_tok_max > 0.0 { cd.in_max / cd.total_tok_max } else { 1.0 };
             let mut p = base_plot("tok_big")
                 .link_cursor(cursor_id, true, false)
                 .auto_bounds(egui::Vec2b::new(true, true))
@@ -1879,7 +1871,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
-            p.show(ui, |pui| {
+            let inner_rect = p.show(ui, |pui| {
                     let fresh = BarChart::new(bars_to_egui(&cd.in_tok_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh");
                     let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("cached");
                     let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create");
@@ -1889,38 +1881,36 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     pui.bar_chart(read);
                     pui.bar_chart(create);
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_tok_bars)).name("out"));
-                    update_hover_src(pui, HoverSource::Tokens);
-                });
-        });
-    });
-
-    // --- running total token chart ---
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(total_tok_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            draw_chart_label(ui, "total tokens", "", "");
-            let mut p = base_plot("total_tok_big")
-                .link_cursor(cursor_id, true, false)
-                .include_y(0.0)
-                .include_y(cd.total_tok_max)
-                .y_axis_formatter(move |v, _| {
-                    if v.value < 0.5 { String::new() } else { format_tokens(v.value.round() as u64) }
-                })
-                .show_axes([is_time, true])
-                .show_grid(true);
-            if is_time { p = p.x_axis_formatter(time_x_fmt); }
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-            }
-            p
-                .show(ui, |pui| {
+                    // Overlay: total token lines (input solid, output dashed) scaled into bar space
                     for (color, in_pts, out_pts) in &cd.total_tok_lines {
-                        pui.line(egui_plot::Line::new(in_pts.clone()).color(scene_to_egui(*color)).width(2.0).name("in"));
-                        pui.line(egui_plot::Line::new(out_pts.clone()).color(scene_to_egui(*color)).width(1.5)
-                            .style(egui_plot::LineStyle::Dashed { length: 8.0 }).name("out"));
+                        let scaled_in: Vec<[f64; 2]> = in_pts.iter().map(|[x, y]| [*x, y * tok_scale]).collect();
+                        let scaled_out: Vec<[f64; 2]> = out_pts.iter().map(|[x, y]| [*x, -y * tok_scale]).collect();
+                        pui.line(egui_plot::Line::new(scaled_in)
+                            .color(scene_to_egui(*color).gamma_multiply(0.5)).width(1.5));
+                        pui.line(egui_plot::Line::new(scaled_out)
+                            .color(scene_to_egui(*color).gamma_multiply(0.4)).width(1.0)
+                            .style(egui_plot::LineStyle::Dashed { length: 6.0 }));
                     }
-                    update_hover_src(pui, HoverSource::TotalTokens);
-                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
-                });
+                    update_hover_src(pui, HoverSource::Tokens);
+                }).response.rect;
+            // Right Y-axis labels for total tokens
+            if cd.total_tok_max > 0.5 {
+                let painter = ui.painter();
+                let font = egui::FontId::monospace(9.0);
+                let rx = inner_rect.right() - 2.0;
+                for frac in [0.25, 0.5, 0.75, 1.0] {
+                    let val = cd.total_tok_max * frac;
+                    let y_frac = 1.0 - (frac as f32 * cd.in_max as f32 / (cd.in_max + cd.out_max) as f32);
+                    let py = inner_rect.top() + y_frac * inner_rect.height();
+                    painter.text(
+                        egui::pos2(rx, py),
+                        egui::Align2::RIGHT_CENTER,
+                        format_tokens(val.round() as u64),
+                        font.clone(),
+                        egui::Color32::from_rgba_unmultiplied(180, 180, 160, 120),
+                    );
+                }
+            }
         });
     });
 
@@ -2052,32 +2042,27 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         });
     });
 
-    // --- Row 4: per-turn energy (Wh) + per-turn carbon (gCO2) ---
-    // Precompute session totals for labels + silly units
+    // --- Row 3: per-turn energy (Wh) + per-turn water (mL), each with cumulative overlay ---
     let total_wh: f64 = cd.total_energy_lines.iter()
         .filter_map(|(_, pts)| pts.last().map(|p| p[1])).sum();
-    let total_co2: f64 = cd.total_carbon_lines.iter()
+    let total_water_ml: f64 = cd.total_water_lines.iter()
         .filter_map(|(_, pts)| pts.last().map(|p| p[1])).sum();
 
     // Silly unit equivalences
-    // 1 smartphone charge = 12 Wh, 1 LED bulb hour = 10 Wh
-    let phone_charges = total_wh / 12.0;
-    let led_hours = total_wh / 10.0;
-    // 1 mile driven (avg US car) = 404 gCO2, 1 gallon gas = 8887 gCO2
-    let miles_driven = total_co2 / 404.0;
-    let gallons_gas = total_co2 / 8887.0;
-
-    let wh_silly = if total_wh > 12.0 { format!("{:.1} phone charges", phone_charges) }
-        else if total_wh > 0.01 { format!("{:.1} LED-bulb hrs", led_hours) }
+    let wh_silly = if total_wh > 12.0 { format!("{:.1} phone charges", total_wh / 12.0) }
+        else if total_wh > 0.01 { format!("{:.1} LED-bulb hrs", total_wh / 10.0) }
         else { String::new() };
-    let co2_silly = if total_co2 > 404.0 { format!("{:.2} miles driven", miles_driven) }
-        else if total_co2 > 0.01 { format!("{:.4} gal gas", gallons_gas) }
+    // 1 sip of water ~30 mL, 1 gulp ~60 mL, 1 cup = 237 mL
+    let water_silly = if total_water_ml > 237.0 { format!("{:.1} cups", total_water_ml / 237.0) }
+        else if total_water_ml > 30.0 { format!("{:.0} sips", total_water_ml / 30.0) }
+        else if total_water_ml > 0.01 { format!("{:.1} drops", total_water_ml / 0.05) }
         else { String::new() };
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(energy_wh_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            let wh_label = if total_wh > 0.001 { format!("{:.2} Wh", total_wh) } else { String::new() };
+            let wh_label = if total_wh > 0.001 { format!("{:.2} Wh total", total_wh) } else { String::new() };
             draw_chart_label(ui, "energy / turn", &wh_label, &wh_silly);
+            let energy_scale = if cd.total_energy_max > 0.0 { cd.energy_wh_max / cd.total_energy_max } else { 1.0 };
             let mut p = base_plot("energy_wh")
                 .link_cursor(cursor_id, true, false)
                 .include_y(0.0)
@@ -2090,58 +2075,98 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
-            p.show(ui, |pui| {
+            let inner_rect = p.show(ui, |pui| {
                 pui.bar_chart(BarChart::new(bars_to_egui(&cd.energy_wh_bars))
                     .color(egui::Color32::from_rgb(120, 200, 80)).name("Wh"));
+                for (color, pts) in &cd.total_energy_lines {
+                    let scaled: Vec<[f64; 2]> = pts.iter().map(|[x, y]| [*x, y * energy_scale]).collect();
+                    pui.line(egui_plot::Line::new(scaled)
+                        .color(scene_to_egui(*color).gamma_multiply(0.5)).width(1.5));
+                }
                 update_hover_src(pui, HoverSource::Energy);
-            });
+            }).response.rect;
+            if cd.total_energy_max > 0.001 {
+                let painter = ui.painter();
+                let font = egui::FontId::monospace(9.0);
+                let rx = inner_rect.right() - 2.0;
+                for frac in [0.5, 1.0] {
+                    let val = cd.total_energy_max * frac;
+                    let y_frac = 1.0 - frac as f32;
+                    let py = inner_rect.top() + y_frac * inner_rect.height();
+                    painter.text(egui::pos2(rx, py), egui::Align2::RIGHT_CENTER,
+                        format!("{:.1}", val), font.clone(),
+                        egui::Color32::from_rgba_unmultiplied(180, 180, 160, 120));
+                }
+            }
         });
     });
 
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(carbon_g_rect), |ui| {
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(water_ml_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            let co2_label = if total_co2 > 0.001 { format!("{:.2} gCO\u{2082}", total_co2) } else { String::new() };
-            draw_chart_label(ui, "carbon / turn", &co2_label, &co2_silly);
-            let mut p = base_plot("carbon_g")
+            let water_label = if total_water_ml > 0.001 { format!("{:.1} mL total", total_water_ml) } else { String::new() };
+            draw_chart_label(ui, "water / turn", &water_label, &water_silly);
+            let water_scale = if cd.total_water_max > 0.0 { cd.water_ml_max / cd.total_water_max } else { 1.0 };
+            let mut p = base_plot("water_ml")
                 .link_cursor(cursor_id, true, false)
                 .include_y(0.0)
-                .include_y(cd.carbon_g_max)
+                .include_y(cd.water_ml_max)
                 .y_axis_formatter(move |v, _| {
-                    if v.value < 1e-9 { String::new() } else { format!("{:.3}", v.value) }
+                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
                 })
                 .show_axes([false, true])
                 .show_grid(true);
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
-            p.show(ui, |pui| {
-                pui.bar_chart(BarChart::new(bars_to_egui(&cd.carbon_g_bars))
-                    .color(egui::Color32::from_rgb(180, 140, 220)).name("gCO\u{2082}"));
-                update_hover_src(pui, HoverSource::Carbon);
-            });
+            let inner_rect = p.show(ui, |pui| {
+                pui.bar_chart(BarChart::new(bars_to_egui(&cd.water_ml_bars))
+                    .color(egui::Color32::from_rgb(100, 160, 220)).name("mL"));
+                for (color, pts) in &cd.total_water_lines {
+                    let scaled: Vec<[f64; 2]> = pts.iter().map(|[x, y]| [*x, y * water_scale]).collect();
+                    pui.line(egui_plot::Line::new(scaled)
+                        .color(scene_to_egui(*color).gamma_multiply(0.5)).width(1.5));
+                }
+                update_hover_src(pui, HoverSource::Water);
+            }).response.rect;
+            if cd.total_water_max > 0.001 {
+                let painter = ui.painter();
+                let font = egui::FontId::monospace(9.0);
+                let rx = inner_rect.right() - 2.0;
+                for frac in [0.5, 1.0] {
+                    let val = cd.total_water_max * frac;
+                    let y_frac = 1.0 - frac as f32;
+                    let py = inner_rect.top() + y_frac * inner_rect.height();
+                    painter.text(egui::pos2(rx, py), egui::Align2::RIGHT_CENTER,
+                        format!("{:.1}", val), font.clone(),
+                        egui::Color32::from_rgba_unmultiplied(180, 180, 160, 120));
+                }
+            }
         });
     });
 
-    // --- Row 5: cumulative energy + cumulative carbon ---
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(energy_total_rect), |ui| {
+    // --- bottom row: unified totals (cost + tokens + energy + water, all normalized) ---
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(totals_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            let top = if total_wh > 0.001 { format!("{:.2} Wh", total_wh) } else { String::new() };
-            // Solar offset: how long a 400W panel needs to run to produce this energy
-            let total_kwh = total_wh / 1000.0;
-            let solar_secs = if total_kwh > 0.0 {
-                total_kwh / energy::SOLAR_US_AVG.kwh_per_second()
-            } else { 0.0 };
-            let solar_label = if solar_secs > 3600.0 { format!("{:.1}h solar", solar_secs / 3600.0) }
-                else if solar_secs > 60.0 { format!("{:.0}m solar", solar_secs / 60.0) }
-                else if solar_secs > 0.5 { format!("{:.0}s solar", solar_secs) }
-                else { String::new() };
-            draw_chart_label(ui, "total energy", &top, &solar_label);
-            let mut p = base_plot("energy_total")
+            // Current values for labels
+            let cur_cost = cd.combined_cost_pts.last().map(|p| p[1]).unwrap_or(0.0);
+            let cur_tok = cd.total_tok_max;
+            let cur_wh = total_wh;
+            let cur_water = total_water_ml;
+            let label = format!(
+                "{}  {}tok  {:.1}Wh  {:.0}mL",
+                format_cost(cur_cost), format_tokens(cur_tok as u64), cur_wh, cur_water
+            );
+            draw_chart_label(ui, "totals", &label, "");
+
+            // Normalize all series to [0..1] range, then plot in [0..1] Y space
+            let mut p = base_plot("totals_combined")
                 .link_cursor(cursor_id, true, false)
                 .include_y(0.0)
-                .include_y(cd.total_energy_max)
+                .include_y(1.05)
                 .y_axis_formatter(move |v, _| {
-                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
+                    // Left Y shows cost scale
+                    if v.value < 1e-9 { String::new() }
+                    else { format_cost(v.value * cur_cost) }
                 })
                 .show_axes([is_time, true])
                 .show_grid(true);
@@ -2149,106 +2174,66 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
-            p.show(ui, |pui| {
-                for (color, pts) in &cd.total_energy_lines {
-                    pui.line(egui_plot::Line::new(pts.clone())
-                        .color(scene_to_egui(*color)).width(2.0).name("Wh"));
-                }
-                update_hover_src(pui, HoverSource::EnergyTotal);
-            });
-        });
-    });
+            let cost_color = egui::Color32::from_rgb(220, 180, 60);   // gold
+            let tok_color = egui::Color32::from_rgb(100, 160, 220);   // blue
+            let energy_color = egui::Color32::from_rgb(120, 200, 80); // green
+            let water_color = egui::Color32::from_rgb(80, 180, 220);  // cyan
 
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(carbon_total_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            let top = if total_co2 > 0.001 { format!("{:.2} gCO\u{2082}", total_co2) } else { String::new() };
-            draw_chart_label(ui, "total carbon", &top, &co2_silly);
-            let mut p = base_plot("carbon_total")
-                .link_cursor(cursor_id, true, false)
-                .include_y(0.0)
-                .include_y(cd.total_carbon_max)
-                .y_axis_formatter(move |v, _| {
-                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
-                })
-                .show_axes([is_time, true])
-                .show_grid(true);
-            if is_time { p = p.x_axis_formatter(time_x_fmt); }
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+            let inner_rect = p.show(ui, |pui| {
+                // Cost line (normalized)
+                if cd.combined_cost_max > 0.0 {
+                    let norm: Vec<[f64; 2]> = cd.combined_cost_pts.iter()
+                        .map(|[x, y]| [*x, y / cd.combined_cost_max]).collect();
+                    pui.line(egui_plot::Line::new(norm).color(cost_color).width(2.0).name("cost"));
+                }
+                // Total tokens line (input, normalized)
+                if cd.total_tok_max > 0.0 {
+                    for (color, in_pts, _) in &cd.total_tok_lines {
+                        let norm: Vec<[f64; 2]> = in_pts.iter()
+                            .map(|[x, y]| [*x, y / cd.total_tok_max]).collect();
+                        pui.line(egui_plot::Line::new(norm)
+                            .color(tok_color.gamma_multiply(0.7)).width(1.5).name("tokens"));
+                        let _ = color; // use session color only if multi-session matters here
+                    }
+                }
+                // Total energy line (normalized)
+                if cd.total_energy_max > 0.0 {
+                    for (_, pts) in &cd.total_energy_lines {
+                        let norm: Vec<[f64; 2]> = pts.iter()
+                            .map(|[x, y]| [*x, y / cd.total_energy_max]).collect();
+                        pui.line(egui_plot::Line::new(norm)
+                            .color(energy_color.gamma_multiply(0.7)).width(1.5).name("energy"));
+                    }
+                }
+                // Total water line (normalized)
+                if cd.total_water_max > 0.0 {
+                    for (_, pts) in &cd.total_water_lines {
+                        let norm: Vec<[f64; 2]> = pts.iter()
+                            .map(|[x, y]| [*x, y / cd.total_water_max]).collect();
+                        pui.line(egui_plot::Line::new(norm)
+                            .color(water_color.gamma_multiply(0.7)).width(1.5).name("water"));
+                    }
+                }
+                update_hover_src(pui, HoverSource::WeeklyCost);
+            }).response.rect;
+
+            // Right-side endpoint labels showing actual values
+            let painter = ui.painter();
+            let font = egui::FontId::monospace(9.0);
+            let rx = inner_rect.right() - 2.0;
+            let labels: Vec<(String, egui::Color32)> = vec![
+                (format_cost(cur_cost), cost_color),
+                (format_tokens(cur_tok as u64), tok_color),
+                (format!("{:.1}Wh", cur_wh), energy_color),
+                (format!("{:.0}mL", cur_water), water_color),
+            ];
+            for (i, (text, color)) in labels.iter().enumerate() {
+                let py = inner_rect.top() + 2.0 + i as f32 * 12.0;
+                painter.text(egui::pos2(rx, py), egui::Align2::RIGHT_TOP,
+                    text, font.clone(), *color);
             }
-            p.show(ui, |pui| {
-                for (color, pts) in &cd.total_carbon_lines {
-                    pui.line(egui_plot::Line::new(pts.clone())
-                        .color(scene_to_egui(*color)).width(2.0).name("gCO\u{2082}"));
-                }
-                update_hover_src(pui, HoverSource::EnergyTotal);
-            });
         });
     });
-
-    // --- bottom row: combined cost + cost rate (from ChartData, same x-domain) ---
-    {
-        let rate_label = if is_time { "cost/hr" } else { "cost/turn" };
-
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(weekly_total_rect), |ui| {
-            panel_frame().show(ui, |ui| {
-                let total_label = if let Some(last) = cd.combined_cost_pts.last() {
-                    format_cost(last[1])
-                } else { String::new() };
-                draw_chart_label(ui, "combined cost", &total_label, "");
-                let mut p = base_plot("combined_cost")
-                    .link_cursor(cursor_id, true, false)
-                    .include_y(0.0)
-                    .include_y(cd.combined_cost_max)
-                    .y_axis_formatter(move |v, _| {
-                        if v.value < 1e-9 { String::new() } else { format_cost(v.value) }
-                    })
-                    .show_axes([is_time, true])
-                    .show_grid(true);
-                if is_time { p = p.x_axis_formatter(time_x_fmt); }
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-                }
-                p.show(ui, |pui| {
-                    pui.line(egui_plot::Line::new(cd.combined_cost_pts.clone())
-                        .color(Palette::INPUT_TINT).width(1.0)
-                        .style(egui_plot::LineStyle::Dashed { length: 4.0 }));
-                    pui.points(egui_plot::Points::new(cd.combined_cost_pts.clone())
-                        .color(Palette::INPUT_TINT).radius(2.0));
-                    update_hover_src(pui, HoverSource::WeeklyCost);
-                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
-                });
-            });
-        });
-
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(weekly_rate_rect), |ui| {
-            panel_frame().show(ui, |ui| {
-                draw_chart_label(ui, rate_label, "", "");
-                let mut p = base_plot("cost_rate")
-                    .link_cursor(cursor_id, true, false)
-                    .include_y(0.0)
-                    .include_y(cd.cost_rate_max)
-                    .y_axis_formatter(move |v, _| {
-                        if v.value < 1e-9 { String::new() } else { format_cost(v.value) }
-                    })
-                    .show_axes([is_time, true])
-                    .show_grid(true);
-                if is_time { p = p.x_axis_formatter(time_x_fmt); }
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-                }
-                p.show(ui, |pui| {
-                    pui.line(egui_plot::Line::new(cd.cost_rate_pts.clone())
-                        .color(Palette::OUTPUT_TINT).width(1.0)
-                        .style(egui_plot::LineStyle::Dashed { length: 4.0 }));
-                    pui.points(egui_plot::Points::new(cd.cost_rate_pts.clone())
-                        .color(Palette::OUTPUT_TINT).radius(2.0));
-                    update_hover_src(pui, HoverSource::WeeklyRate);
-                    // draw_legend_hl(pui, &legend_hl); // disabled: causes chart rescale on hover
-                });
-            });
-        });
-    }
 
     // --- floating hover tooltip (all sessions, context-aware) ---
     // Placed after all charts so hover state from bottom charts is available same-frame.
@@ -2330,21 +2315,13 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 t.energy.facility_kwh.high * 1000.0,
                             ), None)
                         }
-                        HoverSource::Carbon => {
-                            let cg = t.energy.carbon_grams.mid;
+                        HoverSource::Water => {
+                            let wml = t.energy.water_total_ml.mid;
                             (format!(
-                                "  t{} [{}] {:.3} gCO\u{2082}  ({:.3}..{:.3})",
-                                idx + 1, t.model_short, cg,
-                                t.energy.carbon_grams.low,
-                                t.energy.carbon_grams.high,
-                            ), None)
-                        }
-                        HoverSource::EnergyTotal => {
-                            let wh = t.cumulative_energy.facility_kwh.mid * 1000.0;
-                            let cg = t.cumulative_energy.carbon_grams.mid;
-                            (format!(
-                                "  t{} total {:.1} Wh  {:.1} gCO\u{2082}",
-                                idx + 1, wh, cg,
+                                "  t{} [{}] {:.2} mL  ({:.2}..{:.2})",
+                                idx + 1, t.model_short, wml,
+                                t.energy.water_total_ml.low,
+                                t.energy.water_total_ml.high,
                             ), None)
                         }
                     };
