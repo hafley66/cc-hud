@@ -50,6 +50,7 @@ pub struct BarData {
     pub height: f64,
     pub width: f64,
     pub color: Color,
+    pub session_idx: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -547,22 +548,22 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                     out_max = out_max.max(*output_tokens as f64);
 
                     // Total input cost bar (composite color)
-                    in_cost_bars.push(BarData { x, height: *input_cost_usd, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
+                    in_cost_bars.push(BarData { x, height: *input_cost_usd, width: bar_w, color: Color::rgba(100, 160, 220, 180), session_idx: si });
                     let out_cost_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
-                    out_cost_bars.push(BarData { x, height: -(*output_cost_usd), width: bar_w, color: out_cost_color });
+                    out_cost_bars.push(BarData { x, height: -(*output_cost_usd), width: bar_w, color: out_cost_color, session_idx: si });
 
                     // Stacked input cost breakdown: fresh (bottom), cache_read (middle), cache_create (top)
-                    in_cost_fresh_bars.push(BarData { x, height: fresh_cost, width: bar_w, color: Color::rgba(60, 120, 200, 220) });
-                    in_cost_cache_read_bars.push(BarData { x, height: cr_cost, width: bar_w, color: Color::rgba(80, 180, 100, 160) });
-                    in_cost_cache_create_bars.push(BarData { x, height: cc_cost, width: bar_w, color: Color::rgba(220, 160, 60, 160) });
+                    in_cost_fresh_bars.push(BarData { x, height: fresh_cost, width: bar_w, color: Color::rgba(60, 120, 200, 220), session_idx: si });
+                    in_cost_cache_read_bars.push(BarData { x, height: cr_cost, width: bar_w, color: Color::rgba(80, 180, 100, 160), session_idx: si });
+                    in_cost_cache_create_bars.push(BarData { x, height: cc_cost, width: bar_w, color: Color::rgba(220, 160, 60, 160), session_idx: si });
 
                     // Token bars: total input (fresh + cached), not just fresh
-                    in_tok_bars.push(BarData { x, height: total_in_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180) });
-                    in_tok_fresh_bars.push(BarData { x, height: *input_tokens as f64, width: bar_w, color: Color::rgba(60, 120, 200, 220) });
-                    in_tok_cache_read_bars.push(BarData { x, height: *cache_read_tokens as f64, width: bar_w, color: Color::rgba(80, 180, 100, 160) });
-                    in_tok_cache_create_bars.push(BarData { x, height: *cache_create_tokens as f64, width: bar_w, color: Color::rgba(220, 160, 60, 160) });
+                    in_tok_bars.push(BarData { x, height: total_in_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180), session_idx: si });
+                    in_tok_fresh_bars.push(BarData { x, height: *input_tokens as f64, width: bar_w, color: Color::rgba(60, 120, 200, 220), session_idx: si });
+                    in_tok_cache_read_bars.push(BarData { x, height: *cache_read_tokens as f64, width: bar_w, color: Color::rgba(80, 180, 100, 160), session_idx: si });
+                    in_tok_cache_create_bars.push(BarData { x, height: *cache_create_tokens as f64, width: bar_w, color: Color::rgba(220, 160, 60, 160), session_idx: si });
                     let out_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
-                    out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: out_color });
+                    out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: out_color, session_idx: si });
 
                     // Per-turn energy estimate
                     let turn_tokens = TokenCounts {
@@ -579,9 +580,9 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                     let wh = turn_energy.facility_kwh.mid * 1000.0;
                     let wml = turn_energy.water_total_ml.mid;
                     let lc = turn_energy.local_cost_usd;
-                    energy_wh_bars.push(BarData { x, height: wh, width: bar_w, color: Color::rgba(120, 200, 80, 200) });
-                    water_ml_bars.push(BarData { x, height: wml, width: bar_w, color: Color::rgba(100, 160, 220, 200) });
-                    local_cost_bars.push(BarData { x, height: lc, width: bar_w, color: Color::rgba(220, 180, 80, 180) });
+                    energy_wh_bars.push(BarData { x, height: wh, width: bar_w, color: Color::rgba(120, 200, 80, 200), session_idx: si });
+                    water_ml_bars.push(BarData { x, height: wml, width: bar_w, color: Color::rgba(100, 160, 220, 200), session_idx: si });
+                    local_cost_bars.push(BarData { x, height: lc, width: bar_w, color: Color::rgba(220, 180, 80, 180), session_idx: si });
                     energy_wh_max = energy_wh_max.max(wh);
                     water_ml_max = water_ml_max.max(wml);
                     local_cost_max = local_cost_max.max(lc);
