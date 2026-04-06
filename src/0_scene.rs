@@ -372,7 +372,7 @@ pub fn format_tokens(n: u64) -> String {
 // ---- chart data (framework-agnostic) ----
 
 use crate::agent_harnesses::claude_code::{self, Event, HudData};
-use crate::energy::{self, EnergyConfig, EnergyEstimate, ModelTier, TokenCounts};
+use crate::energy::{self, EnergyConfig, EnergyEstimate, TokenCounts};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Default)]
@@ -510,6 +510,18 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let time_span_min = if ts_max > ts_min { (ts_max - ts_min) as f64 / 60.0 } else { 60.0 };
     let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.6).max(time_span_min / 300.0).min(time_span_min / 60.0);
 
+    // Downsampling: when time-axis mode has too many bars, bucket into time intervals.
+    // Target ~400 bars max across the time span. Each bucket aggregates multiple API calls.
+    let max_bars = 400usize;
+    let downsample = time_axis && total_api_calls > max_bars;
+    let bucket_minutes = if downsample {
+        time_span_min / max_bars as f64
+    } else {
+        0.0
+    };
+    // bucket_w is the bar width in minutes for downsampled bars
+    let bucket_w = if downsample { bucket_minutes * 0.85 } else { 0.0 };
+
     for (si, session) in data.sessions.iter().enumerate() {
         if hidden.contains(&session.session_id) { continue; }
 
@@ -528,6 +540,60 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         let mut last_x = 0f64;
         let mut cum_energy = EnergyEstimate::default();
 
+        // Bucket accumulator for downsampled bars (only used when downsample == true)
+        struct Bucket {
+            x: f64, // bucket center x
+            in_cost: f64, out_cost: f64,
+            fresh_cost: f64, cr_cost: f64, cc_cost: f64,
+            in_tok: f64, in_tok_fresh: f64, in_tok_cr: f64, in_tok_cc: f64,
+            out_tok: f64,
+            wh: f64, wml: f64, lc: f64,
+            count: u32,
+        }
+        impl Bucket {
+            fn empty(x: f64) -> Self {
+                Bucket { x, in_cost: 0.0, out_cost: 0.0, fresh_cost: 0.0, cr_cost: 0.0, cc_cost: 0.0,
+                    in_tok: 0.0, in_tok_fresh: 0.0, in_tok_cr: 0.0, in_tok_cc: 0.0,
+                    out_tok: 0.0, wh: 0.0, wml: 0.0, lc: 0.0, count: 0 }
+            }
+        }
+        let mut cur_bucket: Option<Bucket> = None;
+        let mut cur_bucket_id: i64 = i64::MIN;
+
+        // Flush accumulated bucket into bar arrays
+        let flush_bucket = |bkt: &Bucket, si: usize,
+            in_cost_bars: &mut Vec<BarData>, out_cost_bars: &mut Vec<BarData>,
+            in_cost_fresh_bars: &mut Vec<BarData>, in_cost_cache_read_bars: &mut Vec<BarData>, in_cost_cache_create_bars: &mut Vec<BarData>,
+            in_tok_bars: &mut Vec<BarData>, in_tok_fresh_bars: &mut Vec<BarData>, in_tok_cache_read_bars: &mut Vec<BarData>, in_tok_cache_create_bars: &mut Vec<BarData>,
+            out_tok_bars: &mut Vec<BarData>,
+            energy_wh_bars: &mut Vec<BarData>, water_ml_bars: &mut Vec<BarData>, local_cost_bars: &mut Vec<BarData>,
+            energy_wh_max: &mut f64, water_ml_max: &mut f64, local_cost_max: &mut f64,
+            per_turn_in_cost_max: &mut f64, per_turn_out_cost_max: &mut f64, in_max: &mut f64, out_max: &mut f64,
+            bw: f64| {
+            if bkt.count == 0 { return; }
+            let x = bkt.x;
+            *per_turn_in_cost_max = per_turn_in_cost_max.max(bkt.in_cost);
+            *per_turn_out_cost_max = per_turn_out_cost_max.max(bkt.out_cost);
+            *in_max = in_max.max(bkt.in_tok);
+            *out_max = out_max.max(bkt.out_tok.abs());
+            in_cost_bars.push(BarData { x, height: bkt.in_cost, width: bw, color: Color::rgba(100, 160, 220, 180), session_idx: si });
+            out_cost_bars.push(BarData { x, height: -(bkt.out_cost), width: bw, color: Color::rgba(220, 160, 60, 180), session_idx: si });
+            in_cost_fresh_bars.push(BarData { x, height: bkt.fresh_cost, width: bw, color: Color::rgba(60, 120, 200, 220), session_idx: si });
+            in_cost_cache_read_bars.push(BarData { x, height: bkt.cr_cost, width: bw, color: Color::rgba(80, 180, 100, 160), session_idx: si });
+            in_cost_cache_create_bars.push(BarData { x, height: bkt.cc_cost, width: bw, color: Color::rgba(220, 160, 60, 160), session_idx: si });
+            in_tok_bars.push(BarData { x, height: bkt.in_tok, width: bw, color: Color::rgba(100, 160, 220, 180), session_idx: si });
+            in_tok_fresh_bars.push(BarData { x, height: bkt.in_tok_fresh, width: bw, color: Color::rgba(60, 120, 200, 220), session_idx: si });
+            in_tok_cache_read_bars.push(BarData { x, height: bkt.in_tok_cr, width: bw, color: Color::rgba(80, 180, 100, 160), session_idx: si });
+            in_tok_cache_create_bars.push(BarData { x, height: bkt.in_tok_cc, width: bw, color: Color::rgba(220, 160, 60, 160), session_idx: si });
+            out_tok_bars.push(BarData { x, height: -(bkt.out_tok), width: bw, color: Color::rgba(220, 160, 60, 180), session_idx: si });
+            energy_wh_bars.push(BarData { x, height: bkt.wh, width: bw, color: Color::rgba(120, 200, 80, 200), session_idx: si });
+            water_ml_bars.push(BarData { x, height: bkt.wml, width: bw, color: Color::rgba(100, 160, 220, 200), session_idx: si });
+            local_cost_bars.push(BarData { x, height: bkt.lc, width: bw, color: Color::rgba(220, 180, 80, 180), session_idx: si });
+            *energy_wh_max = energy_wh_max.max(bkt.wh);
+            *water_ml_max = water_ml_max.max(bkt.wml);
+            *local_cost_max = local_cost_max.max(bkt.lc);
+        };
+
         for ev in &session.events {
             match ev {
                 Event::ApiCall { input_cost_usd, output_cost_usd, input_tokens, output_tokens,
@@ -541,51 +607,81 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                     let cr_cost = (*cache_read_tokens as f64 * pcr) / 1_000_000.0;
                     let cc_cost = (*cache_create_tokens as f64 * pcc) / 1_000_000.0;
 
-                    per_turn_in_cost_max = per_turn_in_cost_max.max(*input_cost_usd);
-                    per_turn_out_cost_max = per_turn_out_cost_max.max(*output_cost_usd);
                     let total_in_tokens = input_tokens + cache_read_tokens + cache_create_tokens;
-                    in_max = in_max.max(total_in_tokens as f64);
-                    out_max = out_max.max(*output_tokens as f64);
 
-                    // Total input cost bar (composite color)
-                    in_cost_bars.push(BarData { x, height: *input_cost_usd, width: bar_w, color: Color::rgba(100, 160, 220, 180), session_idx: si });
-                    let out_cost_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
-                    out_cost_bars.push(BarData { x, height: -(*output_cost_usd), width: bar_w, color: out_cost_color, session_idx: si });
-
-                    // Stacked input cost breakdown: fresh (bottom), cache_read (middle), cache_create (top)
-                    in_cost_fresh_bars.push(BarData { x, height: fresh_cost, width: bar_w, color: Color::rgba(60, 120, 200, 220), session_idx: si });
-                    in_cost_cache_read_bars.push(BarData { x, height: cr_cost, width: bar_w, color: Color::rgba(80, 180, 100, 160), session_idx: si });
-                    in_cost_cache_create_bars.push(BarData { x, height: cc_cost, width: bar_w, color: Color::rgba(220, 160, 60, 160), session_idx: si });
-
-                    // Token bars: total input (fresh + cached), not just fresh
-                    in_tok_bars.push(BarData { x, height: total_in_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180), session_idx: si });
-                    in_tok_fresh_bars.push(BarData { x, height: *input_tokens as f64, width: bar_w, color: Color::rgba(60, 120, 200, 220), session_idx: si });
-                    in_tok_cache_read_bars.push(BarData { x, height: *cache_read_tokens as f64, width: bar_w, color: Color::rgba(80, 180, 100, 160), session_idx: si });
-                    in_tok_cache_create_bars.push(BarData { x, height: *cache_create_tokens as f64, width: bar_w, color: Color::rgba(220, 160, 60, 160), session_idx: si });
-                    let out_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
-                    out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: out_color, session_idx: si });
-
-                    // Per-turn energy estimate
+                    // Per-turn energy estimate (always computed for cumulative tracking)
                     let turn_tokens = TokenCounts {
                         input_tokens: *input_tokens,
                         output_tokens: *output_tokens,
                         cache_read_tokens: *cache_read_tokens,
                         cache_create_tokens: *cache_create_tokens,
                     };
-                    let tier = ModelTier::from_model_str(model);
                     let api_cost = input_cost_usd + output_cost_usd;
-                    let turn_energy = energy::estimate(&turn_tokens, tier, api_cost, &energy_config);
-
-                    // Energy bars: Wh (not kWh) for readable per-turn values
+                    let turn_energy = energy::estimate_for_model(&turn_tokens, model, api_cost, &energy_config);
                     let wh = turn_energy.facility_kwh.mid * 1000.0;
                     let wml = turn_energy.water_total_ml.mid;
                     let lc = turn_energy.local_cost_usd;
-                    energy_wh_bars.push(BarData { x, height: wh, width: bar_w, color: Color::rgba(120, 200, 80, 200), session_idx: si });
-                    water_ml_bars.push(BarData { x, height: wml, width: bar_w, color: Color::rgba(100, 160, 220, 200), session_idx: si });
-                    local_cost_bars.push(BarData { x, height: lc, width: bar_w, color: Color::rgba(220, 180, 80, 180), session_idx: si });
-                    energy_wh_max = energy_wh_max.max(wh);
-                    water_ml_max = water_ml_max.max(wml);
-                    local_cost_max = local_cost_max.max(lc);
+
+                    if downsample {
+                        // Bucket bars by time interval
+                        let bid = (x / bucket_minutes) as i64;
+                        if bid != cur_bucket_id {
+                            // Flush previous bucket
+                            if let Some(bkt) = cur_bucket.take() {
+                                flush_bucket(&bkt, si,
+                                    &mut in_cost_bars, &mut out_cost_bars,
+                                    &mut in_cost_fresh_bars, &mut in_cost_cache_read_bars, &mut in_cost_cache_create_bars,
+                                    &mut in_tok_bars, &mut in_tok_fresh_bars, &mut in_tok_cache_read_bars, &mut in_tok_cache_create_bars,
+                                    &mut out_tok_bars,
+                                    &mut energy_wh_bars, &mut water_ml_bars, &mut local_cost_bars,
+                                    &mut energy_wh_max, &mut water_ml_max, &mut local_cost_max,
+                                    &mut per_turn_in_cost_max, &mut per_turn_out_cost_max, &mut in_max, &mut out_max,
+                                    bucket_w);
+                            }
+                            cur_bucket_id = bid;
+                            cur_bucket = Some(Bucket::empty((bid as f64 + 0.5) * bucket_minutes));
+                        }
+                        let bkt = cur_bucket.as_mut().unwrap();
+                        bkt.in_cost += *input_cost_usd;
+                        bkt.out_cost += *output_cost_usd;
+                        bkt.fresh_cost += fresh_cost;
+                        bkt.cr_cost += cr_cost;
+                        bkt.cc_cost += cc_cost;
+                        bkt.in_tok += total_in_tokens as f64;
+                        bkt.in_tok_fresh += *input_tokens as f64;
+                        bkt.in_tok_cr += *cache_read_tokens as f64;
+                        bkt.in_tok_cc += *cache_create_tokens as f64;
+                        bkt.out_tok += *output_tokens as f64;
+                        bkt.wh += wh;
+                        bkt.wml += wml;
+                        bkt.lc += lc;
+                        bkt.count += 1;
+                    } else {
+                        // Original per-bar rendering
+                        per_turn_in_cost_max = per_turn_in_cost_max.max(*input_cost_usd);
+                        per_turn_out_cost_max = per_turn_out_cost_max.max(*output_cost_usd);
+                        in_max = in_max.max(total_in_tokens as f64);
+                        out_max = out_max.max(*output_tokens as f64);
+
+                        in_cost_bars.push(BarData { x, height: *input_cost_usd, width: bar_w, color: Color::rgba(100, 160, 220, 180), session_idx: si });
+                        let out_cost_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
+                        out_cost_bars.push(BarData { x, height: -(*output_cost_usd), width: bar_w, color: out_cost_color, session_idx: si });
+                        in_cost_fresh_bars.push(BarData { x, height: fresh_cost, width: bar_w, color: Color::rgba(60, 120, 200, 220), session_idx: si });
+                        in_cost_cache_read_bars.push(BarData { x, height: cr_cost, width: bar_w, color: Color::rgba(80, 180, 100, 160), session_idx: si });
+                        in_cost_cache_create_bars.push(BarData { x, height: cc_cost, width: bar_w, color: Color::rgba(220, 160, 60, 160), session_idx: si });
+                        in_tok_bars.push(BarData { x, height: total_in_tokens as f64, width: bar_w, color: Color::rgba(100, 160, 220, 180), session_idx: si });
+                        in_tok_fresh_bars.push(BarData { x, height: *input_tokens as f64, width: bar_w, color: Color::rgba(60, 120, 200, 220), session_idx: si });
+                        in_tok_cache_read_bars.push(BarData { x, height: *cache_read_tokens as f64, width: bar_w, color: Color::rgba(80, 180, 100, 160), session_idx: si });
+                        in_tok_cache_create_bars.push(BarData { x, height: *cache_create_tokens as f64, width: bar_w, color: Color::rgba(220, 160, 60, 160), session_idx: si });
+                        let out_color = if *has_thinking { Color::rgba(180, 80, 200, 200) } else { Color::rgba(220, 160, 60, 180) };
+                        out_tok_bars.push(BarData { x, height: -(*output_tokens as f64), width: bar_w, color: out_color, session_idx: si });
+                        energy_wh_bars.push(BarData { x, height: wh, width: bar_w, color: Color::rgba(120, 200, 80, 200), session_idx: si });
+                        water_ml_bars.push(BarData { x, height: wml, width: bar_w, color: Color::rgba(100, 160, 220, 200), session_idx: si });
+                        local_cost_bars.push(BarData { x, height: lc, width: bar_w, color: Color::rgba(220, 180, 80, 180), session_idx: si });
+                        energy_wh_max = energy_wh_max.max(wh);
+                        water_ml_max = water_ml_max.max(wml);
+                        local_cost_max = local_cost_max.max(lc);
+                    }
 
                     cum_energy.accumulate(&turn_energy);
 
@@ -635,6 +731,19 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                 }
                 _ => {}
             }
+        }
+
+        // Flush final bucket if downsampling
+        if let Some(bkt) = cur_bucket.take() {
+            flush_bucket(&bkt, si,
+                &mut in_cost_bars, &mut out_cost_bars,
+                &mut in_cost_fresh_bars, &mut in_cost_cache_read_bars, &mut in_cost_cache_create_bars,
+                &mut in_tok_bars, &mut in_tok_fresh_bars, &mut in_tok_cache_read_bars, &mut in_tok_cache_create_bars,
+                &mut out_tok_bars,
+                &mut energy_wh_bars, &mut water_ml_bars, &mut local_cost_bars,
+                &mut energy_wh_max, &mut water_ml_max, &mut local_cost_max,
+                &mut per_turn_in_cost_max, &mut per_turn_out_cost_max, &mut in_max, &mut out_max,
+                bucket_w);
         }
 
         session_turns.push((session.project.clone(), session_color(si), turns));

@@ -4,42 +4,21 @@ use std::sync::{Arc, Mutex};
 
 use crate::energy::{EnergyConfig, SessionEnergy};
 
-// Pricing per million tokens (USD)
-// cache_read = 0.1x input, cache_create_5m = 1.25x input
-/// Context window size (input token limit) by model.
+use crate::model_registry;
+
+/// Context window size (input token limit) by model. Delegates to model registry.
 pub fn model_context_window(model: &str) -> u64 {
-    match model {
-        m if m.contains("opus-4-6") || m.contains("opus-4-5") => 1_000_000,
-        m if m.contains("opus") => 200_000,
-        m if m.contains("sonnet") => 200_000,
-        m if m.contains("haiku") => 200_000,
-        _ => 200_000,
-    }
+    model_registry::model_context_window(model)
 }
 
+/// Pricing tuple (input, output, cache_read, cache_create) per 1M tokens. Delegates to model registry.
 pub fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
-    // (input, output, cache_read, cache_create_5m) per 1M tokens
-    match model {
-        // Opus 4.6 / 4.5: $5 in, $25 out
-        m if m.contains("opus-4-6") || m.contains("opus-4-5") => (5.0, 25.0, 0.50, 6.25),
-        // Opus 4.1 / 4: $15 in, $75 out
-        m if m.contains("opus") => (15.0, 75.0, 1.50, 18.75),
-        // Sonnet 4.x: $3 in, $15 out
-        m if m.contains("sonnet") => (3.0, 15.0, 0.30, 3.75),
-        // Haiku 4.5: $1 in, $5 out
-        m if m.contains("haiku-4-5") => (1.0, 5.0, 0.10, 1.25),
-        // Haiku 3.5: $0.80 in, $4 out
-        m if m.contains("haiku") => (0.80, 4.0, 0.08, 1.0),
-        _ => (3.0, 15.0, 0.30, 3.75),
-    }
+    model_registry::model_pricing(model)
 }
 
 /// Returns (input_cost, output_cost) separately.
 fn compute_cost_split(model: &str, input: u64, output: u64, cache_read: u64, cache_create: u64) -> (f64, f64) {
-    let (pi, po, pcr, pcc) = model_pricing(model);
-    let in_cost = (input as f64 * pi + cache_read as f64 * pcr + cache_create as f64 * pcc) / 1_000_000.0;
-    let out_cost = (output as f64 * po) / 1_000_000.0;
-    (in_cost, out_cost)
+    model_registry::lookup(model).pricing.cost_split(input, output, cache_read, cache_create)
 }
 
 /// One event in the session timeline.
@@ -669,8 +648,26 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
     let mut tail_states: HashMap<String, TailState> = HashMap::new();
     let mut known_sessions: HashMap<String, SessionFile> = HashMap::new();
     let mut history_loaded = false;
+    let mut opencode_loaded = false;
+    let mut opencode_tick: u32 = 0;
 
     loop {
+        // Load OpenCode sessions (from SQLite DB) periodically.
+        // First load on tick 0, then refresh every ~30 ticks (~60s at 2s sleep).
+        if !opencode_loaded || opencode_tick % 30 == 0 {
+            let oc_config = crate::energy::EnergyConfig::default();
+            let oc_data = super::opencode::load_opencode_sessions(&oc_config);
+            if !oc_data.sessions.is_empty() {
+                let mut d = data.lock().unwrap();
+                // Remove previous OpenCode sessions (pid == 0 and session_id starts with "ses_")
+                d.sessions.retain(|s| !(s.pid == 0 && s.session_id.starts_with("ses_")));
+                d.sessions.extend(oc_data.sessions);
+                tracing::info!(count = d.sessions.iter().filter(|s| s.pid == 0 && s.session_id.starts_with("ses_")).count(), "loaded opencode sessions");
+            }
+            opencode_loaded = true;
+        }
+        opencode_tick = opencode_tick.wrapping_add(1);
+
         // Load history once on first tick
         if show_history && !history_loaded {
             history_loaded = true;

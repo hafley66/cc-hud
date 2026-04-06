@@ -493,10 +493,17 @@ impl EnergyEstimate {
     }
 }
 
-/// Compute energy estimates from token counts.
-pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config: &EnergyConfig) -> EnergyEstimate {
-    let j_out = output_joules_per_token(tier);
-    let j_in = input_joules_per_token(tier);
+/// Compute energy estimates from token counts and explicit J/tok coefficients.
+/// This is the core estimator. All other estimate functions delegate here.
+pub fn estimate_direct(
+    tokens: &TokenCounts,
+    j_per_output_tok: f64,
+    input_energy_factor: f64,
+    api_cost_usd: f64,
+    config: &EnergyConfig,
+) -> EnergyEstimate {
+    let j_out = j_per_output_tok;
+    let j_in = j_per_output_tok * input_energy_factor;
 
     // Fresh input = total input minus cache reads (cache creates are fresh computation)
     let fresh_input = tokens.input_tokens + tokens.cache_create_tokens;
@@ -562,6 +569,24 @@ pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config
     }
 }
 
+/// Compute energy estimates from token counts using ModelTier.
+/// Delegates to estimate_direct with tier-derived coefficients.
+pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config: &EnergyConfig) -> EnergyEstimate {
+    estimate_direct(
+        tokens,
+        output_joules_per_token(tier),
+        INPUT_TO_OUTPUT_ENERGY_RATIO,
+        api_cost_usd,
+        config,
+    )
+}
+
+/// Compute energy estimates using model registry coefficients.
+pub fn estimate_for_model(tokens: &TokenCounts, model: &str, api_cost_usd: f64, config: &EnergyConfig) -> EnergyEstimate {
+    let energy = crate::model_registry::model_energy(model);
+    estimate_direct(tokens, energy.j_per_output_tok, energy.input_energy_factor, api_cost_usd, config)
+}
+
 // ---------------------------------------------------------------------------
 // Session-level integration
 // ---------------------------------------------------------------------------
@@ -576,6 +601,7 @@ pub struct SessionEnergy {
 
 impl SessionEnergy {
     /// Add an API call's energy contribution. Call this once per ApiCall event.
+    /// Uses model registry for energy coefficients.
     pub fn add_call(
         &mut self,
         input_tokens: u64,
@@ -592,8 +618,7 @@ impl SessionEnergy {
             cache_read_tokens,
             cache_create_tokens,
         };
-        let tier = ModelTier::from_model_str(model);
-        let call_est = estimate(&tokens, tier, api_cost_usd, config);
+        let call_est = estimate_for_model(&tokens, model, api_cost_usd, config);
         self.cumulative.accumulate(&call_est);
         self.call_count += 1;
     }
