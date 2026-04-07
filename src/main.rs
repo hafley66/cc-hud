@@ -87,7 +87,7 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, filter_set: HashSet::new(), filter_mode: FilterMode::Exclude, show_active_only: false, show_bars: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None, chart_vis: ChartVisibility::default(), cached_chart: None });
+    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, exclude_set: HashSet::new(), include_set: HashSet::new(), filter_mode: FilterMode::Exclude, show_active_only: false, show_bars: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None, chart_vis: ChartVisibility::default(), show_budget: false, billing: BillingConfig::default(), cached_chart: None });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -130,6 +130,62 @@ impl Default for ChartVisibility {
     }
 }
 
+/// Billing period configuration for budget tracking.
+#[derive(Clone)]
+struct BillingConfig {
+    /// Day of month the billing period resets (1-28).
+    reset_day: u8,
+    /// Hour of day the reset happens (0-23, default 0 = midnight).
+    reset_hour: u8,
+    /// Budget limit in USD for the period.
+    limit_usd: f64,
+    /// User-reported total from web dashboard: (amount_usd, epoch_secs).
+    /// Entered manually since the web API is no longer scrapable.
+    web_reported: Option<(f64, u64)>,
+    /// Text buffer for web reported $ input
+    web_input_buf: String,
+}
+
+impl Default for BillingConfig {
+    fn default() -> Self {
+        Self { reset_day: 1, reset_hour: 0, limit_usd: 100.0, web_reported: None, web_input_buf: String::new() }
+    }
+}
+
+impl BillingConfig {
+    /// Compute the start of the current billing period as epoch seconds.
+    fn period_start_epoch(&self) -> u64 {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&now_secs, &mut tm); }
+
+        // Set to reset_day at reset_hour:00:00
+        tm.tm_mday = self.reset_day as i32;
+        tm.tm_hour = self.reset_hour as i32;
+        tm.tm_min = 0;
+        tm.tm_sec = 0;
+        tm.tm_isdst = -1; // let mktime figure it out
+
+        let candidate = unsafe { libc::mktime(&mut tm) };
+        // If candidate is in the future, go back one month
+        if candidate > now_secs {
+            tm.tm_mon -= 1;
+            if tm.tm_mon < 0 { tm.tm_mon = 11; tm.tm_year -= 1; }
+            tm.tm_isdst = -1;
+            let prev = unsafe { libc::mktime(&mut tm) };
+            prev as u64
+        } else {
+            candidate as u64
+        }
+    }
+
+    /// Period start as x-coordinate in minutes-from-epoch (matching chart x-axis).
+    fn period_start_x(&self) -> f64 {
+        self.period_start_epoch() as f64 / 60.0
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum FilterMode { Include, Exclude }
 
@@ -140,9 +196,10 @@ struct Hud {
     hud_data: Arc<Mutex<HudData>>,
     usage_data: Arc<Mutex<usage::UsageData>>,
     big_mode: bool,
-    /// In Exclude mode: these sessions are hidden (everything else shown).
-    /// In Include mode: these sessions are shown (everything else hidden).
-    filter_set: HashSet<String>,
+    /// Sessions to hide when in Exclude mode.
+    exclude_set: HashSet<String>,
+    /// Sessions to show when in Include mode.
+    include_set: HashSet<String>,
     filter_mode: FilterMode,
     show_active_only: bool,
     show_bars: bool,
@@ -159,6 +216,9 @@ struct Hud {
     /// Saved window size from before entering small mode
     pre_small_window_size: Option<(i32, i32)>,
     chart_vis: ChartVisibility,
+    /// When true, usage chart slot shows billing period budget instead.
+    show_budget: bool,
+    billing: BillingConfig,
     /// Cached chart data to avoid rebuilding every frame.
     cached_chart: Option<(u64, HashSet<String>, bool, scene::ChartData)>,
 }
@@ -657,29 +717,26 @@ fn draw_legend_row(
     // Stats (secondary line) -- monospace fixed-width fields for column alignment
     if row_h >= 22.0 {
         let sy = cy + row_h * 0.18;
-        let cpt = stats.cost_per_token();
-        let cpt_str = if cpt > 0.001 { format!("${:.2}/Mtok", cpt) } else { String::new() };
-
         let stat_str = if stats.session_count > 1 {
             let avg_cost = format_cost(stats.avg_cost_per_session());
             let avg_tok = format_tokens(stats.avg_tokens_per_session());
             if is_active {
                 let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-                format!("{:>3.0}% ctx  {:>8}  {:>6}  {:>12}  avg {}/sess  {}/sess",
-                    ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), cpt_str, avg_cost, avg_tok)
+                format!("{:>3.0}% ctx  {:>8}  {:>6}  avg {}/sess  {}/sess",
+                    ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok)
             } else {
-                format!("{:>8}  {:>6}  {:>12}  avg {}/sess  {}/sess",
-                    format_cost(stats.cost), format_tokens(stats.total_tokens), cpt_str, avg_cost, avg_tok)
+                format!("{:>8}  {:>6}  avg {}/sess  {}/sess",
+                    format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok)
             }
         } else if is_active {
             let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
             let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-            format!("{:>3.0}% ctx  {:>8}  {:>6}  {:>12}  {}",
-                ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), cpt_str, model_tag)
+            format!("{:>3.0}% ctx  {:>8}  {:>6}  {}",
+                ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag)
         } else {
             let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
-            format!("{:>8}  {:>6}  {:>12}  {}",
-                format_cost(stats.cost), format_tokens(stats.total_tokens), cpt_str, model_tag)
+            format!("{:>8}  {:>6}  {}",
+                format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag)
         };
         text_painter.text(egui::pos2(text_x, sy), egui::Align2::LEFT_CENTER,
             &stat_str, font_stat, dim_col);
@@ -1168,7 +1225,7 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
 // Big dashboard layout
 // ---------------------------------------------------------------------------
 
-fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, filter_set: &mut HashSet<String>, filter_mode: &mut FilterMode, show_active_only: &mut bool, show_bars: &mut bool, effective_hidden: &HashSet<String>, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>, expanded_sessions: &mut HashSet<String>, small_mode_session: &mut Option<String>, chart_vis: &mut ChartVisibility) {
+fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, filter_set: &mut HashSet<String>, filter_mode: &mut FilterMode, show_active_only: &mut bool, show_bars: &mut bool, effective_hidden: &HashSet<String>, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>, expanded_sessions: &mut HashSet<String>, small_mode_session: &mut Option<String>, chart_vis: &mut ChartVisibility, show_budget: &mut bool, billing: &mut BillingConfig) {
     let area = ui.available_rect_before_wrap();
     let pad = 8.0;
     let gap = 8.0;
@@ -1287,7 +1344,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     FilterMode::Include => FilterMode::Exclude,
                     FilterMode::Exclude => FilterMode::Include,
                 };
-                filter_set.clear();
+                // Don't clear -- each mode has its own independent set
             }
             if btn_resp.hovered() {
                 painter.rect_filled(btn_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
@@ -1328,6 +1385,16 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             if bars_resp.hovered() { painter.rect_filled(bars_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12)); }
             painter.text(bars_rect.center(), egui::Align2::CENTER_CENTER, bars_label, egui::FontId::monospace(10.0), bars_col);
             bx = bars_rect.right() + 4.0;
+
+            // "budget" toggle -- swap usage chart with billing period budget chart
+            let bdg_label = if *show_budget { "● budget" } else { "○ budget" };
+            let bdg_col = if *show_budget { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
+            let bdg_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
+            let bdg_resp = ui.interact(bdg_rect, egui::Id::new("ctrl_show_budget"), egui::Sense::click());
+            if bdg_resp.clicked() { *show_budget = !*show_budget; }
+            if bdg_resp.hovered() { painter.rect_filled(bdg_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12)); }
+            painter.text(bdg_rect.center(), egui::Align2::CENTER_CENTER, bdg_label, egui::FontId::monospace(10.0), bdg_col);
+            bx = bdg_rect.right() + 4.0;
 
             // "time axis" toggle button
             let ta_label = if *time_axis { "● time" } else { "○ time" };
@@ -2000,11 +2067,19 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
     // Click-to-pin: stores the x that was clicked on so highlighting persists until Esc/another click.
     let pinned_x_id = egui::Id::new("hud_pinned_hover_x");
+    let pinned_pos_id = egui::Id::new("hud_pinned_cursor_pos");
+    let pinned_hover_id = egui::Id::new("hud_pinned_hover_state");
     let mut pinned_x: Option<f64> = ui.ctx().data(|d| d.get_temp(pinned_x_id));
+    let pinned_cursor_pos: Option<egui::Pos2> = ui.ctx().data(|d| d.get_temp(pinned_pos_id));
+    let pinned_hover: Option<HoverState> = ui.ctx().data(|d| d.get_temp(pinned_hover_id));
     // Escape clears pin
     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
         pinned_x = None;
-        ui.ctx().data_mut(|d| d.remove::<f64>(pinned_x_id));
+        ui.ctx().data_mut(|d| {
+            d.remove::<f64>(pinned_x_id);
+            d.remove::<egui::Pos2>(pinned_pos_id);
+            d.remove::<HoverState>(pinned_hover_id);
+        });
     }
 
     // Effective hover x: pinned takes priority over live hover
@@ -2027,11 +2102,20 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     // Pin toggle is handled per-chart via plot_resp.response.clicked() after each show().
 
     // Screen-space containment check + source tracking + highlight VLine.
-    let update_hover_src = |pui: &mut egui_plot::PlotUi, source: HoverSource| {
-        // Draw highlight VLine from previous frame's hover position
-        if let Some(hs) = &prev_hover {
-            pui.vline(VLine::new(hs.x).color(hover_vline_color).width(1.0));
+    // When pinned, draw the VLine at pinned x but don't update hover state (data stays frozen).
+    let is_pinned = pinned_x.is_some();
+    let update_hover_src = move |pui: &mut egui_plot::PlotUi, source: HoverSource| {
+        // Draw highlight VLine at effective position (pinned or live)
+        let vline_x = if is_pinned {
+            pinned_x
+        } else {
+            prev_hover.as_ref().map(|hs| hs.x)
+        };
+        if let Some(x) = vline_x {
+            pui.vline(VLine::new(x).color(hover_vline_color).width(1.0));
         }
+        // When pinned, don't update hover state -- tooltip data stays frozen
+        if is_pinned { return; }
         let Some(hover_pos) = pui.ctx().input(|i| i.pointer.hover_pos()) else { return };
         let b = pui.plot_bounds();
         let s_min = pui.screen_from_plot(egui_plot::PlotPoint::new(b.min()[0], b.min()[1]));
@@ -2042,16 +2126,30 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     };
 
     // Called after each chart's show(): if clicked and something is hovered, toggle pin.
+    // Stores data x, screen cursor position, and hover state so tooltip is fully frozen.
     let try_pin = |resp: &egui::Response| {
         if resp.clicked() {
-            if let Some(hx) = prev_hover.as_ref().map(|hs| hs.x) {
+            if let Some(hs) = &prev_hover {
                 if pinned_x.is_some() {
-                    resp.ctx.data_mut(|d| d.remove::<f64>(pinned_x_id));
+                    resp.ctx.data_mut(|d| {
+                        d.remove::<f64>(pinned_x_id);
+                        d.remove::<egui::Pos2>(pinned_pos_id);
+                        d.remove::<HoverState>(pinned_hover_id);
+                    });
                 } else {
-                    resp.ctx.data_mut(|d| d.insert_temp(pinned_x_id, hx));
+                    let cursor = resp.ctx.input(|i| i.pointer.hover_pos()).unwrap_or_default();
+                    resp.ctx.data_mut(|d| {
+                        d.insert_temp(pinned_x_id, hs.x);
+                        d.insert_temp(pinned_pos_id, cursor);
+                        d.insert_temp(pinned_hover_id, hs.clone());
+                    });
                 }
             } else {
-                resp.ctx.data_mut(|d| d.remove::<f64>(pinned_x_id));
+                resp.ctx.data_mut(|d| {
+                    d.remove::<f64>(pinned_x_id);
+                    d.remove::<egui::Pos2>(pinned_pos_id);
+                    d.remove::<HoverState>(pinned_hover_id);
+                });
             }
         }
     };
@@ -2183,8 +2281,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         });
     }); }
 
-    // --- usage chart (5h + 7d utilization over time) ---
-    // Clear session hover tooltip when pointer is over usage chart
+    // --- usage / budget chart (mutually exclusive, share the same slot) ---
+    // Clear session hover tooltip when pointer is over this panel
     if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
         if usage_rect.contains(pos) {
             ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
@@ -2192,6 +2290,213 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     }
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(usage_rect), |ui| {
         panel_frame().show(ui, |ui| {
+          if *show_budget {
+            // --- budget chart: cumulative cost within billing period vs limit ---
+            let period_start_x = billing.period_start_x();
+            let period_cost_pts: Vec<[f64; 2]> = cd.budget_cost_pts.iter()
+                .filter(|p| p[0] >= period_start_x)
+                .copied()
+                .collect();
+            let period_spent = period_cost_pts.last().map(|p| p[1]).unwrap_or(0.0)
+                - period_cost_pts.first().map(|p| p[1]).unwrap_or(0.0);
+            let pct = if billing.limit_usd > 0.0 { (period_spent / billing.limit_usd * 100.0).min(999.0) } else { 0.0 };
+            let pct_color = if pct > 90.0 { egui::Color32::from_rgb(220, 60, 60) }
+                else if pct > 70.0 { egui::Color32::from_rgb(220, 160, 60) }
+                else { Palette::TEXT_BRIGHT };
+
+            let label = format!("{} / {} ({:.0}%)", format_cost(period_spent), format_cost(billing.limit_usd), pct);
+            draw_chart_label(ui, "budget", &label, "");
+
+            // Clickable config row: [day] [limit] controls
+            let config_h = 14.0;
+            let (config_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), config_h), egui::Sense::hover());
+            let painter = ui.painter();
+            let font = egui::FontId::monospace(9.0);
+            let cy = config_rect.center().y;
+
+            // Reset day control: < day >
+            let day_label = format!("reset day {}", billing.reset_day);
+            let day_rect = egui::Rect::from_min_size(config_rect.min, egui::vec2(90.0, config_h));
+            painter.text(day_rect.center(), egui::Align2::CENTER_CENTER, &day_label, font.clone(), Palette::TEXT_DIM);
+            let dec_rect = egui::Rect::from_min_size(egui::pos2(day_rect.left(), cy - 6.0), egui::vec2(12.0, 12.0));
+            let inc_rect = egui::Rect::from_min_size(egui::pos2(day_rect.right() - 12.0, cy - 6.0), egui::vec2(12.0, 12.0));
+            if ui.interact(dec_rect, egui::Id::new("budget_day_dec"), egui::Sense::click()).clicked() {
+                billing.reset_day = if billing.reset_day <= 1 { 28 } else { billing.reset_day - 1 };
+            }
+            if ui.interact(inc_rect, egui::Id::new("budget_day_inc"), egui::Sense::click()).clicked() {
+                billing.reset_day = if billing.reset_day >= 28 { 1 } else { billing.reset_day + 1 };
+            }
+            painter.text(dec_rect.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
+            painter.text(inc_rect.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
+
+            // Limit control: < $limit >
+            let lim_label = format!("limit {}", format_cost(billing.limit_usd));
+            let lim_rect = egui::Rect::from_min_size(egui::pos2(config_rect.left() + 100.0, config_rect.top()), egui::vec2(110.0, config_h));
+            painter.text(lim_rect.center(), egui::Align2::CENTER_CENTER, &lim_label, font.clone(), Palette::TEXT_DIM);
+            let ldec = egui::Rect::from_min_size(egui::pos2(lim_rect.left(), cy - 6.0), egui::vec2(12.0, 12.0));
+            let linc = egui::Rect::from_min_size(egui::pos2(lim_rect.right() - 12.0, cy - 6.0), egui::vec2(12.0, 12.0));
+            let step = if billing.limit_usd >= 500.0 { 50.0 } else if billing.limit_usd >= 100.0 { 25.0 } else { 10.0 };
+            if ui.interact(ldec, egui::Id::new("budget_lim_dec"), egui::Sense::click()).clicked() {
+                billing.limit_usd = (billing.limit_usd - step).max(10.0);
+            }
+            if ui.interact(linc, egui::Id::new("budget_lim_inc"), egui::Sense::click()).clicked() {
+                billing.limit_usd += step;
+            }
+            painter.text(ldec.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
+            painter.text(linc.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
+
+            // Web-reported total row: input field + "now" button to stamp current time
+            // (painter ref ends here -- mutable ui calls below need exclusive access)
+            let (web_row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), config_h), egui::Sense::hover());
+            let web_cy = web_row.center().y;
+            let input_rect = egui::Rect::from_min_size(egui::pos2(web_row.left() + 40.0, web_row.top()), egui::vec2(70.0, config_h));
+            let mut buf = billing.web_input_buf.clone();
+            let te = egui::TextEdit::singleline(&mut buf)
+                .font(font.clone())
+                .desired_width(60.0)
+                .text_color(egui::Color32::from_rgb(180, 140, 220));
+            let te_resp = ui.put(input_rect, te);
+            billing.web_input_buf = buf.clone();
+            if te_resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                let clean = buf.trim().trim_start_matches('$');
+                if let Ok(val) = clean.parse::<f64>() {
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                    billing.web_reported = Some((val, now_epoch));
+                }
+            }
+            // Clear button interaction (must happen before re-borrowing painter)
+            let x_rect = egui::Rect::from_min_size(egui::pos2(web_row.right() - 16.0, web_cy - 6.0), egui::vec2(12.0, 12.0));
+            let clear_clicked = if billing.web_reported.is_some() {
+                ui.interact(x_rect, egui::Id::new("budget_web_clear"), egui::Sense::click()).clicked()
+            } else { false };
+            if clear_clicked { billing.web_reported = None; billing.web_input_buf.clear(); }
+            // Now paint text (re-borrow painter)
+            let painter = ui.painter();
+            let web_color = egui::Color32::from_rgb(180, 140, 220);
+            painter.text(egui::pos2(web_row.left() + 2.0, web_cy), egui::Align2::LEFT_CENTER, "web $", font.clone(), web_color);
+            let info_x = web_row.left() + 118.0;
+            if let Some((val, ts)) = billing.web_reported {
+                let ago_min = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as f64 - ts as f64) / 60.0;
+                let ago = if ago_min < 1.0 { "just now".into() }
+                    else if ago_min < 60.0 { format!("{:.0}m ago", ago_min) }
+                    else if ago_min < 24.0 * 60.0 { format!("{:.1}h ago", ago_min / 60.0) }
+                    else { format!("{:.1}d ago", ago_min / (24.0 * 60.0)) };
+                painter.text(egui::pos2(info_x, web_cy), egui::Align2::LEFT_CENTER,
+                    &format!("{} as of {}", format_cost(val), ago), font.clone(), web_color);
+                painter.text(x_rect.center(), egui::Align2::CENTER_CENTER, "x", font.clone(), Palette::TEXT_DIM);
+            } else {
+                painter.text(egui::pos2(info_x, web_cy), egui::Align2::LEFT_CENTER,
+                    "enter total from web, press enter", font.clone(), Palette::TEXT_DIM);
+            }
+
+            // The chart: cumulative cost within period, zeroed at period start
+            if !period_cost_pts.is_empty() {
+                let base_cost = period_cost_pts.first().map(|p| p[1]).unwrap_or(0.0);
+                let zeroed: Vec<[f64; 2]> = period_cost_pts.iter()
+                    .map(|[x, y]| [*x, y - base_cost])
+                    .collect();
+
+                let limit_usd = billing.limit_usd;
+                let web_reported = billing.web_reported;
+                let budget_y_fmt = move |v: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
+                    if v.value < 0.001 { String::new() } else { format_cost(v.value) }
+                };
+                let budget_tip = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
+                    let mut tip = format!("{} ({:.0}% of {})", format_cost(point.y), point.y / limit_usd * 100.0, format_cost(limit_usd));
+                    if let Some((web_val, _)) = web_reported {
+                        let diff = web_val - point.y;
+                        if diff > 0.001 {
+                            tip += &format!("\nnon-CLI: ~{}", format_cost(diff));
+                        }
+                    }
+                    tip
+                };
+
+                let mut p = Plot::new("budget_period")
+                    .show_axes([true, true])
+                    .show_grid(true)
+                    .allow_zoom(false)
+                    .allow_drag(false)
+                    .allow_scroll(false)
+                    .show_background(false)
+                    .set_margin_fraction(egui::Vec2::ZERO)
+                    .auto_bounds(egui::Vec2b::new(true, true))
+                    .include_y(0.0)
+                    .include_y(billing.limit_usd * 1.05)
+                    .y_axis_formatter(budget_y_fmt)
+                    .x_axis_formatter(time_x_fmt)
+                    .label_formatter(budget_tip);
+                // In time mode, share viewport with other charts; otherwise auto-fit to billing period
+                if is_time {
+                    p = p.link_cursor(cursor_id, true, false);
+                    if let Some((vmin, vmax)) = *nav_view {
+                        p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+                    }
+                }
+                // If web reported total > CLI total, include it in Y range
+                if let Some((web_val, _)) = billing.web_reported {
+                    p = p.include_y(web_val * 1.05);
+                }
+                let web_reported_for_chart = billing.web_reported;
+                let period_start_for_chart = period_start_x;
+                let plot_resp = p.show(ui, |pui| {
+                    let pts = step_pts(&zeroed); // budget always uses time-based x
+                    pui.line(egui_plot::Line::new(pts)
+                        .color(pct_color).width(2.0).fill(0.0).name("CLI spent"));
+                    // Budget limit line
+                    pui.hline(egui_plot::HLine::new(billing.limit_usd)
+                        .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 120))
+                        .width(1.0));
+                    // Period start marker
+                    pui.vline(VLine::new(period_start_for_chart)
+                        .color(egui::Color32::from_rgba_unmultiplied(100, 180, 100, 60))
+                        .width(0.5));
+                    // Web-reported marker: horizontal line at reported value + point marker at report time
+                    if let Some((web_val, web_ts)) = web_reported_for_chart {
+                        let web_x = web_ts as f64 / 60.0;
+                        let web_color = egui::Color32::from_rgb(180, 140, 220); // purple
+                        // Horizontal line at web-reported value
+                        pui.hline(egui_plot::HLine::new(web_val)
+                            .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 80))
+                            .width(1.0));
+                        // Point marker at the time it was reported
+                        pui.points(egui_plot::Points::new(vec![[web_x, web_val]])
+                            .color(web_color).radius(4.0).name("web reported"));
+                        // Vertical line at report time
+                        pui.vline(VLine::new(web_x)
+                            .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 40))
+                            .width(0.5));
+                        // If CLI cost at that time is lower, find the CLI value at web_x and show the gap
+                        let cli_at_web_x = zeroed.iter()
+                            .filter(|p| p[0] <= web_x)
+                            .last()
+                            .map(|p| p[1])
+                            .unwrap_or(0.0);
+                        if web_val > cli_at_web_x + 0.01 {
+                            // Gap shading: a small rectangle between CLI line and web line at report time
+                            let gap_pts = vec![
+                                [web_x - 0.5, cli_at_web_x],
+                                [web_x + 0.5, cli_at_web_x],
+                                [web_x + 0.5, web_val],
+                                [web_x - 0.5, web_val],
+                            ];
+                            pui.polygon(egui_plot::Polygon::new(gap_pts)
+                                .fill_color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 30))
+                                .name(format!("non-CLI: ~{}", format_cost(web_val - cli_at_web_x))));
+                        }
+                    }
+                });
+                if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
+            } else {
+                let inner = ui.available_rect_before_wrap();
+                let msg = "no data in billing period";
+                ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER,
+                    msg, egui::FontId::monospace(9.0), Palette::TEXT_DIM);
+            }
+          } else {
+            // --- usage chart: 5h + 7d utilization over time ---
             let usage_now_label = usage.latest.as_ref().map(|l|
                 format!("5h {}%  7d {}%", l.five_hour as u32, l.seven_day as u32)
             ).unwrap_or_default();
@@ -2217,7 +2522,6 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let snap_for_tip = usage.snapshots.clone();
                 let tip_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
                     let hx = point.x;
-                    // Find nearest snapshot
                     let nearest = snap_for_tip.iter().min_by(|a, b| {
                         let ax = a.ts as f64 / 60.0;
                         let bx = b.ts as f64 / 60.0;
@@ -2276,6 +2580,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER,
                     "polling...", egui::FontId::monospace(9.0), Palette::TEXT_DIM);
             }
+          }
         });
     });
 
@@ -2500,16 +2805,30 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     }); }
 
     // --- floating hover tooltip (all sessions, context-aware) ---
-    // Placed after all charts so hover state from bottom charts is available same-frame.
-    let hover_state: Option<HoverState> = ui.ctx().data(|d| d.get_temp(hover_id));
+    // When pinned, use the frozen hover state and cursor position from pin time.
+    let hover_state: Option<HoverState> = if pinned_hover.is_some() {
+        pinned_hover.clone()
+    } else {
+        ui.ctx().data(|d| d.get_temp(hover_id))
+    };
     if let Some(hs) = hover_state {
         let hx = hs.x;
-        if let Some(cursor) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+        let is_pinned = pinned_x.is_some();
+        let cursor_opt = if is_pinned { pinned_cursor_pos } else { ui.ctx().input(|i| i.pointer.hover_pos()) };
+        if let Some(cursor) = cursor_opt {
             // (session_name, session_color, detail_text, optional breakdown fracs, sort_key)
             let mut entries: Vec<(String, egui::Color32, String, Option<[f32; 3]>, f64)> = vec![];
             // Context info from nearest turn (for footer): (context_tokens, context_limit, burn_rate_per_turn, is_reset)
             let mut context_footer: Option<(u64, u64, f64, bool)> = None;
             for (name, sess_color, turns) in &cd.session_turns {
+                if turns.is_empty() { continue; }
+                // Skip sessions where hover x is outside the session's data range (with small margin)
+                let first_x = turns.first().unwrap().x;
+                let last_x = turns.last().unwrap().x;
+                let span = (last_x - first_x).max(1.0);
+                let margin = span * 0.05; // 5% margin at edges
+                if hx < first_x - margin || hx > last_x + margin { continue; }
+
                 let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
                     (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
                 });
@@ -2595,17 +2914,23 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             }
             // Sort by cost descending, cap at 8 entries so the tooltip stays readable
             entries.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+            // Deduplicate entries with same name + detail (multiple sessions from same project dir)
+            {
+                let mut seen = HashSet::new();
+                entries.retain(|e| seen.insert((e.0.clone(), e.2.clone())));
+            }
             let omitted = entries.len().saturating_sub(8);
             entries.truncate(8);
 
             // Find nearby skill invocations
-            let nearby_skills: Vec<&str> = cd.skill_xs.iter()
+            let mut nearby_skills: Vec<&str> = cd.skill_xs.iter()
                 .filter(|(x, _)| {
                     let snap = if entries.len() > 1 { 1.5 } else { 0.5 };
                     (x - hx).abs() <= snap
                 })
                 .map(|(_, name)| name.as_str())
                 .collect();
+            nearby_skills.dedup();
 
             // For WeeklyCost, compute cumulative combined cost at hovered x
             let running_total_header: Option<String> = if matches!(hs.source, HoverSource::WeeklyCost) {
@@ -2630,8 +2955,6 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 };
                 let mut tip_pos = cursor + egui::vec2(x_offset, -tip_h - 8.0);
                 tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
-
-                let is_pinned = pinned_x.is_some();
 
                 egui::Area::new(egui::Id::new("hud_float_tip"))
                     .fixed_pos(tip_pos)
@@ -2659,17 +2982,44 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     ));
                                 }
 
-                                // Table header
-                                let header_text = match hs.source {
-                                    HoverSource::Cost => "session          turn  model       ctx$      gen$      +total",
-                                    HoverSource::Tokens => "session          turn  model       in        out       cached",
-                                    HoverSource::Energy => "session          turn  model       Wh        low       high",
-                                    HoverSource::Water => "session          turn  model       mL        low       high",
-                                    _ => "session          turn  model       cost      +delta    total",
-                                };
-                                ui.add(egui::Label::new(
-                                    egui::RichText::new(header_text).font(font.clone()).color(hdr_col)
-                                ));
+                                // Table header with column colors matching bar segments
+                                {
+                                    let mono = egui::FontId::monospace(11.0);
+                                    let mut hdr = egui::text::LayoutJob::default();
+                                    let ha = |job: &mut egui::text::LayoutJob, text: &str, color: egui::Color32| {
+                                        job.append(text, 0.0, egui::TextFormat {
+                                            font_id: mono.clone(), color, ..Default::default()
+                                        });
+                                    };
+                                    let ci = egui::Color32::from_rgb(100, 160, 220); // input blue
+                                    let co = egui::Color32::from_rgb(220, 160, 60);  // output gold
+                                    let cg = egui::Color32::from_rgb(80, 180, 100);  // cache green
+                                    ha(&mut hdr, "session          turn  model   ", hdr_col);
+                                    match hs.source {
+                                        HoverSource::Cost => {
+                                            ha(&mut hdr, "    ctx$", ci);
+                                            ha(&mut hdr, "      gen$", co);
+                                            ha(&mut hdr, "    +total", Palette::TEXT_BRIGHT);
+                                        }
+                                        HoverSource::Tokens => {
+                                            ha(&mut hdr, "      in", ci);
+                                            ha(&mut hdr, "       out", co);
+                                            ha(&mut hdr, "    cached", cg);
+                                        }
+                                        HoverSource::Energy => {
+                                            ha(&mut hdr, "      Wh", egui::Color32::from_rgb(120, 200, 80));
+                                        }
+                                        HoverSource::Water => {
+                                            ha(&mut hdr, "      mL", egui::Color32::from_rgb(80, 180, 220));
+                                        }
+                                        _ => {
+                                            ha(&mut hdr, "    cost", ci);
+                                            ha(&mut hdr, "    +delta", Palette::TEXT_BRIGHT);
+                                            ha(&mut hdr, "    total", hdr_col);
+                                        }
+                                    }
+                                    ui.add(egui::Label::new(hdr));
+                                }
                                 ui.add_space(2.0);
 
                                 for (name, sess_color, _detail, _breakdown, _sort_key) in &entries {
@@ -2684,45 +3034,64 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     let Some((idx, t)) = nearest else { continue };
 
                                     let short_name = if name.len() > 16 { &name[..16] } else { name };
-                                    let row_text = match hs.source {
+
+                                    // Colors matching bar segments
+                                    let c_input = egui::Color32::from_rgb(100, 160, 220);  // input cost (blue)
+                                    let c_output = if t.has_thinking {
+                                        egui::Color32::from_rgb(180, 80, 200)  // thinking output (purple)
+                                    } else {
+                                        egui::Color32::from_rgb(220, 160, 60)  // normal output (gold)
+                                    };
+                                    let c_total = Palette::TEXT_BRIGHT;
+                                    let c_meta = Palette::TEXT_DIM;
+                                    let c_cache_read = egui::Color32::from_rgb(80, 180, 100); // green
+                                    let _c_cache_create = egui::Color32::from_rgb(220, 160, 60); // gold
+
+                                    // Build a multi-colored row via LayoutJob
+                                    let mut job = egui::text::LayoutJob::default();
+                                    let mono = egui::FontId::monospace(11.0);
+                                    let append = |job: &mut egui::text::LayoutJob, text: &str, color: egui::Color32| {
+                                        job.append(text, 0.0, egui::TextFormat {
+                                            font_id: mono.clone(),
+                                            color,
+                                            ..Default::default()
+                                        });
+                                    };
+
+                                    // Session name in session color
+                                    append(&mut job, &format!("{:<16}", short_name), *sess_color);
+                                    // Turn + model in dim
+                                    let think = if t.has_thinking { "*" } else { " " };
+                                    append(&mut job, &format!(" t{:<4}{:<8}{}", idx + 1, t.model_short, think), c_meta);
+
+                                    match hs.source {
                                         HoverSource::Cost => {
-                                            let think = if t.has_thinking { "*" } else { " " };
-                                            format!("{:<16} t{:<3} {:<10}{} {:>8}  {:>8}  +{}",
-                                                short_name, idx + 1, t.model_short, think,
-                                                format_cost(t.in_cost), format_cost(t.out_cost),
-                                                format_cost(t.cost_change))
+                                            append(&mut job, &format!("{:>8}", format_cost(t.in_cost)), c_input);
+                                            append(&mut job, &format!("  {:>8}", format_cost(t.out_cost)), c_output);
+                                            append(&mut job, &format!("  +{}", format_cost(t.cost_change)), c_total);
                                         }
                                         HoverSource::Tokens => {
                                             let total_in = t.in_tok + t.cache_read_tok + t.cache_create_tok;
-                                            format!("{:<16} t{:<3} {:<10}  {:>8}  {:>8}  {:>8}",
-                                                short_name, idx + 1, t.model_short,
-                                                format_tokens(total_in), format_tokens(t.out_tok),
-                                                format_tokens(t.cache_read_tok))
+                                            append(&mut job, &format!("{:>8}", format_tokens(total_in)), c_input);
+                                            append(&mut job, &format!("  {:>8}", format_tokens(t.out_tok)), c_output);
+                                            append(&mut job, &format!("  {:>8}", format_tokens(t.cache_read_tok)), c_cache_read);
                                         }
                                         HoverSource::Energy => {
                                             let wh = t.energy.facility_kwh.mid * 1000.0;
-                                            format!("{:<16} t{:<3} {:<10}  {:>7.2}  {:>7.2}  {:>7.2}",
-                                                short_name, idx + 1, t.model_short,
-                                                wh, t.energy.facility_kwh.low * 1000.0, t.energy.facility_kwh.high * 1000.0)
+                                            append(&mut job, &format!("{:>7.2} Wh", wh), egui::Color32::from_rgb(120, 200, 80));
                                         }
                                         HoverSource::Water => {
                                             let wml = t.energy.water_total_ml.mid;
-                                            format!("{:<16} t{:<3} {:<10}  {:>7.1}  {:>7.1}  {:>7.1}",
-                                                short_name, idx + 1, t.model_short,
-                                                wml, t.energy.water_total_ml.low, t.energy.water_total_ml.high)
+                                            append(&mut job, &format!("{:>7.1} mL", wml), egui::Color32::from_rgb(80, 180, 220));
                                         }
                                         _ => {
-                                            format!("{:<16} t{:<3} {:<10}  {:>8}  +{:<7}  {}",
-                                                short_name, idx + 1, t.model_short,
-                                                format_cost(t.in_cost + t.out_cost),
-                                                format_cost(t.cost_change),
-                                                format_cost(t.total_cost))
+                                            append(&mut job, &format!("{:>8}", format_cost(t.in_cost + t.out_cost)), c_input);
+                                            append(&mut job, &format!("  +{:<7}", format_cost(t.cost_change)), c_total);
+                                            append(&mut job, &format!("  {}", format_cost(t.total_cost)), c_meta);
                                         }
-                                    };
+                                    }
 
-                                    ui.add(egui::Label::new(
-                                        egui::RichText::new(&row_text).font(font.clone()).color(*sess_color)
-                                    ));
+                                    ui.add(egui::Label::new(job));
                                 }
                                 if omitted > 0 {
                                     ui.add(egui::Label::new(
@@ -2975,13 +3344,18 @@ impl EguiOverlay for Hud {
                     return;
                 }
 
-                // Compute effective hidden set from filter_set + filter_mode + active filter
+                // Active filter set depends on current mode
+                let filter_set = match self.filter_mode {
+                    FilterMode::Exclude => &mut self.exclude_set,
+                    FilterMode::Include => &mut self.include_set,
+                };
+                // Compute effective hidden set from active filter + mode
                 let mut effective_hidden: HashSet<String> = match self.filter_mode {
-                    FilterMode::Exclude => self.filter_set.clone(),
+                    FilterMode::Exclude => filter_set.clone(),
                     FilterMode::Include => {
                         data.sessions.iter()
                             .map(|s| s.session_id.clone())
-                            .filter(|id| !self.filter_set.contains(id))
+                            .filter(|id| !filter_set.contains(id))
                             .collect()
                     }
                 };
@@ -3005,9 +3379,9 @@ impl EguiOverlay for Hud {
 
                 if big_mode {
                     if let Some(sid) = self.small_mode_session.clone() {
-                        draw_small(ui, &data, &cd, &usage, &sid, &self.filter_set, &mut self.filter_mode, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.small_mode_session);
+                        draw_small(ui, &data, &cd, &usage, &sid, filter_set, &mut self.filter_mode, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.small_mode_session);
                     } else {
-                        draw_big(ui, &data, &cd, &usage, &mut self.filter_set, &mut self.filter_mode, &mut self.show_active_only, &mut self.show_bars, &effective_hidden, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups, &mut self.expanded_sessions, &mut self.small_mode_session, &mut self.chart_vis);
+                        draw_big(ui, &data, &cd, &usage, filter_set, &mut self.filter_mode, &mut self.show_active_only, &mut self.show_bars, &effective_hidden, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups, &mut self.expanded_sessions, &mut self.small_mode_session, &mut self.chart_vis, &mut self.show_budget, &mut self.billing);
                     }
                 } else {
                     let strip_hl: PanelHighlight = ui.ctx().data(|d| d.get_temp(egui::Id::new("panel_highlight")).unwrap_or_default());

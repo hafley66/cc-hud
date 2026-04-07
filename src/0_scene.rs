@@ -18,9 +18,17 @@ fn downsample_line(pts: &[[f64; 2]], max_pts: usize) -> Vec<[f64; 2]> {
 // ---- shared formatting utilities ----
 
 pub fn short_model_label(model: &str) -> &'static str {
-    if model.contains("opus-4-6") || model.contains("opus-4-5") { "opus4" }
+    if model.contains("opus-4-6") { "opus4.6" }
+    else if model.contains("opus-4-5") { "opus4.5" }
+    else if model.contains("opus-4-1") { "opus4.1" }
+    else if model.contains("opus-4-0") || model.contains("opus-4-2") { "opus4" }
     else if model.contains("opus") { "opus3" }
+    else if model.contains("sonnet-4-6") { "sonnet4.6" }
+    else if model.contains("sonnet-4-5") { "sonnet4.5" }
+    else if model.contains("sonnet-4-1") { "sonnet4.1" }
+    else if model.contains("sonnet-4-0") { "sonnet4" }
     else if model.contains("sonnet") { "sonnet" }
+    else if model.contains("haiku-4-5") { "haiku4.5" }
     else if model.contains("haiku") { "haiku" }
     else if model.is_empty() { "?" }
     else { "other" }
@@ -392,6 +400,8 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Default)]
 pub struct TurnInfo {
     pub x: f64,
+    /// Timestamp as minutes-from-epoch (always set, regardless of axis mode).
+    pub ts_x: f64,
     pub in_cost: f64,
     pub out_cost: f64,
     pub cost_change: f64,
@@ -457,6 +467,9 @@ pub struct ChartData {
     pub combined_cost_max: f64,
     pub cost_rate_pts: Vec<[f64; 2]>,
     pub cost_rate_max: f64,
+    /// Combined cost points always in time-based x (minutes-from-epoch), for budget chart.
+    pub budget_cost_pts: Vec<[f64; 2]>,
+    pub budget_cost_max: f64,
     pub compaction_xs: Vec<f64>,
     pub session_turns: Vec<(String, Color, Vec<TurnInfo>)>,
     /// Per-turn energy bars (Wh midpoint)
@@ -524,9 +537,11 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         }
     }
     let time_span_min = if ts_max > ts_min { (ts_max - ts_min) as f64 / 60.0 } else { 60.0 };
-    let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.6)
-        .max(time_span_min / 300.0)
-        .min(time_span_min * 0.005);
+    // Bar width in minutes: thin enough that bars don't bloat when zoomed in.
+    // Use median inter-event gap as the base, capped at a small fraction of total span.
+    let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.4)
+        .max(0.5)             // at least 30 seconds wide
+        .min(time_span_min * 0.002); // never more than 0.2% of total span
 
     // Downsampling: bucket into time intervals so TOTAL bars across all sessions stays bounded.
     // Each session can produce up to (time_span / bucket_minutes) bars, so bucket_minutes must
@@ -544,6 +559,14 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let bucket_w = if downsample {
         (bucket_minutes * 0.85).min(time_span_min * 0.005)
     } else { 0.0 };
+
+    // Pre-pass: count visible sessions per project name so we can index duplicates
+    let mut project_name_counts: HashMap<String, usize> = HashMap::new();
+    for session in &data.sessions {
+        if hidden.contains(&session.session_id) { continue; }
+        *project_name_counts.entry(session.project.clone()).or_default() += 1;
+    }
+    let mut project_name_idx: HashMap<String, usize> = HashMap::new();
 
     for (si, session) in data.sessions.iter().enumerate() {
         if hidden.contains(&session.session_id) { continue; }
@@ -721,6 +744,7 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
 
                     turns.push(TurnInfo {
                         x,
+                        ts_x: *timestamp_secs as f64 / 60.0,
                         in_cost: *input_cost_usd,
                         out_cost: *output_cost_usd,
                         cost_change: cur_total - prev_total_cost,
@@ -769,7 +793,17 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                 bucket_w);
         }
 
-        session_turns.push((session.project.clone(), session_color(si), turns));
+        let display_name = {
+            let count = project_name_counts.get(&session.project).copied().unwrap_or(1);
+            if count > 1 {
+                let idx = project_name_idx.entry(session.project.clone()).or_default();
+                *idx += 1;
+                format!("{}(#{})", session.project, idx)
+            } else {
+                session.project.clone()
+            }
+        };
+        session_turns.push((display_name, session_color(si), turns));
     }
 
     let sort_desc = |v: &mut Vec<(String, u32)>| v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -787,11 +821,18 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     // prevents egui_plot from choking on thousands of points * hundreds of sessions.
     let max_line_pts = 300;
 
+    // Sort helper: ensure line points are x-monotonic (timestamps can be non-monotonic
+    // within a session due to streaming partials, subagent interleaving, etc.)
+    fn sort_by_x(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+        pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
+        pts
+    }
+
     for (_, color, turns) in &session_turns {
         if turns.is_empty() { continue; }
-        let cost_pts: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_cost]).collect();
-        let in_tok_pts: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_in_tok as f64]).collect();
-        let out_tok_pts: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_out_tok as f64]).collect();
+        let cost_pts = sort_by_x(turns.iter().map(|t| [t.x, t.total_cost]).collect());
+        let in_tok_pts = sort_by_x(turns.iter().map(|t| [t.x, t.total_in_tok as f64]).collect());
+        let out_tok_pts = sort_by_x(turns.iter().map(|t| [t.x, t.total_out_tok as f64]).collect());
         if let Some(last) = turns.last() {
             total_cost_max = total_cost_max.max(last.total_cost);
             total_tok_max = total_tok_max.max(last.total_in_tok as f64);
@@ -806,12 +847,12 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let mut total_water_max = 0.001_f64;
     for (_, color, turns) in &session_turns {
         if turns.is_empty() { continue; }
-        let energy_pts: Vec<[f64; 2]> = turns.iter()
+        let energy_pts = sort_by_x(turns.iter()
             .map(|t| [t.x, t.cumulative_energy.facility_kwh.mid * 1000.0])
-            .collect();
-        let water_pts: Vec<[f64; 2]> = turns.iter()
+            .collect());
+        let water_pts = sort_by_x(turns.iter()
             .map(|t| [t.x, t.cumulative_energy.water_total_ml.mid])
-            .collect();
+            .collect());
         if let Some(last) = turns.last() {
             total_energy_max = total_energy_max.max(last.cumulative_energy.facility_kwh.mid * 1000.0);
             total_water_max = total_water_max.max(last.cumulative_energy.water_total_ml.mid);
@@ -842,6 +883,24 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let combined_cost_pts = downsample_line(&combined_cost_pts, max_line_pts);
     let cost_rate_pts = downsample_line(&cost_rate_pts, max_line_pts);
 
+    // Budget cost points: always time-based x (ts_x), for the budget chart in any axis mode
+    let mut budget_events: Vec<(f64, f64)> = vec![];
+    for (_, _, turns) in &session_turns {
+        for t in turns { budget_events.push((t.ts_x, t.cost_change)); }
+    }
+    budget_events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut budget_running = 0.0f64;
+    let mut budget_cost_pts: Vec<[f64; 2]> = Vec::with_capacity(budget_events.len() + 1);
+    if let Some((first_x, _)) = budget_events.first() {
+        budget_cost_pts.push([*first_x, 0.0]);
+    }
+    for (x, dc) in &budget_events {
+        budget_running += dc;
+        budget_cost_pts.push([*x, budget_running]);
+    }
+    let budget_cost_max = budget_running.max(0.001);
+    let budget_cost_pts = downsample_line(&budget_cost_pts, max_line_pts);
+
     ChartData {
         in_cost_bars, in_cost_fresh_bars, in_cost_cache_read_bars, in_cost_cache_create_bars,
         out_cost_bars, in_tok_bars, in_tok_fresh_bars, in_tok_cache_read_bars, in_tok_cache_create_bars,
@@ -849,6 +908,7 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         per_turn_in_cost_max, per_turn_out_cost_max, in_max, out_max, tool_list, skill_list, read_list, agent_list,
         total_cost_lines, total_cost_max, total_tok_lines, total_tok_max,
         combined_cost_pts, combined_cost_max, cost_rate_pts, cost_rate_max,
+        budget_cost_pts, budget_cost_max,
         compaction_xs, session_turns,
         energy_wh_bars, water_ml_bars, local_cost_bars,
         energy_wh_max, water_ml_max, local_cost_max,
