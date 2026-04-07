@@ -3046,52 +3046,36 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     ));
                                 }
 
-                                // Table header with column colors matching bar segments
-                                {
-                                    let mono = egui::FontId::monospace(11.0);
-                                    let mut hdr = egui::text::LayoutJob::default();
-                                    let ha = |job: &mut egui::text::LayoutJob, text: &str, color: egui::Color32| {
-                                        job.append(text, 0.0, egui::TextFormat {
-                                            font_id: mono.clone(), color, ..Default::default()
-                                        });
-                                    };
-                                    let ci = egui::Color32::from_rgb(100, 160, 220); // input blue
-                                    let cc = egui::Color32::from_rgb(80, 180, 100);  // input(cached) green
-                                    let co = egui::Color32::from_rgb(220, 160, 60);  // output gold
-                                    let ct = egui::Color32::from_rgb(180, 80, 200);  // output(thinking) purple
-                                    ha(&mut hdr, "session          turn  model   ", hdr_col);
-                                    match hs.source {
-                                        HoverSource::Cost => {
-                                            ha(&mut hdr, "   input", ci);
-                                            ha(&mut hdr, " in(cache)", cc);
-                                            ha(&mut hdr, "  output", co);
-                                            ha(&mut hdr, " out(think)", ct);
-                                            ha(&mut hdr, "    total", Palette::TEXT_BRIGHT);
-                                        }
-                                        HoverSource::Tokens => {
-                                            ha(&mut hdr, "   input", ci);
-                                            ha(&mut hdr, " in(cache)", cc);
-                                            ha(&mut hdr, "  output", co);
-                                            ha(&mut hdr, " out(think)", ct);
-                                        }
-                                        HoverSource::Energy => {
-                                            ha(&mut hdr, "      Wh", egui::Color32::from_rgb(120, 200, 80));
-                                        }
-                                        HoverSource::Water => {
-                                            ha(&mut hdr, "      mL", egui::Color32::from_rgb(80, 180, 220));
-                                        }
-                                        _ => {
-                                            ha(&mut hdr, "    cost", ci);
-                                            ha(&mut hdr, "    +delta", Palette::TEXT_BRIGHT);
-                                            ha(&mut hdr, "    total", hdr_col);
-                                        }
-                                    }
-                                    ui.add(egui::Label::new(hdr));
-                                }
-                                ui.add_space(2.0);
+                                // Column colors matching bar segments
+                                let c_input = egui::Color32::from_rgb(100, 160, 220);  // input (blue)
+                                let c_cached = egui::Color32::from_rgb(80, 180, 100);   // input cached (green)
+                                let c_output = egui::Color32::from_rgb(220, 160, 60);   // output (gold)
+                                let c_think = egui::Color32::from_rgb(180, 80, 200);    // output thinking (purple)
+                                let c_total = Palette::TEXT_BRIGHT;
+                                let c_meta = Palette::TEXT_DIM;
+                                let c_pct = egui::Color32::from_rgba_unmultiplied(180, 180, 180, 100);
+                                let mono = egui::FontId::monospace(11.0);
+                                let mono_sm = egui::FontId::monospace(9.0);
 
-                                for (name, sess_color, _detail, _breakdown, _sort_key) in &entries {
-                                    // Re-find the nearest turn for structured rendering
+                                // Right-aligned colored cell helper
+                                let cell = |ui: &mut egui::Ui, text: &str, color: egui::Color32, f: &egui::FontId| {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.add(egui::Label::new(egui::RichText::new(text).font(f.clone()).color(color)));
+                                    });
+                                };
+                                // Left-aligned colored cell helper
+                                let lcell = |ui: &mut egui::Ui, text: &str, color: egui::Color32, f: &egui::FontId| {
+                                    ui.add(egui::Label::new(egui::RichText::new(text).font(f.clone()).color(color)));
+                                };
+
+                                let fmt_pct = |v: f64, total: f64| -> String {
+                                    if total < 1e-9 { return String::new(); }
+                                    let p = v / total * 100.0;
+                                    if p < 0.1 { String::new() } else { format!("{:.0}%", p) }
+                                };
+
+                                // Pre-resolve all turns so we can iterate twice (header + grid)
+                                let resolved: Vec<_> = entries.iter().filter_map(|(name, sess_color, _, _, _)| {
                                     let nearest = cd.session_turns.iter()
                                         .find(|(n, _, _)| n == name)
                                         .and_then(|(_, _, turns)| {
@@ -3099,78 +3083,134 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                                 (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
                                             })
                                         });
-                                    let Some((idx, t)) = nearest else { continue };
+                                    nearest.map(|(idx, t)| (name.as_str(), sess_color, idx, t))
+                                }).collect();
 
-                                    let short_name = if name.len() > 16 { &name[..16] } else { name };
-
-                                    // Colors matching bar segments
-                                    let c_input = egui::Color32::from_rgb(100, 160, 220);  // input (blue)
-                                    let c_cached = egui::Color32::from_rgb(80, 180, 100);   // input cached (green)
-                                    let c_output = egui::Color32::from_rgb(220, 160, 60);   // output (gold)
-                                    let c_think = egui::Color32::from_rgb(180, 80, 200);    // output thinking (purple)
-                                    let c_total = Palette::TEXT_BRIGHT;
-                                    let c_meta = Palette::TEXT_DIM;
-
-                                    // Build a multi-colored row via LayoutJob
-                                    let mut job = egui::text::LayoutJob::default();
-                                    let mono = egui::FontId::monospace(11.0);
-                                    let append = |job: &mut egui::text::LayoutJob, text: &str, color: egui::Color32| {
-                                        job.append(text, 0.0, egui::TextFormat {
-                                            font_id: mono.clone(),
-                                            color,
-                                            ..Default::default()
-                                        });
-                                    };
-
-                                    // Session name in session color
-                                    append(&mut job, &format!("{:<16}", short_name), *sess_color);
-                                    // Turn + model in dim
-                                    let think = if t.has_thinking { "*" } else { " " };
-                                    append(&mut job, &format!(" t{:<4}{:<8}{}", idx + 1, t.model_short, think), c_meta);
-
+                                ui.spacing_mut().item_spacing = egui::vec2(10.0, 1.0);
+                                egui::Grid::new("tooltip_grid")
+                                    .min_col_width(0.0)
+                                    .spacing(egui::vec2(10.0, 1.0))
+                                    .show(ui, |ui| {
+                                    // Header row
+                                    lcell(ui, "session", hdr_col, &mono);
+                                    lcell(ui, "turn", hdr_col, &mono);
+                                    lcell(ui, "model", hdr_col, &mono);
                                     match hs.source {
                                         HoverSource::Cost => {
-                                            let cache_cost = t.cache_read_cost + t.cache_create_cost;
-                                            let (out_reg, out_think) = if t.has_thinking {
-                                                (0.0, t.out_cost)
-                                            } else {
-                                                (t.out_cost, 0.0)
-                                            };
-                                            append(&mut job, &format!("{:>8}", format_cost(t.fresh_input_cost)), c_input);
-                                            append(&mut job, &format!("{:>10}", format_cost(cache_cost)), c_cached);
-                                            append(&mut job, &format!("{:>8}", format_cost(out_reg)), c_output);
-                                            append(&mut job, &format!("{:>11}", format_cost(out_think)), c_think);
-                                            append(&mut job, &format!("{:>9}", format_cost(t.cost_change)), c_total);
+                                            cell(ui, "input", c_input, &mono);
+                                            cell(ui, "in(cached)", c_cached, &mono);
+                                            cell(ui, "output", c_output, &mono);
+                                            cell(ui, "out(think)", c_think, &mono);
+                                            cell(ui, "total", c_total, &mono);
                                         }
                                         HoverSource::Tokens => {
-                                            let cached = t.cache_read_tok + t.cache_create_tok;
-                                            let (out_reg, out_think) = if t.has_thinking {
-                                                (0, t.out_tok)
-                                            } else {
-                                                (t.out_tok, 0)
-                                            };
-                                            append(&mut job, &format!("{:>8}", format_tokens(t.in_tok)), c_input);
-                                            append(&mut job, &format!("{:>10}", format_tokens(cached)), c_cached);
-                                            append(&mut job, &format!("{:>8}", format_tokens(out_reg)), c_output);
-                                            append(&mut job, &format!("{:>11}", format_tokens(out_think)), c_think);
+                                            cell(ui, "input", c_input, &mono);
+                                            cell(ui, "in(cached)", c_cached, &mono);
+                                            cell(ui, "output", c_output, &mono);
+                                            cell(ui, "out(think)", c_think, &mono);
                                         }
                                         HoverSource::Energy => {
-                                            let wh = t.energy.facility_kwh.mid * 1000.0;
-                                            append(&mut job, &format!("{:>7.2} Wh", wh), egui::Color32::from_rgb(120, 200, 80));
+                                            cell(ui, "Wh", egui::Color32::from_rgb(120, 200, 80), &mono);
                                         }
                                         HoverSource::Water => {
-                                            let wml = t.energy.water_total_ml.mid;
-                                            append(&mut job, &format!("{:>7.1} mL", wml), egui::Color32::from_rgb(80, 180, 220));
+                                            cell(ui, "mL", egui::Color32::from_rgb(80, 180, 220), &mono);
                                         }
                                         _ => {
-                                            append(&mut job, &format!("{:>8}", format_cost(t.in_cost + t.out_cost)), c_input);
-                                            append(&mut job, &format!("  +{:<7}", format_cost(t.cost_change)), c_total);
-                                            append(&mut job, &format!("  {}", format_cost(t.total_cost)), c_meta);
+                                            cell(ui, "cost", c_input, &mono);
+                                            cell(ui, "+delta", c_total, &mono);
+                                            cell(ui, "total", hdr_col, &mono);
                                         }
                                     }
+                                    ui.end_row();
 
-                                    ui.add(egui::Label::new(job));
-                                }
+                                    // Data rows: value row + percent row per session
+                                    for (name, sess_color, idx, t) in &resolved {
+                                        let short_name = if name.len() > 16 { &name[..16] } else { name };
+                                        let think_mark = if t.has_thinking { "*" } else { "" };
+
+                                        // Value row
+                                        lcell(ui, short_name, **sess_color, &mono);
+                                        cell(ui, &format!("t{}", idx + 1), c_meta, &mono);
+                                        lcell(ui, &format!("{}{}", t.model_short, think_mark), c_meta, &mono);
+                                        match hs.source {
+                                            HoverSource::Cost => {
+                                                let cache_cost = t.cache_read_cost + t.cache_create_cost;
+                                                let (out_reg, out_think) = if t.has_thinking {
+                                                    (0.0, t.out_cost)
+                                                } else {
+                                                    (t.out_cost, 0.0)
+                                                };
+                                                cell(ui, &format_cost(t.fresh_input_cost), c_input, &mono);
+                                                cell(ui, &format_cost(cache_cost), c_cached, &mono);
+                                                cell(ui, &format_cost(out_reg), c_output, &mono);
+                                                cell(ui, &format_cost(out_think), c_think, &mono);
+                                                cell(ui, &format_cost(t.cost_change), c_total, &mono);
+                                            }
+                                            HoverSource::Tokens => {
+                                                let cached = t.cache_read_tok + t.cache_create_tok;
+                                                let (out_reg, out_think) = if t.has_thinking {
+                                                    (0, t.out_tok)
+                                                } else {
+                                                    (t.out_tok, 0)
+                                                };
+                                                cell(ui, &format_tokens(t.in_tok), c_input, &mono);
+                                                cell(ui, &format_tokens(cached), c_cached, &mono);
+                                                cell(ui, &format_tokens(out_reg), c_output, &mono);
+                                                cell(ui, &format_tokens(out_think), c_think, &mono);
+                                            }
+                                            HoverSource::Energy => {
+                                                let wh = t.energy.facility_kwh.mid * 1000.0;
+                                                cell(ui, &format!("{:.2} Wh", wh), egui::Color32::from_rgb(120, 200, 80), &mono);
+                                            }
+                                            HoverSource::Water => {
+                                                let wml = t.energy.water_total_ml.mid;
+                                                cell(ui, &format!("{:.1} mL", wml), egui::Color32::from_rgb(80, 180, 220), &mono);
+                                            }
+                                            _ => {
+                                                cell(ui, &format_cost(t.in_cost + t.out_cost), c_input, &mono);
+                                                cell(ui, &format!("+{}", format_cost(t.cost_change)), c_total, &mono);
+                                                cell(ui, &format_cost(t.total_cost), c_meta, &mono);
+                                            }
+                                        }
+                                        ui.end_row();
+
+                                        // Percent row (smaller font, dimmer)
+                                        ui.label(""); // session
+                                        ui.label(""); // turn
+                                        ui.label(""); // model
+                                        match hs.source {
+                                            HoverSource::Cost => {
+                                                let total = t.cost_change.max(1e-9);
+                                                let cache_cost = t.cache_read_cost + t.cache_create_cost;
+                                                let (out_reg, out_think) = if t.has_thinking {
+                                                    (0.0, t.out_cost)
+                                                } else {
+                                                    (t.out_cost, 0.0)
+                                                };
+                                                cell(ui, &fmt_pct(t.fresh_input_cost, total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(cache_cost, total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_reg, total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_think, total), c_pct, &mono_sm);
+                                                ui.label(""); // total has no %
+                                            }
+                                            HoverSource::Tokens => {
+                                                let total = (t.in_tok + t.cache_read_tok + t.cache_create_tok + t.out_tok) as f64;
+                                                let cached = (t.cache_read_tok + t.cache_create_tok) as f64;
+                                                let (out_reg, out_think) = if t.has_thinking {
+                                                    (0.0, t.out_tok as f64)
+                                                } else {
+                                                    (t.out_tok as f64, 0.0)
+                                                };
+                                                cell(ui, &fmt_pct(t.in_tok as f64, total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(cached, total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_reg, total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_think, total), c_pct, &mono_sm);
+                                            }
+                                            _ => {}
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
                                 if omitted > 0 {
                                     ui.add(egui::Label::new(
                                         egui::RichText::new(format!("+{} more", omitted)).font(font.clone()).color(Palette::TEXT_DIM)
