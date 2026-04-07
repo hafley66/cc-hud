@@ -1716,6 +1716,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let mut agg_over_200k_cost = 0.0f64;
                 let mut agg_agent_cost = 0.0f64;
                 let mut agg_agent_count = 0u32;
+                let mut agg_active_secs = 0u64;
+                let mut earliest_ts = u64::MAX;
+                let mut latest_ts = 0u64;
                 for s in &data.sessions {
                     if effective_hidden.contains(&s.session_id) { continue; }
                     agg_cost += s.total_cost_usd;
@@ -1727,6 +1730,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     }
                     agg_agent_cost += s.subagents.iter().map(|a| a.total_cost_usd).sum::<f64>();
                     agg_agent_count += s.agent_count;
+                    if s.first_ts > 0 && s.last_ts > s.first_ts {
+                        agg_active_secs += s.last_ts - s.first_ts;
+                        if s.first_ts < earliest_ts { earliest_ts = s.first_ts; }
+                        if s.last_ts > latest_ts { latest_ts = s.last_ts; }
+                    }
                 }
                 let avg_cost_sesh      = if agg_session_count > 0 { agg_cost / agg_session_count as f64 } else { 0.0 };
                 let proj_200k          = if agg_tokens > 0 { (agg_cost / agg_tokens as f64) * 200_000.0 } else { 0.0 };
@@ -1735,26 +1743,43 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let avg_agent_cost     = if agg_agent_count > 0 { agg_agent_cost / agg_agent_count as f64 } else { 0.0 };
                 let avg_ag_sesh        = if agg_session_count > 0 { agg_agent_count as f64 / agg_session_count as f64 } else { 0.0 };
                 let avg_over_200k_cost = if agg_over_200k_count > 0 { agg_over_200k_cost / agg_over_200k_count as f64 } else { 0.0 };
+                let active_hours       = agg_active_secs as f64 / 3600.0;
+                let span_days          = if latest_ts > earliest_ts { (latest_ts - earliest_ts) as f64 / 86400.0 } else { 1.0 };
+                let cost_per_active_hr = if active_hours > 0.0 { agg_cost / active_hours } else { 0.0 };
+                let active_hrs_per_day = active_hours / span_days.max(1.0);
 
                 let strip_h = 32.0_f32;
                 let (strip_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), strip_h), egui::Sense::hover());
                 let painter = ui.painter();
                 let font = egui::FontId::monospace(9.0);
                 let col  = Palette::TEXT_DIM;
-                let x    = strip_rect.left() + 6.0;
+                let pad  = 6.0_f32;
+                let sw   = strip_rect.width() - pad * 2.0;
 
-                let row1 = format!(
-                    "avg {}/sesh  proj {}/200k  >200k: {}/{} (avg {})  {}/Mtok",
-                    format_cost(avg_cost_sesh), format_cost(proj_200k),
-                    agg_over_200k_count, agg_session_count, format_cost(avg_over_200k_cost),
-                    format_cost(cptm),
-                );
-                let row2 = format!(
-                    "agents: {:.0}%  avg {}/agent  {:.1} ag/sesh",
-                    agent_pct, format_cost(avg_agent_cost), avg_ag_sesh,
-                );
-                painter.text(egui::pos2(x, strip_rect.top() + 10.0), egui::Align2::LEFT_CENTER, &row1, font.clone(), col);
-                painter.text(egui::pos2(x, strip_rect.top() + 22.0), egui::Align2::LEFT_CENTER, &row2, font.clone(), col);
+                let row1_items: Vec<String> = vec![
+                    format!("avg {}/sesh", format_cost(avg_cost_sesh)),
+                    format!("proj {}/200k", format_cost(proj_200k)),
+                    format!(">200k: {}/{} (avg {})", agg_over_200k_count, agg_session_count, format_cost(avg_over_200k_cost)),
+                    format!("{}/Mtok", format_cost(cptm)),
+                    format!("{}/active hr", format_cost(cost_per_active_hr)),
+                ];
+                let row2_items: Vec<String> = vec![
+                    format!("agents: {:.0}%", agent_pct),
+                    format!("avg {}/agent", format_cost(avg_agent_cost)),
+                    format!("{:.1} ag/sesh", avg_ag_sesh),
+                    format!("{:.1}h/day ({})", active_hrs_per_day, format_cost(active_hrs_per_day * cost_per_active_hr)),
+                ];
+
+                let draw_spread = |items: &[String], y: f32| {
+                    let n = items.len() as f32;
+                    let slot = sw / n;
+                    for (i, item) in items.iter().enumerate() {
+                        let x = strip_rect.left() + pad + slot * i as f32 + slot * 0.5;
+                        painter.text(egui::pos2(x, y), egui::Align2::CENTER_CENTER, item, font.clone(), col);
+                    }
+                };
+                draw_spread(&row1_items, strip_rect.top() + 10.0);
+                draw_spread(&row2_items, strip_rect.top() + 22.0);
                 painter.line_segment(
                     [egui::pos2(strip_rect.left() + 4.0, strip_rect.bottom()),
                      egui::pos2(strip_rect.right() - 4.0, strip_rect.bottom())],
@@ -2230,11 +2255,20 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     // When pinned, draw the VLine at pinned x but don't update hover state (data stays frozen).
     let is_pinned = pinned_x.is_some();
     let update_hover_src = move |pui: &mut egui_plot::PlotUi, source: HoverSource| {
-        // Draw highlight VLine at effective position (pinned or live)
+        // Draw highlight VLine at effective position (pinned or live).
+        // In non-time mode, Budget uses time-x while other charts use turn-x.
+        // Skip VLine when coordinate systems don't match to avoid auto-bounds explosion.
+        let coords_match = is_time || match (prev_hover.as_ref().map(|hs| hs.source), source) {
+            (Some(HoverSource::Budget), HoverSource::Budget) => true,
+            (Some(HoverSource::Budget), _) | (_, HoverSource::Budget) => false,
+            _ => true,
+        };
         let vline_x = if is_pinned {
             pinned_x
-        } else {
+        } else if coords_match {
             prev_hover.as_ref().map(|hs| hs.x)
+        } else {
+            None
         };
         if let Some(x) = vline_x {
             pui.vline(VLine::new(x).color(hover_vline_color).width(1.0));
@@ -2941,17 +2975,20 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let mut entries: Vec<(String, egui::Color32, String, Option<[f32; 3]>, f64)> = vec![];
             // Context info from nearest turn (for footer): (context_tokens, context_limit, burn_rate_per_turn, is_reset)
             let mut context_footer: Option<(u64, u64, f64, bool)> = None;
+            // Budget always uses time-based x, even in non-time mode
+            let use_ts_x = matches!(hs.source, HoverSource::Budget) && !is_time;
             for (name, sess_color, turns) in &cd.session_turns {
                 if turns.is_empty() { continue; }
                 // Skip sessions where hover x is outside the session's data range (with small margin)
-                let first_x = turns.first().unwrap().x;
-                let last_x = turns.last().unwrap().x;
+                let tx = |t: &TurnInfo| if use_ts_x { t.ts_x } else { t.x };
+                let first_x = tx(turns.first().unwrap());
+                let last_x = tx(turns.last().unwrap());
                 let span = (last_x - first_x).max(1.0);
                 let margin = span * 0.05; // 5% margin at edges
                 if hx < first_x - margin || hx > last_x + margin { continue; }
 
                 let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
-                    (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
+                    (tx(a) - hx).abs().partial_cmp(&(tx(b) - hx).abs()).unwrap()
                 });
                 if let Some((idx, t)) = nearest {
                     // Compute context burn rate: avg context growth per turn over recent window
@@ -3103,8 +3140,18 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 } else {
                     offset
                 };
-                let mut tip_pos = cursor + egui::vec2(x_offset, -tip_h - 8.0);
-                tip_pos.y = tip_pos.y.max(win_rect.top() + 4.0);
+                let is_budget_hover = matches!(hs.source, HoverSource::Budget);
+                let tip_pos = if is_budget_hover {
+                    // Tooltip right edge aligns to budget chart left edge
+                    egui::pos2(usage_rect.left() - tip_w - 4.0, usage_rect.top() + 4.0)
+                } else {
+                    let tip_y = if cursor.y - tip_h - 8.0 >= win_rect.top() + 4.0 {
+                        cursor.y - tip_h - 8.0
+                    } else {
+                        cursor.y + 20.0
+                    };
+                    egui::pos2(cursor.x + x_offset, tip_y)
+                };
 
                 egui::Area::new(egui::Id::new("hud_float_tip"))
                     .fixed_pos(tip_pos)
@@ -3166,7 +3213,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         .find(|(n, _, _)| n == name)
                                         .and_then(|(_, _, turns)| {
                                             turns.iter().enumerate().min_by(|(_, a), (_, b)| {
-                                                (a.x - hx).abs().partial_cmp(&(b.x - hx).abs()).unwrap()
+                                                let ax = if use_ts_x { a.ts_x } else { a.x };
+                                                let bx = if use_ts_x { b.ts_x } else { b.x };
+                                                (ax - hx).abs().partial_cmp(&(bx - hx).abs()).unwrap()
                                             })
                                         });
                                     nearest.map(|(idx, t)| (name.as_str(), sess_color, idx, t))
