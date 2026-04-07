@@ -1450,6 +1450,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let ta_resp = ui.interact(ta_rect, egui::Id::new("ctrl_time_axis"), egui::Sense::click());
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
+                if *time_axis { *show_bars = false; }
                 *autofit = true;
                 *nav_view = None;
             }
@@ -2146,6 +2147,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         vec![]
     };
 
+    // Time-mode visual parameters: defined once, used at every chart render site.
+    // In time mode with many overlapping sessions, reduce line opacity/width to keep charts readable.
+    // Hovered sessions always render at full brightness regardless.
+    let line_alpha_default: f32 = if is_time { 0.30 } else { 0.75 };
+    let line_width_default: f32 = if is_time { 1.5 } else { 2.0 };
+    let totals_alpha_default: f32 = if is_time { 0.35 } else { 0.80 };
+    let totals_width_default: f32 = if is_time { 1.2 } else { 1.5 };
+    let show_markers = !is_time || !panel_hl.key.is_empty();
+
     // Pin toggle is handled per-chart via plot_resp.response.clicked() after each show().
 
     // Screen-space containment check + source tracking + highlight VLine.
@@ -2248,7 +2258,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     // Overlay: total cost lines scaled into bar coordinate space
                     for (si, (color, points)) in cd.total_cost_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
-                            (0.75f32, 2.0f32)
+                            (line_alpha_default, line_width_default)
                         } else if hovered_sessions.get(si).copied().unwrap_or(false) {
                             (1.0, 2.5)
                         } else {
@@ -2258,7 +2268,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         pui.line(egui_plot::Line::new(scaled)
                             .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
                     }
-                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
+                    if show_markers {
+                        render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
+                    }
                     update_hover_src(pui, HoverSource::Cost);
                 });
             if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
@@ -2304,7 +2316,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     // Overlay: total token lines (input solid, output dashed) scaled into bar space
                     for (si, (color, in_pts, out_pts)) in cd.total_tok_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
-                            (0.75f32, 2.0f32)
+                            (line_alpha_default, line_width_default)
                         } else if hovered_sessions.get(si).copied().unwrap_or(false) {
                             (1.0, 2.5)
                         } else {
@@ -2701,7 +2713,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 if *show_bars { pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.energy_wh_bars, &hovered_sessions)).name("Wh")); }
                 for (si, (color, pts)) in cd.total_energy_lines.iter().enumerate() {
                     let (alpha, w) = if hovered_sessions.is_empty() {
-                        (0.75f32, 2.0f32)
+                        (line_alpha_default, line_width_default)
                     } else if hovered_sessions.get(si).copied().unwrap_or(false) {
                         (1.0, 2.5)
                     } else {
@@ -2739,7 +2751,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 if *show_bars { pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.water_ml_bars, &hovered_sessions)).name("mL")); }
                 for (si, (color, pts)) in cd.total_water_lines.iter().enumerate() {
                     let (alpha, w) = if hovered_sessions.is_empty() {
-                        (0.75f32, 2.0f32)
+                        (line_alpha_default, line_width_default)
                     } else if hovered_sessions.get(si).copied().unwrap_or(false) {
                         (1.0, 2.5)
                     } else {
@@ -2802,7 +2814,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 if cd.total_tok_max > 0.0 {
                     for (si, (_, in_pts, _)) in cd.total_tok_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
-                            (0.8f32, 1.5f32)
+                            (totals_alpha_default, totals_width_default)
                         } else if hovered_sessions.get(si).copied().unwrap_or(false) {
                             (1.0, 2.5)
                         } else {
@@ -2819,7 +2831,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 if cd.total_energy_max > 0.0 {
                     for (si, (_, pts)) in cd.total_energy_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
-                            (0.8f32, 1.5f32)
+                            (totals_alpha_default, totals_width_default)
                         } else if hovered_sessions.get(si).copied().unwrap_or(false) {
                             (1.0, 2.5)
                         } else {
@@ -2836,7 +2848,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 if cd.total_water_max > 0.0 {
                     for (si, (_, pts)) in cd.total_water_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
-                            (0.8f32, 1.5f32)
+                            (totals_alpha_default, totals_width_default)
                         } else if hovered_sessions.get(si).copied().unwrap_or(false) {
                             (1.0, 2.5)
                         } else {
