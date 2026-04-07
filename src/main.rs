@@ -1754,32 +1754,21 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let font = egui::FontId::monospace(9.0);
                 let col  = Palette::TEXT_DIM;
                 let pad  = 6.0_f32;
-                let sw   = strip_rect.width() - pad * 2.0;
 
-                let row1_items: Vec<String> = vec![
-                    format!("avg {}/sesh", format_cost(avg_cost_sesh)),
-                    format!("proj {}/200k", format_cost(proj_200k)),
-                    format!(">200k: {}/{} (avg {})", agg_over_200k_count, agg_session_count, format_cost(avg_over_200k_cost)),
-                    format!("{}/Mtok", format_cost(cptm)),
-                    format!("{}/active hr", format_cost(cost_per_active_hr)),
-                ];
-                let row2_items: Vec<String> = vec![
-                    format!("agents: {:.0}%", agent_pct),
-                    format!("avg {}/agent", format_cost(avg_agent_cost)),
-                    format!("{:.1} ag/sesh", avg_ag_sesh),
-                    format!("{:.1}h/day ({})", active_hrs_per_day, format_cost(active_hrs_per_day * cost_per_active_hr)),
-                ];
-
-                let draw_spread = |items: &[String], y: f32| {
-                    let n = items.len() as f32;
-                    let slot = sw / n;
-                    for (i, item) in items.iter().enumerate() {
-                        let x = strip_rect.left() + pad + slot * i as f32 + slot * 0.5;
-                        painter.text(egui::pos2(x, y), egui::Align2::CENTER_CENTER, item, font.clone(), col);
-                    }
-                };
-                draw_spread(&row1_items, strip_rect.top() + 10.0);
-                draw_spread(&row2_items, strip_rect.top() + 22.0);
+                let row1 = format!(
+                    "avg {}/sesh   proj {}/200k   >200k: {}/{}(avg {})   {}/Mtok   {}/active hr   {:.1}h/day({})",
+                    format_cost(avg_cost_sesh), format_cost(proj_200k),
+                    agg_over_200k_count, agg_session_count, format_cost(avg_over_200k_cost),
+                    format_cost(cptm), format_cost(cost_per_active_hr),
+                    active_hrs_per_day, format_cost(active_hrs_per_day * cost_per_active_hr),
+                );
+                let row2 = format!(
+                    "agents: {:.0}%   avg {}/agent   {:.1} ag/sesh",
+                    agent_pct, format_cost(avg_agent_cost), avg_ag_sesh,
+                );
+                let x = strip_rect.left() + pad;
+                painter.text(egui::pos2(x, strip_rect.top() + 10.0), egui::Align2::LEFT_CENTER, &row1, font.clone(), col);
+                painter.text(egui::pos2(x, strip_rect.top() + 22.0), egui::Align2::LEFT_CENTER, &row2, font.clone(), col);
                 painter.line_segment(
                     [egui::pos2(strip_rect.left() + 4.0, strip_rect.bottom()),
                      egui::pos2(strip_rect.right() - 4.0, strip_rect.bottom())],
