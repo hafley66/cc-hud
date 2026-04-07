@@ -121,7 +121,7 @@ pub fn load_opencode_sessions(energy_config: &EnergyConfig) -> HudData {
         }
     }
 
-    HudData { sessions: session_datas }
+    HudData { sessions: session_datas, generation: 0 }
 }
 
 fn load_sessions(conn: &Connection) -> rusqlite::Result<Vec<SessionRow>> {

@@ -1,6 +1,20 @@
 /// Framework-agnostic scene tree. Pure functions produce `Vec<Node>`,
 /// a backend (egui, dioxus, etc.) walks and renders synchronously.
 
+/// Downsample a line to at most `max_pts` points, preserving first and last.
+/// Uses uniform index sampling -- adequate for monotonic cumulative lines.
+fn downsample_line(pts: &[[f64; 2]], max_pts: usize) -> Vec<[f64; 2]> {
+    if pts.len() <= max_pts { return pts.to_vec(); }
+    let mut out = Vec::with_capacity(max_pts);
+    out.push(pts[0]);
+    let step = (pts.len() - 1) as f64 / (max_pts - 1) as f64;
+    for i in 1..max_pts - 1 {
+        out.push(pts[(i as f64 * step) as usize]);
+    }
+    out.push(*pts.last().unwrap());
+    out
+}
+
 // ---- shared formatting utilities ----
 
 pub fn short_model_label(model: &str) -> &'static str {
@@ -494,9 +508,11 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let energy_config = EnergyConfig::default();
 
     let mut total_api_calls = 0usize;
+    let mut visible_session_count = 0usize;
     let (mut ts_min, mut ts_max) = (u64::MAX, 0u64);
     for session in &data.sessions {
         if hidden.contains(&session.session_id) { continue; }
+        visible_session_count += 1;
         for ev in &session.events {
             if let Event::ApiCall { timestamp_secs, .. } = ev {
                 if *timestamp_secs > 0 {
@@ -510,16 +526,17 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let time_span_min = if ts_max > ts_min { (ts_max - ts_min) as f64 / 60.0 } else { 60.0 };
     let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.6).max(time_span_min / 300.0).min(time_span_min / 60.0);
 
-    // Downsampling: when time-axis mode has too many bars, bucket into time intervals.
-    // Target ~400 bars max across the time span. Each bucket aggregates multiple API calls.
-    let max_bars = 400usize;
-    let downsample = time_axis && total_api_calls > max_bars;
+    // Downsampling: bucket into time intervals so TOTAL bars across all sessions stays bounded.
+    // Each session can produce up to (time_span / bucket_minutes) bars, so bucket_minutes must
+    // account for session count to keep the grand total under max_bars.
+    let max_bars_total = 600usize;
+    let max_bars_per_session = (max_bars_total / visible_session_count.max(1)).max(4);
+    let downsample = time_axis && total_api_calls > max_bars_total;
     let bucket_minutes = if downsample {
-        time_span_min / max_bars as f64
+        time_span_min / max_bars_per_session as f64
     } else {
         0.0
     };
-    // bucket_w is the bar width in minutes for downsampled bars
     let bucket_w = if downsample { bucket_minutes * 0.85 } else { 0.0 };
 
     for (si, session) in data.sessions.iter().enumerate() {
@@ -760,6 +777,10 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     let mut total_tok_lines: Vec<(Color, Vec<[f64; 2]>, Vec<[f64; 2]>)> = vec![];
     let mut total_tok_max = 1.0_f64;
 
+    // Max points per line series -- more than enough for screen resolution,
+    // prevents egui_plot from choking on thousands of points * hundreds of sessions.
+    let max_line_pts = 300;
+
     for (_, color, turns) in &session_turns {
         if turns.is_empty() { continue; }
         let cost_pts: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_cost]).collect();
@@ -769,8 +790,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
             total_cost_max = total_cost_max.max(last.total_cost);
             total_tok_max = total_tok_max.max(last.total_in_tok as f64);
         }
-        total_cost_lines.push((*color, cost_pts));
-        total_tok_lines.push((*color, in_tok_pts, out_tok_pts));
+        total_cost_lines.push((*color, downsample_line(&cost_pts, max_line_pts)));
+        total_tok_lines.push((*color, downsample_line(&in_tok_pts, max_line_pts), downsample_line(&out_tok_pts, max_line_pts)));
     }
 
     let mut total_energy_lines: Vec<(Color, Vec<[f64; 2]>)> = vec![];
@@ -780,7 +801,7 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     for (_, color, turns) in &session_turns {
         if turns.is_empty() { continue; }
         let energy_pts: Vec<[f64; 2]> = turns.iter()
-            .map(|t| [t.x, t.cumulative_energy.facility_kwh.mid * 1000.0]) // Wh
+            .map(|t| [t.x, t.cumulative_energy.facility_kwh.mid * 1000.0])
             .collect();
         let water_pts: Vec<[f64; 2]> = turns.iter()
             .map(|t| [t.x, t.cumulative_energy.water_total_ml.mid])
@@ -789,8 +810,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
             total_energy_max = total_energy_max.max(last.cumulative_energy.facility_kwh.mid * 1000.0);
             total_water_max = total_water_max.max(last.cumulative_energy.water_total_ml.mid);
         }
-        total_energy_lines.push((*color, energy_pts));
-        total_water_lines.push((*color, water_pts));
+        total_energy_lines.push((*color, downsample_line(&energy_pts, max_line_pts)));
+        total_water_lines.push((*color, downsample_line(&water_pts, max_line_pts)));
     }
 
     let mut all_cost_events: Vec<(f64, f64)> = vec![];
@@ -812,6 +833,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     }
     let combined_cost_max = running.max(0.001);
     let cost_rate_max = all_cost_events.iter().map(|(_, c)| *c).fold(0.001_f64, f64::max);
+    let combined_cost_pts = downsample_line(&combined_cost_pts, max_line_pts);
+    let cost_rate_pts = downsample_line(&cost_rate_pts, max_line_pts);
 
     ChartData {
         in_cost_bars, in_cost_fresh_bars, in_cost_cache_read_bars, in_cost_cache_create_bars,

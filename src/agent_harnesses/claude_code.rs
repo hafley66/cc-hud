@@ -131,6 +131,10 @@ pub struct SessionData {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct HudData {
     pub sessions: Vec<SessionData>,
+    /// Incremented each time sessions are updated. UI uses this to avoid
+    /// rebuilding chart data every frame when nothing changed.
+    #[serde(skip)]
+    pub generation: u64,
 }
 
 // --- internal types ---
@@ -662,6 +666,7 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
                 // Remove previous OpenCode sessions (pid == 0 and session_id starts with "ses_")
                 d.sessions.retain(|s| !(s.pid == 0 && s.session_id.starts_with("ses_")));
                 d.sessions.extend(oc_data.sessions);
+                d.generation += 1;
                 tracing::info!(count = d.sessions.iter().filter(|s| s.pid == 0 && s.session_id.starts_with("ses_")).count(), "loaded opencode sessions");
             }
             opencode_loaded = true;
@@ -703,6 +708,7 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             {
                 let mut d = data.lock().unwrap();
                 d.sessions = sessions;
+                d.generation += 1;
             }
 
             // Register active sessions for tailing
@@ -743,7 +749,6 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             let mut d = data.lock().unwrap();
             if let Some(existing) = d.sessions.iter_mut().find(|s| s.session_id == *sid) {
                 existing.events.extend(new_events);
-                // Recompute aggregates (re-discover subagents too, new ones may have spawned)
                 let subs = discover_subagents(&path);
                 *existing = build_session_data(
                     &existing.session_id,
@@ -755,12 +760,12 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
                     subs,
                 );
             } else {
-                // New active session not in history
                 let events = new_events;
                 let subs = discover_subagents(&path);
                 let sd = build_session_data(sid, &short_name(&sf.cwd), &short_name(&sf.cwd), sf.pid, events, true, subs);
                 d.sessions.insert(0, sd);
             }
+            d.generation += 1;
         }
 
         // Refresh is_active on all sessions every poll cycle
