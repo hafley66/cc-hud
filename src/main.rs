@@ -659,6 +659,7 @@ struct LegendStats {
     total_tokens: u64,      // input + output across entire session/group
     session_count: u32,     // 1 for flat rows, N for group headers
     api_call_count: u32,
+    agent_cost: f64,        // total subagent cost (0 if no agents)
 }
 
 impl LegendStats {
@@ -764,26 +765,31 @@ fn draw_legend_row(
     // Stats (secondary line) -- monospace fixed-width fields for column alignment
     if row_h >= 22.0 {
         let sy = cy + row_h * 0.18;
+        let ag_tag = if stats.agent_cost > 0.0 {
+            format!("  {}ag", format_cost(stats.agent_cost))
+        } else {
+            String::new()
+        };
         let stat_str = if stats.session_count > 1 {
             let avg_cost = format_cost(stats.avg_cost_per_session());
             let avg_tok = format_tokens(stats.avg_tokens_per_session());
             if is_active {
                 let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-                format!("{:>3.0}% ctx  {:>8}  {:>6}  avg {}/sesh  {}/sesh",
-                    ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok)
+                format!("{:>3.0}% ctx  {:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
+                    ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok, ag_tag)
             } else {
-                format!("{:>8}  {:>6}  avg {}/sesh  {}/sesh",
-                    format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok)
+                format!("{:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
+                    format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok, ag_tag)
             }
         } else if is_active {
             let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
             let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-            format!("{:>3.0}% ctx  {:>8}  {:>6}  {}",
-                ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag)
+            format!("{:>3.0}% ctx  {:>8}  {:>6}  {}{}",
+                ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag, ag_tag)
         } else {
             let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
-            format!("{:>8}  {:>6}  {}",
-                format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag)
+            format!("{:>8}  {:>6}  {}{}",
+                format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag, ag_tag)
         };
         text_painter.text(egui::pos2(text_x, sy), egui::Align2::LEFT_CENTER,
             &stat_str, font_stat, dim_col);
@@ -1101,7 +1107,8 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                     &session.project, sess_col, name_col, dim_col,
                     session.is_active, false,
                     &LegendStats { cost: session.total_cost_usd, last_input: session.last_input_tokens,
-                        total_tokens: session.total_input + session.total_output, session_count: 1, api_call_count: session.api_call_count },
+                        total_tokens: session.total_input + session.total_output, session_count: 1, api_call_count: session.api_call_count,
+                        agent_cost: session.subagents.iter().map(|a| a.total_cost_usd).sum() },
                     &session.model, None,
                     &[(session, sess_col)], &no_hidden, Some(eye_w));
             });
@@ -1700,6 +1707,61 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
         panel_frame().show(ui, |ui| {
+            // --- Aggregate stats strip (fixed, above scroll area) ---
+            {
+                let mut agg_cost = 0.0f64;
+                let mut agg_tokens = 0u64;
+                let mut agg_session_count = 0u32;
+                let mut agg_over_200k_count = 0u32;
+                let mut agg_over_200k_cost = 0.0f64;
+                let mut agg_agent_cost = 0.0f64;
+                let mut agg_agent_count = 0u32;
+                for s in &data.sessions {
+                    if effective_hidden.contains(&s.session_id) { continue; }
+                    agg_cost += s.total_cost_usd;
+                    agg_tokens += s.total_input + s.total_output;
+                    agg_session_count += 1;
+                    if s.total_input + s.total_output > 200_000 {
+                        agg_over_200k_count += 1;
+                        agg_over_200k_cost += s.total_cost_usd;
+                    }
+                    agg_agent_cost += s.subagents.iter().map(|a| a.total_cost_usd).sum::<f64>();
+                    agg_agent_count += s.agent_count;
+                }
+                let avg_cost_sesh      = if agg_session_count > 0 { agg_cost / agg_session_count as f64 } else { 0.0 };
+                let proj_200k          = if agg_tokens > 0 { (agg_cost / agg_tokens as f64) * 200_000.0 } else { 0.0 };
+                let cptm               = if agg_tokens > 0 { agg_cost / agg_tokens as f64 * 1_000_000.0 } else { 0.0 };
+                let agent_pct          = if agg_cost > 0.0 { agg_agent_cost / agg_cost * 100.0 } else { 0.0 };
+                let avg_agent_cost     = if agg_agent_count > 0 { agg_agent_cost / agg_agent_count as f64 } else { 0.0 };
+                let avg_ag_sesh        = if agg_session_count > 0 { agg_agent_count as f64 / agg_session_count as f64 } else { 0.0 };
+                let avg_over_200k_cost = if agg_over_200k_count > 0 { agg_over_200k_cost / agg_over_200k_count as f64 } else { 0.0 };
+
+                let strip_h = 32.0_f32;
+                let (strip_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), strip_h), egui::Sense::hover());
+                let painter = ui.painter();
+                let font = egui::FontId::monospace(9.0);
+                let col  = Palette::TEXT_DIM;
+                let x    = strip_rect.left() + 6.0;
+
+                let row1 = format!(
+                    "avg {}/sesh  proj {}/200k  >200k: {}/{} (avg {})  {}/Mtok",
+                    format_cost(avg_cost_sesh), format_cost(proj_200k),
+                    agg_over_200k_count, agg_session_count, format_cost(avg_over_200k_cost),
+                    format_cost(cptm),
+                );
+                let row2 = format!(
+                    "agents: {:.0}%  avg {}/agent  {:.1} ag/sesh",
+                    agent_pct, format_cost(avg_agent_cost), avg_ag_sesh,
+                );
+                painter.text(egui::pos2(x, strip_rect.top() + 10.0), egui::Align2::LEFT_CENTER, &row1, font.clone(), col);
+                painter.text(egui::pos2(x, strip_rect.top() + 22.0), egui::Align2::LEFT_CENTER, &row2, font.clone(), col);
+                painter.line_segment(
+                    [egui::pos2(strip_rect.left() + 4.0, strip_rect.bottom()),
+                     egui::pos2(strip_rect.right() - 4.0, strip_rect.bottom())],
+                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 80, 80, 60)),
+                );
+            }
+
             // Boost scroll speed 4x: read raw delta, apply extra offset after ScrollArea
             let extra_scroll = ui.input(|i| i.smooth_scroll_delta.y) * 3.0; // 3x extra = 4x total
             let legend_scroll_id = egui::Id::new("legend_scroll");
@@ -1725,12 +1787,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let mut g_model = String::new();
                 let mut g_total_tokens = 0u64;
                 let mut g_api_calls = 0u32;
+                let mut g_agent_cost = 0.0f64;
 
                 for (si, _) in members {
                     let s = &data.sessions[*si];
                     g_cost    += s.total_cost_usd;
                     g_total_tokens += s.total_input + s.total_output;
                     g_api_calls += s.api_call_count;
+                    g_agent_cost += s.subagents.iter().map(|a| a.total_cost_usd).sum::<f64>();
                     if s.is_active {
                         any_active = true;
                         active_count += 1;
@@ -1813,7 +1877,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             &s.project, sess_col, name_col, dim_col,
                             s.is_active, is_hidden,
                             &LegendStats { cost: s.total_cost_usd, last_input: s.last_input_tokens,
-                                total_tokens: s.total_input + s.total_output, session_count: 1, api_call_count: s.api_call_count },
+                                total_tokens: s.total_input + s.total_output, session_count: 1, api_call_count: s.api_call_count,
+                                agent_cost: s.subagents.iter().map(|a| a.total_cost_usd).sum() },
                             &s.model, None,
                             &[(s, sess_col)], effective_hidden, Some(eye_w));
 
@@ -1945,7 +2010,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         &header_name, bar_col, name_col, dim_col,
                         any_active, all_hidden,
                         &LegendStats { cost: g_cost, last_input: g_last_input,
-                            total_tokens: g_total_tokens, session_count: members.len() as u32, api_call_count: g_api_calls },
+                            total_tokens: g_total_tokens, session_count: members.len() as u32, api_call_count: g_api_calls,
+                            agent_cost: g_agent_cost },
                         &g_model, agc,
                         &sess_refs, effective_hidden, Some(eye_w));
 
@@ -2023,7 +2089,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 &sub_label, sess_col, sub_name_col, sub_dim,
                                 s.is_active, is_hidden,
                                 &LegendStats { cost: s.total_cost_usd, last_input: s.last_input_tokens,
-                                    total_tokens: s.total_input + s.total_output, session_count: 1, api_call_count: s.api_call_count },
+                                    total_tokens: s.total_input + s.total_output, session_count: 1, api_call_count: s.api_call_count,
+                                    agent_cost: s.subagents.iter().map(|a| a.total_cost_usd).sum() },
                                 &s.model, None,
                                 &[(s, sess_col)], effective_hidden, Some(16.0 + eye_w));
 
@@ -3101,13 +3168,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                             cell(ui, "in(cached)", c_cached, &mono);
                                             cell(ui, "output", c_output, &mono);
                                             cell(ui, "out(think)", c_think, &mono);
-                                            cell(ui, "total", c_total, &mono);
+                                            cell(ui, "turn", c_total, &mono);
+                                            cell(ui, "cumul", c_meta, &mono);
                                         }
                                         HoverSource::Tokens => {
                                             cell(ui, "input", c_input, &mono);
                                             cell(ui, "in(cached)", c_cached, &mono);
                                             cell(ui, "output", c_output, &mono);
                                             cell(ui, "out(think)", c_think, &mono);
+                                            cell(ui, "cumul", c_meta, &mono);
                                         }
                                         HoverSource::Energy => {
                                             cell(ui, "Wh", egui::Color32::from_rgb(120, 200, 80), &mono);
@@ -3145,6 +3214,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                                 cell(ui, &format_cost(out_reg), c_output, &mono);
                                                 cell(ui, &format_cost(out_think), c_think, &mono);
                                                 cell(ui, &format_cost(t.cost_change), c_total, &mono);
+                                                cell(ui, &format_cost(t.total_cost), c_meta, &mono);
                                             }
                                             HoverSource::Tokens => {
                                                 let cached = t.cache_read_tok + t.cache_create_tok;
@@ -3157,6 +3227,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                                 cell(ui, &format_tokens(cached), c_cached, &mono);
                                                 cell(ui, &format_tokens(out_reg), c_output, &mono);
                                                 cell(ui, &format_tokens(out_think), c_think, &mono);
+                                                let cumul_tok = t.total_in_tok + t.total_out_tok;
+                                                cell(ui, &format_tokens(cumul_tok), c_meta, &mono);
                                             }
                                             HoverSource::Energy => {
                                                 let wh = t.energy.facility_kwh.mid * 1000.0;
@@ -3180,31 +3252,34 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         ui.label(""); // model
                                         match hs.source {
                                             HoverSource::Cost => {
-                                                let total = t.cost_change.max(1e-9);
+                                                let turn_total = t.cost_change.max(1e-9);
                                                 let cache_cost = t.cache_read_cost + t.cache_create_cost;
                                                 let (out_reg, out_think) = if t.has_thinking {
                                                     (0.0, t.out_cost)
                                                 } else {
                                                     (t.out_cost, 0.0)
                                                 };
-                                                cell(ui, &fmt_pct(t.fresh_input_cost, total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(cache_cost, total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_reg, total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_think, total), c_pct, &mono_sm);
-                                                ui.label(""); // total has no %
+                                                cell(ui, &fmt_pct(t.fresh_input_cost, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(cache_cost, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_reg, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_think, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(t.cost_change, t.total_cost), c_pct, &mono_sm);
+                                                ui.label(""); // cumul has no %
                                             }
                                             HoverSource::Tokens => {
-                                                let total = (t.in_tok + t.cache_read_tok + t.cache_create_tok + t.out_tok) as f64;
+                                                let turn_total = (t.in_tok + t.cache_read_tok + t.cache_create_tok + t.out_tok) as f64;
                                                 let cached = (t.cache_read_tok + t.cache_create_tok) as f64;
                                                 let (out_reg, out_think) = if t.has_thinking {
                                                     (0.0, t.out_tok as f64)
                                                 } else {
                                                     (t.out_tok as f64, 0.0)
                                                 };
-                                                cell(ui, &fmt_pct(t.in_tok as f64, total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(cached, total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_reg, total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_think, total), c_pct, &mono_sm);
+                                                let cumul_tok = (t.total_in_tok + t.total_out_tok) as f64;
+                                                cell(ui, &fmt_pct(t.in_tok as f64, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(cached, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_reg, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(out_think, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(turn_total, cumul_tok), c_pct, &mono_sm);
                                             }
                                             _ => {}
                                         }
