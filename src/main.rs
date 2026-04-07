@@ -87,7 +87,7 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, filter_set: HashSet::new(), filter_mode: FilterMode::Exclude, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None, chart_vis: ChartVisibility::default(), cached_chart: None });
+    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, filter_set: HashSet::new(), filter_mode: FilterMode::Exclude, show_active_only: false, show_bars: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None, chart_vis: ChartVisibility::default(), cached_chart: None });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -144,6 +144,8 @@ struct Hud {
     /// In Include mode: these sessions are shown (everything else hidden).
     filter_set: HashSet<String>,
     filter_mode: FilterMode,
+    show_active_only: bool,
+    show_bars: bool,
     time_axis: bool,
     autofit: bool,
     /// Chart viewport x-range in minutes-from-epoch. None = auto-fit to all data.
@@ -1166,7 +1168,7 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
 // Big dashboard layout
 // ---------------------------------------------------------------------------
 
-fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, filter_set: &mut HashSet<String>, filter_mode: &mut FilterMode, effective_hidden: &HashSet<String>, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>, expanded_sessions: &mut HashSet<String>, small_mode_session: &mut Option<String>, chart_vis: &mut ChartVisibility) {
+fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, filter_set: &mut HashSet<String>, filter_mode: &mut FilterMode, show_active_only: &mut bool, show_bars: &mut bool, effective_hidden: &HashSet<String>, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>, expanded_sessions: &mut HashSet<String>, small_mode_session: &mut Option<String>, chart_vis: &mut ChartVisibility) {
     let area = ui.available_rect_before_wrap();
     let pad = 8.0;
     let gap = 8.0;
@@ -1304,10 +1306,33 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     "x", egui::FontId::monospace(10.0), Palette::TEXT_DIM);
             }
 
+            // Next button x-cursor (advances after each button)
+            let mut bx = btn_rect.right() + if filter_set.is_empty() { 8.0 } else { 30.0 };
+
+            // "active" toggle
+            let ao_label = if *show_active_only { "● active" } else { "○ active" };
+            let ao_col = if *show_active_only { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
+            let ao_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
+            let ao_resp = ui.interact(ao_rect, egui::Id::new("ctrl_active_only"), egui::Sense::click());
+            if ao_resp.clicked() { *show_active_only = !*show_active_only; }
+            if ao_resp.hovered() { painter.rect_filled(ao_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12)); }
+            painter.text(ao_rect.center(), egui::Align2::CENTER_CENTER, ao_label, egui::FontId::monospace(10.0), ao_col);
+            bx = ao_rect.right() + 4.0;
+
+            // "bars" toggle -- hide per-turn bars, show only cumulative lines
+            let bars_label = if *show_bars { "● bars" } else { "○ bars" };
+            let bars_col = if *show_bars { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
+            let bars_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(50.0, btn_size.y));
+            let bars_resp = ui.interact(bars_rect, egui::Id::new("ctrl_show_bars"), egui::Sense::click());
+            if bars_resp.clicked() { *show_bars = !*show_bars; }
+            if bars_resp.hovered() { painter.rect_filled(bars_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12)); }
+            painter.text(bars_rect.center(), egui::Align2::CENTER_CENTER, bars_label, egui::FontId::monospace(10.0), bars_col);
+            bx = bars_rect.right() + 4.0;
+
             // "time axis" toggle button
             let ta_label = if *time_axis { "● time" } else { "○ time" };
             let ta_col = if *time_axis { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let ta_rect = egui::Rect::from_min_size(egui::pos2(btn_rect.right() + 8.0, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
+            let ta_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
             let ta_resp = ui.interact(ta_rect, egui::Id::new("ctrl_time_axis"), egui::Sense::click());
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
@@ -2066,13 +2091,15 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
             let plot_resp = p.show(ui, |pui| {
-                    let fresh = BarChart::new(bars_to_egui_hl(&cd.in_cost_fresh_bars, &hovered_sessions)).name("fresh$");
-                    let read = BarChart::new(bars_to_egui_hl(&cd.in_cost_cache_read_bars, &hovered_sessions)).name("read$").stack_on(&[&fresh]);
-                    let create = BarChart::new(bars_to_egui_hl(&cd.in_cost_cache_create_bars, &hovered_sessions)).name("create$").stack_on(&[&fresh, &read]);
-                    pui.bar_chart(fresh);
-                    pui.bar_chart(read);
-                    pui.bar_chart(create);
-                    pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.out_cost_bars, &hovered_sessions)).name("gen$"));
+                    if *show_bars {
+                        let fresh = BarChart::new(bars_to_egui_hl(&cd.in_cost_fresh_bars, &hovered_sessions)).name("fresh$");
+                        let read = BarChart::new(bars_to_egui_hl(&cd.in_cost_cache_read_bars, &hovered_sessions)).name("read$").stack_on(&[&fresh]);
+                        let create = BarChart::new(bars_to_egui_hl(&cd.in_cost_cache_create_bars, &hovered_sessions)).name("create$").stack_on(&[&fresh, &read]);
+                        pui.bar_chart(fresh);
+                        pui.bar_chart(read);
+                        pui.bar_chart(create);
+                        pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.out_cost_bars, &hovered_sessions)).name("gen$"));
+                    }
                     // Overlay: total cost lines scaled into bar coordinate space
                     for (si, (color, points)) in cd.total_cost_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
@@ -2119,15 +2146,17 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
             let plot_resp = p.show(ui, |pui| {
-                    let fresh = BarChart::new(bars_to_egui_hl(&cd.in_tok_fresh_bars, &hovered_sessions)).name("fresh");
-                    let read = BarChart::new(bars_to_egui_hl(&cd.in_tok_cache_read_bars, &hovered_sessions)).name("cached");
-                    let create = BarChart::new(bars_to_egui_hl(&cd.in_tok_cache_create_bars, &hovered_sessions)).name("create");
-                    let read = read.stack_on(&[&fresh]);
-                    let create = create.stack_on(&[&fresh, &read]);
-                    pui.bar_chart(fresh);
-                    pui.bar_chart(read);
-                    pui.bar_chart(create);
-                    pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.out_tok_bars, &hovered_sessions)).name("out"));
+                    if *show_bars {
+                        let fresh = BarChart::new(bars_to_egui_hl(&cd.in_tok_fresh_bars, &hovered_sessions)).name("fresh");
+                        let read = BarChart::new(bars_to_egui_hl(&cd.in_tok_cache_read_bars, &hovered_sessions)).name("cached");
+                        let create = BarChart::new(bars_to_egui_hl(&cd.in_tok_cache_create_bars, &hovered_sessions)).name("create");
+                        let read = read.stack_on(&[&fresh]);
+                        let create = create.stack_on(&[&fresh, &read]);
+                        pui.bar_chart(fresh);
+                        pui.bar_chart(read);
+                        pui.bar_chart(create);
+                        pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.out_tok_bars, &hovered_sessions)).name("out"));
+                    }
                     // Overlay: total token lines (input solid, output dashed) scaled into bar space
                     for (si, (color, in_pts, out_pts)) in cd.total_tok_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
@@ -2309,7 +2338,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
             let plot_resp = p.show(ui, |pui| {
-                pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.energy_wh_bars, &hovered_sessions)).name("Wh"));
+                if *show_bars { pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.energy_wh_bars, &hovered_sessions)).name("Wh")); }
                 for (si, (color, pts)) in cd.total_energy_lines.iter().enumerate() {
                     let (alpha, w) = if hovered_sessions.is_empty() {
                         (0.75f32, 2.0f32)
@@ -2348,7 +2377,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
             }
             let plot_resp = p.show(ui, |pui| {
-                pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.water_ml_bars, &hovered_sessions)).name("mL"));
+                if *show_bars { pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.water_ml_bars, &hovered_sessions)).name("mL")); }
                 for (si, (color, pts)) in cd.total_water_lines.iter().enumerate() {
                     let (alpha, w) = if hovered_sessions.is_empty() {
                         (0.75f32, 2.0f32)
@@ -2946,17 +2975,21 @@ impl EguiOverlay for Hud {
                     return;
                 }
 
-                // Compute effective hidden set from filter_set + filter_mode
-                let effective_hidden: HashSet<String> = match self.filter_mode {
+                // Compute effective hidden set from filter_set + filter_mode + active filter
+                let mut effective_hidden: HashSet<String> = match self.filter_mode {
                     FilterMode::Exclude => self.filter_set.clone(),
                     FilterMode::Include => {
-                        // Everything NOT in filter_set is hidden
                         data.sessions.iter()
                             .map(|s| s.session_id.clone())
                             .filter(|id| !self.filter_set.contains(id))
                             .collect()
                     }
                 };
+                if self.show_active_only {
+                    for s in &data.sessions {
+                        if !s.is_active { effective_hidden.insert(s.session_id.clone()); }
+                    }
+                }
 
                 // Cache chart data: only rebuild when data generation, hidden set, or time_axis changes
                 let data_gen = data.generation;
@@ -2974,7 +3007,7 @@ impl EguiOverlay for Hud {
                     if let Some(sid) = self.small_mode_session.clone() {
                         draw_small(ui, &data, &cd, &usage, &sid, &self.filter_set, &mut self.filter_mode, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.small_mode_session);
                     } else {
-                        draw_big(ui, &data, &cd, &usage, &mut self.filter_set, &mut self.filter_mode, &effective_hidden, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups, &mut self.expanded_sessions, &mut self.small_mode_session, &mut self.chart_vis);
+                        draw_big(ui, &data, &cd, &usage, &mut self.filter_set, &mut self.filter_mode, &mut self.show_active_only, &mut self.show_bars, &effective_hidden, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups, &mut self.expanded_sessions, &mut self.small_mode_session, &mut self.chart_vis);
                     }
                 } else {
                     let strip_hl: PanelHighlight = ui.ctx().data(|d| d.get_temp(egui::Id::new("panel_highlight")).unwrap_or_default());

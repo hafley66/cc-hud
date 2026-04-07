@@ -524,7 +524,9 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         }
     }
     let time_span_min = if ts_max > ts_min { (ts_max - ts_min) as f64 / 60.0 } else { 60.0 };
-    let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.6).max(time_span_min / 300.0).min(time_span_min / 60.0);
+    let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.6)
+        .max(time_span_min / 300.0)
+        .min(time_span_min * 0.005);
 
     // Downsampling: bucket into time intervals so TOTAL bars across all sessions stays bounded.
     // Each session can produce up to (time_span / bucket_minutes) bars, so bucket_minutes must
@@ -537,7 +539,11 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     } else {
         0.0
     };
-    let bucket_w = if downsample { bucket_minutes * 0.85 } else { 0.0 };
+    // Bar width for downsampled bars: fill the bucket but cap to prevent absurdly fat bars.
+    // Max width ~0.5% of total span so bars stay visually distinct.
+    let bucket_w = if downsample {
+        (bucket_minutes * 0.85).min(time_span_min * 0.005)
+    } else { 0.0 };
 
     for (si, session) in data.sessions.iter().enumerate() {
         if hidden.contains(&session.session_id) { continue; }
