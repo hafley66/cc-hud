@@ -289,7 +289,7 @@ impl Palette {
 
 /// Which chart region the hover originated from.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate, Energy, Water }
+enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate, Energy, Water, Budget }
 
 /// Session time ranges highlighted from legend hover (stored as minutes-from-epoch).
 #[derive(Clone, Default)]
@@ -2170,6 +2170,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     if chart_vis.energy { all_charts_rect = all_charts_rect.union(energy_wh_rect); }
     if chart_vis.water { all_charts_rect = all_charts_rect.union(water_ml_rect); }
     if chart_vis.totals { all_charts_rect = all_charts_rect.union(totals_rect); }
+    all_charts_rect = all_charts_rect.union(usage_rect); // usage/budget slot
     match ui.ctx().input(|i| i.pointer.hover_pos()) {
         None => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
         Some(pos) if !all_charts_rect.contains(pos) => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
@@ -2532,20 +2533,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     .map(|[x, y]| [*x, y - base_cost])
                     .collect();
 
-                let limit_usd = billing.limit_usd;
-                let web_reported = billing.web_reported;
                 let budget_y_fmt = move |v: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
                     if v.value < 0.001 { String::new() } else { format_cost(v.value) }
-                };
-                let budget_tip = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
-                    let mut tip = format!("{} ({:.0}% of {})", format_cost(point.y), point.y / limit_usd * 100.0, format_cost(limit_usd));
-                    if let Some((web_val, _)) = web_reported {
-                        let diff = web_val - point.y;
-                        if diff > 0.001 {
-                            tip += &format!("\nnon-CLI: ~{}", format_cost(diff));
-                        }
-                    }
-                    tip
                 };
 
                 let mut p = Plot::new("budget_period")
@@ -2560,8 +2549,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     .include_y(0.0)
                     .include_y(billing.limit_usd * 1.05)
                     .y_axis_formatter(budget_y_fmt)
-                    .x_axis_formatter(time_x_fmt)
-                    .label_formatter(budget_tip);
+                    .x_axis_formatter(time_x_fmt);
                 // In time mode, share viewport with other charts; otherwise auto-fit to billing period
                 if is_time {
                     p = p.link_cursor(cursor_id, true, false);
@@ -2621,7 +2609,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 .name(format!("non-CLI: ~{}", format_cost(web_val - cli_at_web_x))));
                         }
                     }
+                    update_hover_src(pui, HoverSource::Budget);
                 });
+                try_pin(&plot_resp.response);
                 if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
             } else {
                 let inner = ui.available_rect_before_wrap();
@@ -3038,6 +3028,10 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 t.energy.water_total_ml.high,
                             ), None)
                         }
+                        HoverSource::Budget => (format!(
+                            "  t{} [{}] +{}  total {}",
+                            idx + 1, t.model_short, format_cost(t.cost_change), format_cost(t.total_cost),
+                        ), None),
                     };
                     let sc = scene_to_egui(*sess_color);
                     entries.push((name.clone(), sc, detail, breakdown, t.cost_change));
@@ -3063,12 +3057,37 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 .collect();
             nearby_skills.dedup();
 
-            // For WeeklyCost, compute cumulative combined cost at hovered x
+            // For WeeklyCost/Budget, compute cumulative combined cost at hovered x
             let running_total_header: Option<String> = if matches!(hs.source, HoverSource::WeeklyCost) {
                 let pts = &cd.combined_cost_pts;
                 let idx = pts.partition_point(|p| p[0] <= hx);
                 let total = if idx > 0 { pts[idx - 1][1] } else if !pts.is_empty() { pts[0][1] } else { 0.0 };
                 Some(format!("total {}", format_cost(total)))
+            } else if matches!(hs.source, HoverSource::Budget) {
+                let period_start_x = billing.period_start_x();
+                let base_cost = cd.budget_cost_pts.iter()
+                    .find(|p| p[0] >= period_start_x).map(|p| p[1]).unwrap_or(0.0);
+                let idx = cd.budget_cost_pts.partition_point(|p| p[0] <= hx);
+                let raw = if idx > 0 { cd.budget_cost_pts[idx - 1][1] } else { 0.0 };
+                let spent = (raw - base_cost).max(0.0);
+                let remaining = (billing.limit_usd - spent).max(0.0);
+                let pct = if billing.limit_usd > 0.0 { spent / billing.limit_usd * 100.0 } else { 0.0 };
+                let elapsed_days = (hx - period_start_x) / (60.0 * 24.0);
+                let rate_line = if elapsed_days > 0.1 {
+                    let per_day = spent / elapsed_days;
+                    format!("  {}/day  proj {}/mo", format_cost(per_day), format_cost(per_day * 30.0))
+                } else { String::new() };
+                // Format date from hx
+                let secs = (hx * 60.0) as libc::time_t;
+                let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+                unsafe { libc::localtime_r(&secs, &mut tm); }
+                let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                let month = months.get(tm.tm_mon as usize).copied().unwrap_or("?");
+                Some(format!(
+                    "{} {} {:02}:{:02}  spent {} ({:.0}%)  remaining {}{}",
+                    month, tm.tm_mday, tm.tm_hour, tm.tm_min,
+                    format_cost(spent), pct, format_cost(remaining), rate_line,
+                ))
             } else { None };
 
             if !entries.is_empty() {
