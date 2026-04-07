@@ -87,7 +87,7 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, exclude_set: HashSet::new(), include_set: HashSet::new(), filter_mode: FilterMode::Exclude, show_active_only: false, show_bars: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None, chart_vis: ChartVisibility::default(), show_budget: false, billing: BillingConfig::default(), cached_chart: None });
+    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, exclude_set: HashSet::new(), include_set: HashSet::new(), filter_mode: FilterMode::Exclude, show_active_only: false, show_bars: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None, chart_vis: ChartVisibility::default(), show_budget: false, billing: BillingConfig::load(), cached_chart: None });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -144,11 +144,58 @@ struct BillingConfig {
     web_reported: Option<(f64, u64)>,
     /// Text buffer for web reported $ input
     web_input_buf: String,
+    /// Text buffer for limit $ input
+    limit_input_buf: String,
 }
 
 impl Default for BillingConfig {
     fn default() -> Self {
-        Self { reset_day: 1, reset_hour: 0, limit_usd: 100.0, web_reported: None, web_input_buf: String::new() }
+        Self { reset_day: 1, reset_hour: 0, limit_usd: 100.0, web_reported: None, web_input_buf: String::new(), limit_input_buf: "100".into() }
+    }
+}
+
+impl BillingConfig {
+    fn config_path() -> std::path::PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let mut p = std::path::PathBuf::from(home);
+        p.push(".config");
+        p.push("cc-hud");
+        p.push("billing.json");
+        p
+    }
+
+    fn save(&self) {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let json = serde_json::json!({
+            "reset_day": self.reset_day,
+            "reset_hour": self.reset_hour,
+            "limit_usd": self.limit_usd,
+            "web_reported": self.web_reported,
+        });
+        let _ = std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap_or_default());
+    }
+
+    fn load() -> Self {
+        let path = Self::config_path();
+        let mut cfg = BillingConfig::default();
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(d) = v["reset_day"].as_u64() { cfg.reset_day = d.min(28).max(1) as u8; }
+                if let Some(h) = v["reset_hour"].as_u64() { cfg.reset_hour = h.min(23) as u8; }
+                if let Some(l) = v["limit_usd"].as_f64() { cfg.limit_usd = l.max(1.0); cfg.limit_input_buf = format!("{:.0}", l); }
+                if let Some(arr) = v["web_reported"].as_array() {
+                    if arr.len() == 2 {
+                        if let (Some(val), Some(ts)) = (arr[0].as_f64(), arr[1].as_u64()) {
+                            cfg.web_reported = Some((val, ts));
+                        }
+                    }
+                }
+            }
+        }
+        cfg
     }
 }
 
@@ -2208,8 +2255,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             (0.12, 1.0)
                         };
                         let scaled: Vec<[f64; 2]> = points.iter().map(|[x, y]| [*x, y * cost_scale]).collect();
-                        let pts = if is_time { step_pts(&scaled) } else { scaled };
-                        pui.line(egui_plot::Line::new(pts)
+                        pui.line(egui_plot::Line::new(scaled)
                             .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
                     }
                     render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
@@ -2266,11 +2312,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         };
                         let scaled_in: Vec<[f64; 2]> = in_pts.iter().map(|[x, y]| [*x, y * tok_scale]).collect();
                         let scaled_out: Vec<[f64; 2]> = out_pts.iter().map(|[x, y]| [*x, -y * tok_scale]).collect();
-                        let pts_in = if is_time { step_pts(&scaled_in) } else { scaled_in };
-                        let pts_out = if is_time { step_pts(&scaled_out) } else { scaled_out };
-                        pui.line(egui_plot::Line::new(pts_in)
+                        pui.line(egui_plot::Line::new(scaled_in)
                             .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
-                        pui.line(egui_plot::Line::new(pts_out)
+                        pui.line(egui_plot::Line::new(scaled_out)
                             .color(scene_to_egui(*color).gamma_multiply(alpha * 0.7)).width(w * 0.6)
                             .style(egui_plot::LineStyle::Dashed { length: 6.0 }));
                     }
@@ -2322,34 +2366,44 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let inc_rect = egui::Rect::from_min_size(egui::pos2(day_rect.right() - 12.0, cy - 6.0), egui::vec2(12.0, 12.0));
             if ui.interact(dec_rect, egui::Id::new("budget_day_dec"), egui::Sense::click()).clicked() {
                 billing.reset_day = if billing.reset_day <= 1 { 28 } else { billing.reset_day - 1 };
+                billing.save();
             }
             if ui.interact(inc_rect, egui::Id::new("budget_day_inc"), egui::Sense::click()).clicked() {
                 billing.reset_day = if billing.reset_day >= 28 { 1 } else { billing.reset_day + 1 };
+                billing.save();
             }
             painter.text(dec_rect.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
             painter.text(inc_rect.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
 
-            // Limit control: < $limit >
-            let lim_label = format!("limit {}", format_cost(billing.limit_usd));
-            let lim_rect = egui::Rect::from_min_size(egui::pos2(config_rect.left() + 100.0, config_rect.top()), egui::vec2(110.0, config_h));
-            painter.text(lim_rect.center(), egui::Align2::CENTER_CENTER, &lim_label, font.clone(), Palette::TEXT_DIM);
-            let ldec = egui::Rect::from_min_size(egui::pos2(lim_rect.left(), cy - 6.0), egui::vec2(12.0, 12.0));
-            let linc = egui::Rect::from_min_size(egui::pos2(lim_rect.right() - 12.0, cy - 6.0), egui::vec2(12.0, 12.0));
-            let step = if billing.limit_usd >= 500.0 { 50.0 } else if billing.limit_usd >= 100.0 { 25.0 } else { 10.0 };
-            if ui.interact(ldec, egui::Id::new("budget_lim_dec"), egui::Sense::click()).clicked() {
-                billing.limit_usd = (billing.limit_usd - step).max(10.0);
-            }
-            if ui.interact(linc, egui::Id::new("budget_lim_inc"), egui::Sense::click()).clicked() {
-                billing.limit_usd += step;
-            }
-            painter.text(ldec.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
-            painter.text(linc.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
-
-            // Web-reported total row: input field + "now" button to stamp current time
             // (painter ref ends here -- mutable ui calls below need exclusive access)
-            let (web_row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), config_h), egui::Sense::hover());
+
+            // Limit input row
+            let input_h = 20.0;
+            let (lim_row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), input_h), egui::Sense::hover());
+            let lim_cy = lim_row.center().y;
+            let lim_input_rect = egui::Rect::from_min_size(egui::pos2(lim_row.left() + 40.0, lim_row.top() + 1.0), egui::vec2(80.0, input_h - 2.0));
+            let mut lim_buf = billing.limit_input_buf.clone();
+            let lim_te = egui::TextEdit::singleline(&mut lim_buf)
+                .font(font.clone())
+                .desired_width(70.0)
+                .text_color(Palette::TEXT_BRIGHT);
+            let lim_te_resp = ui.put(lim_input_rect, lim_te);
+            billing.limit_input_buf = lim_buf.clone();
+            if lim_te_resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                let clean = lim_buf.trim().trim_start_matches('$');
+                if let Ok(val) = clean.parse::<f64>() {
+                    billing.limit_usd = val.max(1.0);
+                    billing.save();
+                }
+            }
+            ui.painter().text(egui::pos2(lim_row.left() + 2.0, lim_cy), egui::Align2::LEFT_CENTER,
+                "limit", font.clone(), Palette::TEXT_DIM);
+
+            // Web-reported total row
+            let web_h = 20.0;
+            let (web_row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), web_h), egui::Sense::hover());
             let web_cy = web_row.center().y;
-            let input_rect = egui::Rect::from_min_size(egui::pos2(web_row.left() + 40.0, web_row.top()), egui::vec2(70.0, config_h));
+            let input_rect = egui::Rect::from_min_size(egui::pos2(web_row.left() + 40.0, web_row.top() + 1.0), egui::vec2(80.0, web_h - 2.0));
             let mut buf = billing.web_input_buf.clone();
             let te = egui::TextEdit::singleline(&mut buf)
                 .font(font.clone())
@@ -2363,6 +2417,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     let now_epoch = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                     billing.web_reported = Some((val, now_epoch));
+                    billing.save();
                 }
             }
             // Clear button interaction (must happen before re-borrowing painter)
@@ -2370,7 +2425,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let clear_clicked = if billing.web_reported.is_some() {
                 ui.interact(x_rect, egui::Id::new("budget_web_clear"), egui::Sense::click()).clicked()
             } else { false };
-            if clear_clicked { billing.web_reported = None; billing.web_input_buf.clear(); }
+            if clear_clicked { billing.web_reported = None; billing.web_input_buf.clear(); billing.save(); }
             // Now paint text (re-borrow painter)
             let painter = ui.painter();
             let web_color = egui::Color32::from_rgb(180, 140, 220);
@@ -2653,8 +2708,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         (0.12, 1.0)
                     };
                     let scaled: Vec<[f64; 2]> = pts.iter().map(|[x, y]| [*x, y * energy_scale]).collect();
-                    let pts = if is_time { step_pts(&scaled) } else { scaled };
-                    pui.line(egui_plot::Line::new(pts)
+                    pui.line(egui_plot::Line::new(scaled)
                         .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
                 }
                 update_hover_src(pui, HoverSource::Energy);
@@ -2692,8 +2746,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         (0.12, 1.0)
                     };
                     let scaled: Vec<[f64; 2]> = pts.iter().map(|[x, y]| [*x, y * water_scale]).collect();
-                    let pts = if is_time { step_pts(&scaled) } else { scaled };
-                    pui.line(egui_plot::Line::new(pts)
+                    pui.line(egui_plot::Line::new(scaled)
                         .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
                 }
                 update_hover_src(pui, HoverSource::Water);
@@ -2743,7 +2796,6 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 if cd.combined_cost_max > 0.0 {
                     let norm: Vec<[f64; 2]> = cd.combined_cost_pts.iter()
                         .map(|[x, y]| [*x, y / cd.combined_cost_max]).collect();
-                    let norm = if is_time { step_pts(&norm) } else { norm };
                     pui.line(egui_plot::Line::new(norm).color(cost_color).width(2.0).name("cost"));
                 }
                 // Total tokens line (input, normalized) -- per session
@@ -2758,7 +2810,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         };
                         let norm: Vec<[f64; 2]> = in_pts.iter()
                             .map(|[x, y]| [*x, y / cd.total_tok_max]).collect();
-                        let norm = if is_time { step_pts(&norm) } else { norm };
+                        let norm = norm;
                         pui.line(egui_plot::Line::new(norm)
                             .color(tok_color.gamma_multiply(alpha)).width(w).name("tokens"));
                     }
@@ -2775,7 +2827,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         };
                         let norm: Vec<[f64; 2]> = pts.iter()
                             .map(|[x, y]| [*x, y / cd.total_energy_max]).collect();
-                        let norm = if is_time { step_pts(&norm) } else { norm };
+                        let norm = norm;
                         pui.line(egui_plot::Line::new(norm)
                             .color(energy_color.gamma_multiply(alpha)).width(w).name("energy"));
                     }
@@ -2792,7 +2844,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         };
                         let norm: Vec<[f64; 2]> = pts.iter()
                             .map(|[x, y]| [*x, y / cd.total_water_max]).collect();
-                        let norm = if is_time { step_pts(&norm) } else { norm };
+                        let norm = norm;
                         pui.line(egui_plot::Line::new(norm)
                             .color(water_color.gamma_multiply(alpha)).width(w).name("water"));
                     }

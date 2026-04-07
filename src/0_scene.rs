@@ -538,10 +538,10 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
     }
     let time_span_min = if ts_max > ts_min { (ts_max - ts_min) as f64 / 60.0 } else { 60.0 };
     // Bar width in minutes: thin enough that bars don't bloat when zoomed in.
-    // Use median inter-event gap as the base, capped at a small fraction of total span.
+    // Hard cap at 5 minutes -- API calls are point events, not durations.
     let time_bar_w = (time_span_min / total_api_calls.max(1) as f64 * 0.4)
-        .max(0.5)             // at least 30 seconds wide
-        .min(time_span_min * 0.002); // never more than 0.2% of total span
+        .max(0.5)   // at least 30 seconds wide
+        .min(5.0);  // never wider than 5 minutes
 
     // Downsampling: bucket into time intervals so TOTAL bars across all sessions stays bounded.
     // Each session can produce up to (time_span / bucket_minutes) bars, so bucket_minutes must
