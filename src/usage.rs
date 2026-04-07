@@ -237,20 +237,12 @@ fn load_history() -> Vec<UsageSnapshot> {
         Ok(f) => f,
         Err(_) => return vec![],
     };
-    let cutoff = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .saturating_sub(7 * 24 * 3600);
-
     let reader = std::io::BufReader::new(file);
     let mut snaps = vec![];
     for line in reader.lines() {
         let Ok(line) = line else { continue };
         if let Ok(s) = serde_json::from_str::<UsageSnapshot>(&line) {
-            if s.ts >= cutoff {
-                snaps.push(s);
-            }
+            snaps.push(s);
         }
     }
     snaps
@@ -333,9 +325,6 @@ pub fn poll_loop(data: Arc<Mutex<UsageData>>, default_interval: Duration) {
                 d.latest = Some(snap.clone());
                 d.snapshots.push(snap);
                 d.error = None;
-
-                let cutoff = now.saturating_sub(7 * 24 * 3600);
-                d.snapshots.retain(|s| s.ts >= cutoff);
 
                 poll_count += 1;
                 if poll_count % 100 == 0 {
