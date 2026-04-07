@@ -2229,7 +2229,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let total_label = if let Some(last) = cd.combined_cost_pts.last() {
                 format!("total {}", format_cost(last[1]))
             } else { String::new() };
-            draw_chart_label(ui, "cost / turn", "ctx$  gen$", &total_label);
+            draw_chart_label(ui, "cost / turn", "input  cached  output", &total_label);
             // Scale cumulative lines into bar Y-range: map [0..total_cost_max] -> [0..per_turn_in_cost_max]
             let cost_scale = if cd.total_cost_max > 0.0 { cd.per_turn_in_cost_max / cd.total_cost_max } else { 1.0 };
             let mut p = base_plot("cost_big")
@@ -3056,19 +3056,23 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         });
                                     };
                                     let ci = egui::Color32::from_rgb(100, 160, 220); // input blue
+                                    let cc = egui::Color32::from_rgb(80, 180, 100);  // input(cached) green
                                     let co = egui::Color32::from_rgb(220, 160, 60);  // output gold
-                                    let cg = egui::Color32::from_rgb(80, 180, 100);  // cache green
+                                    let ct = egui::Color32::from_rgb(180, 80, 200);  // output(thinking) purple
                                     ha(&mut hdr, "session          turn  model   ", hdr_col);
                                     match hs.source {
                                         HoverSource::Cost => {
-                                            ha(&mut hdr, "    ctx$", ci);
-                                            ha(&mut hdr, "      gen$", co);
-                                            ha(&mut hdr, "    +total", Palette::TEXT_BRIGHT);
+                                            ha(&mut hdr, "   input", ci);
+                                            ha(&mut hdr, " in(cache)", cc);
+                                            ha(&mut hdr, "  output", co);
+                                            ha(&mut hdr, " out(think)", ct);
+                                            ha(&mut hdr, "    total", Palette::TEXT_BRIGHT);
                                         }
                                         HoverSource::Tokens => {
-                                            ha(&mut hdr, "      in", ci);
-                                            ha(&mut hdr, "       out", co);
-                                            ha(&mut hdr, "    cached", cg);
+                                            ha(&mut hdr, "   input", ci);
+                                            ha(&mut hdr, " in(cache)", cc);
+                                            ha(&mut hdr, "  output", co);
+                                            ha(&mut hdr, " out(think)", ct);
                                         }
                                         HoverSource::Energy => {
                                             ha(&mut hdr, "      Wh", egui::Color32::from_rgb(120, 200, 80));
@@ -3100,16 +3104,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     let short_name = if name.len() > 16 { &name[..16] } else { name };
 
                                     // Colors matching bar segments
-                                    let c_input = egui::Color32::from_rgb(100, 160, 220);  // input cost (blue)
-                                    let c_output = if t.has_thinking {
-                                        egui::Color32::from_rgb(180, 80, 200)  // thinking output (purple)
-                                    } else {
-                                        egui::Color32::from_rgb(220, 160, 60)  // normal output (gold)
-                                    };
+                                    let c_input = egui::Color32::from_rgb(100, 160, 220);  // input (blue)
+                                    let c_cached = egui::Color32::from_rgb(80, 180, 100);   // input cached (green)
+                                    let c_output = egui::Color32::from_rgb(220, 160, 60);   // output (gold)
+                                    let c_think = egui::Color32::from_rgb(180, 80, 200);    // output thinking (purple)
                                     let c_total = Palette::TEXT_BRIGHT;
                                     let c_meta = Palette::TEXT_DIM;
-                                    let c_cache_read = egui::Color32::from_rgb(80, 180, 100); // green
-                                    let _c_cache_create = egui::Color32::from_rgb(220, 160, 60); // gold
 
                                     // Build a multi-colored row via LayoutJob
                                     let mut job = egui::text::LayoutJob::default();
@@ -3130,15 +3130,29 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
                                     match hs.source {
                                         HoverSource::Cost => {
-                                            append(&mut job, &format!("{:>8}", format_cost(t.in_cost)), c_input);
-                                            append(&mut job, &format!("  {:>8}", format_cost(t.out_cost)), c_output);
-                                            append(&mut job, &format!("  +{}", format_cost(t.cost_change)), c_total);
+                                            let cache_cost = t.cache_read_cost + t.cache_create_cost;
+                                            let (out_reg, out_think) = if t.has_thinking {
+                                                (0.0, t.out_cost)
+                                            } else {
+                                                (t.out_cost, 0.0)
+                                            };
+                                            append(&mut job, &format!("{:>8}", format_cost(t.fresh_input_cost)), c_input);
+                                            append(&mut job, &format!("{:>10}", format_cost(cache_cost)), c_cached);
+                                            append(&mut job, &format!("{:>8}", format_cost(out_reg)), c_output);
+                                            append(&mut job, &format!("{:>11}", format_cost(out_think)), c_think);
+                                            append(&mut job, &format!("{:>9}", format_cost(t.cost_change)), c_total);
                                         }
                                         HoverSource::Tokens => {
-                                            let total_in = t.in_tok + t.cache_read_tok + t.cache_create_tok;
-                                            append(&mut job, &format!("{:>8}", format_tokens(total_in)), c_input);
-                                            append(&mut job, &format!("  {:>8}", format_tokens(t.out_tok)), c_output);
-                                            append(&mut job, &format!("  {:>8}", format_tokens(t.cache_read_tok)), c_cache_read);
+                                            let cached = t.cache_read_tok + t.cache_create_tok;
+                                            let (out_reg, out_think) = if t.has_thinking {
+                                                (0, t.out_tok)
+                                            } else {
+                                                (t.out_tok, 0)
+                                            };
+                                            append(&mut job, &format!("{:>8}", format_tokens(t.in_tok)), c_input);
+                                            append(&mut job, &format!("{:>10}", format_tokens(cached)), c_cached);
+                                            append(&mut job, &format!("{:>8}", format_tokens(out_reg)), c_output);
+                                            append(&mut job, &format!("{:>11}", format_tokens(out_think)), c_think);
                                         }
                                         HoverSource::Energy => {
                                             let wh = t.energy.facility_kwh.mid * 1000.0;
