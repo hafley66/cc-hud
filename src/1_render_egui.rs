@@ -72,9 +72,6 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
         Node::BarRow { label, count, max, color: col, highlighted, hover_key: hk } => {
             let row_h = 16.0;
             let avail_w = ui.available_width();
-            let name_w = 60.0_f32;
-            let count_w = 28.0_f32;
-            let bar_max_w = (avail_w - name_w - count_w - 4.0).max(10.0);
 
             let (rect, resp) = ui.allocate_exact_size(
                 egui::vec2(avail_w, row_h),
@@ -87,37 +84,51 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
                 }
             }
             let show_highlight = is_hovered || *highlighted;
-            let painter = ui.painter();
-            let cy = rect.center().y;
 
             if show_highlight {
-                painter.rect_filled(rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
+                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
             }
-            painter.text(
-                egui::pos2(rect.left(), cy),
-                egui::Align2::LEFT_CENTER,
-                label.as_str(),
-                egui::FontId::monospace(10.5),
-                if show_highlight { TEXT_BRIGHT } else { TEXT },
-            );
-            let bar_w = (*count as f32 / max) * bar_max_w;
-            if bar_w > 0.5 {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(rect.left() + name_w, rect.top() + row_h * 0.25),
-                        egui::vec2(bar_w, row_h * 0.5),
-                    ),
-                    2.0,
-                    color(*col),
-                );
-            }
-            painter.text(
-                egui::pos2(rect.left() + name_w + bar_max_w + 4.0, cy),
-                egui::Align2::LEFT_CENTER,
-                &count.to_string(),
-                egui::FontId::monospace(10.0),
-                TEXT_DIM,
-            );
+
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+            egui_extras::StripBuilder::new(&mut child)
+                .size(egui_extras::Size::exact(60.0))
+                .size(egui_extras::Size::remainder())
+                .size(egui_extras::Size::exact(28.0))
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(label.as_str())
+                                    .monospace().size(10.5)
+                                    .color(if show_highlight { TEXT_BRIGHT } else { TEXT })
+                            ));
+                        });
+                    });
+                    strip.cell(|ui| {
+                        let bar_rect = ui.max_rect();
+                        let bar_max_w = bar_rect.width();
+                        let bar_w = (*count as f32 / max) * bar_max_w;
+                        if bar_w > 0.5 {
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(bar_rect.left(), bar_rect.top() + row_h * 0.25),
+                                    egui::vec2(bar_w, row_h * 0.5),
+                                ),
+                                2.0,
+                                color(*col),
+                            );
+                        }
+                    });
+                    strip.cell(|ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(&count.to_string())
+                                    .monospace().size(10.0)
+                                    .color(TEXT_DIM)
+                            ));
+                        });
+                    });
+                });
         }
 
         Node::ChartLabel { title, left_sub, right_sub } => {

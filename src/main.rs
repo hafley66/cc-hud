@@ -11,6 +11,8 @@ mod energy;
 mod scene;
 #[path = "1_render_egui.rs"]
 mod render_egui;
+#[path = "2_legend.rs"]
+mod legend;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -22,7 +24,7 @@ use egui_overlay::egui_window_glfw_passthrough::GlfwBackend;
 use egui_plot::{Bar, BarChart, Plot, VLine};
 
 use geometry::PixelRect;
-use agent_harnesses::claude_code::{Event, HudData, SessionData};
+use agent_harnesses::claude_code::{Event, HudData};
 
 use scene::{ChartData, TurnInfo};
 
@@ -40,6 +42,25 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let show_history = args.iter().any(|a| a == "--history" || a == "-H");
     let big_mode = args.iter().any(|a| a == "--big" || a == "-b");
+    let do_backup = args.iter().any(|a| a == "--backup");
+
+    // Optional additive-only rsync backup (only if rsync exists)
+    if do_backup {
+        std::thread::spawn(|| {
+            if std::process::Command::new("which").arg("rsync").output().map(|o| o.status.success()).unwrap_or(false) {
+                let dest = format!("{}/.cc-hud-backup/projects", std::env::var("HOME").unwrap_or_default());
+                let _ = std::fs::create_dir_all(&dest);
+                let src = format!("{}/.claude/projects/", std::env::var("HOME").unwrap_or_default());
+                match std::process::Command::new("rsync").args(["-a", "--ignore-existing", &src, &dest]).status() {
+                    Ok(s) if s.success() => tracing::info!(dest, "backup complete"),
+                    Ok(s) => tracing::warn!(code = ?s.code(), "rsync exited non-zero"),
+                    Err(e) => tracing::warn!(%e, "rsync failed"),
+                }
+            } else {
+                tracing::warn!("--backup: rsync not found, skipping");
+            }
+        });
+    }
 
     let (state, poll_target) = if big_mode {
         // Fixed floating window — no tmux anchoring
@@ -291,12 +312,7 @@ impl Palette {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate, Energy, Water, Budget }
 
-/// Session time ranges highlighted from legend hover (stored as minutes-from-epoch).
-#[derive(Clone, Default)]
-struct LegendHighlight {
-    /// (first_ts_min, last_ts_min) for each hovered session
-    ranges: Vec<(f64, f64)>,
-}
+use legend::LegendHighlight;
 
 /// Wrapper for storing hover state in egui temp storage.
 #[derive(Clone, Copy)]
@@ -501,342 +517,8 @@ fn panel_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(6.0))
 }
 
-// ---------------------------------------------------------------------------
-// Subagent tree rendering helper
-// ---------------------------------------------------------------------------
+// (draw_subagent_tree, draw_legend_row, LegendStats moved to 2_legend.rs)
 
-/// Format duration between two epoch-second timestamps as compact string.
-fn format_duration_secs(first: u64, last: u64) -> String {
-    if first == 0 || last == 0 || last < first { return String::new(); }
-    let secs = last - first;
-    if secs < 60 { format!("{}s", secs) }
-    else if secs < 3600 { format!("{}m", secs / 60) }
-    else { format!("{:.1}h", secs as f64 / 3600.0) }
-}
-
-/// Render subagent toggle inline on parent row + expanded tree rows below.
-fn draw_subagent_tree(
-    ui: &egui::Ui,
-    inner: egui::Rect,
-    row_h: f32,
-    row_gap: f32,
-    timeline_w: f32,
-    row_idx: &mut usize,
-    parent_rect: egui::Rect,
-    indent: f32,
-    session: &agent_harnesses::claude_code::SessionData,
-    is_expanded: bool,
-    toggle_out: &mut Vec<String>,
-    gi: usize,
-    si: usize,
-) {
-    if session.subagents.is_empty() { return; }
-
-    // Inline toggle: right side of parent row, left of timeline area
-    let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
-    let agent_cost_sum: f64 = session.subagents.iter().map(|a| a.total_cost_usd).sum();
-    let tog_label = format!("{} {}ag {}", arrow, session.subagents.len(), format_cost(agent_cost_sum));
-
-    let tog_w = 110.0_f32;
-    let tog_rect = egui::Rect::from_min_size(
-        egui::pos2(parent_rect.right() - timeline_w - tog_w - 44.0, parent_rect.top()),
-        egui::vec2(tog_w, row_h),
-    );
-    let tog_resp = ui.interact(tog_rect, egui::Id::new(("agent_toggle", gi, si)), egui::Sense::click());
-    if tog_resp.clicked() {
-        toggle_out.push(session.session_id.clone());
-    }
-
-    if tog_resp.hovered() {
-        ui.painter().rect_filled(tog_rect, 2.0,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
-    }
-
-    let tog_col = if is_expanded {
-        Palette::TEXT_BRIGHT
-    } else if tog_resp.hovered() {
-        egui::Color32::from_rgba_unmultiplied(200, 195, 180, 200)
-    } else {
-        Palette::TEXT_DIM
-    };
-    ui.painter().text(
-        egui::pos2(tog_rect.left() + 2.0, tog_rect.center().y),
-        egui::Align2::LEFT_CENTER, &tog_label,
-        egui::FontId::monospace(10.0), tog_col,
-    );
-
-    if !is_expanded { return; }
-
-    let tree_x = parent_rect.left() + indent + 6.0;
-    let text_x = tree_x + 14.0;
-    let tree_col = egui::Color32::from_rgba_unmultiplied(90, 85, 75, 140);
-    let name_col = egui::Color32::from_rgba_unmultiplied(200, 195, 180, 200);
-    let stat_col = egui::Color32::from_rgba_unmultiplied(140, 135, 120, 170);
-
-    for (ai, agent) in session.subagents.iter().enumerate() {
-        let a_top = inner.top() + *row_idx as f32 * (row_h + row_gap);
-        let a_rect = egui::Rect::from_min_size(
-            egui::pos2(inner.left(), a_top),
-            egui::vec2(inner.width(), row_h),
-        );
-
-        // Background
-        ui.painter().rect_filled(a_rect, 2.0,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 3));
-
-        // Tree connector
-        let is_last = ai == session.subagents.len() - 1;
-        let connector = if is_last { "\u{2514}" } else { "\u{251c}" };
-        ui.painter().text(
-            egui::pos2(tree_x, a_rect.center().y),
-            egui::Align2::CENTER_CENTER, connector,
-            egui::FontId::monospace(12.0), tree_col,
-        );
-
-        // Vertical tree line for non-last items
-        if !is_last {
-            ui.painter().line_segment(
-                [egui::pos2(tree_x, a_rect.bottom()), egui::pos2(tree_x, a_rect.bottom() + row_gap)],
-                egui::Stroke::new(1.0, tree_col),
-            );
-        }
-
-        // Agent type badge
-        let type_short = match agent.agent_type.as_str() {
-            "general-purpose" => "agent",
-            "Explore" => "explore",
-            "Plan" => "plan",
-            other => other,
-        };
-
-        // Description - allow more chars since text is bigger
-        let desc_trunc = if agent.description.len() > 40 {
-            format!("{}...", &agent.description[..37])
-        } else {
-            agent.description.clone()
-        };
-
-        // Name line: type + description
-        let name_font = egui::FontId::monospace(11.0);
-        let agent_label = format!("{} {}", type_short, desc_trunc);
-
-        // Clip text to avoid overlap with right-side stats
-        let text_clip = egui::Rect::from_min_max(
-            egui::pos2(text_x, a_rect.top()),
-            egui::pos2(a_rect.right() - timeline_w - 8.0, a_rect.bottom()),
-        );
-        let clip_painter = ui.painter().with_clip_rect(text_clip);
-        clip_painter.text(
-            egui::pos2(text_x, a_rect.center().y - row_h * 0.12),
-            egui::Align2::LEFT_CENTER, &agent_label,
-            name_font, name_col,
-        );
-
-        // Stats line: model + cost + duration
-        let model_short = scene::short_model_label(&agent.model);
-        let duration = format_duration_secs(agent.first_ts, agent.last_ts);
-        let total_tok = format_tokens(agent.total_input + agent.total_output);
-        let stat_str = format!("{}  {}  {} tok  {}  {}calls", model_short, format_cost(agent.total_cost_usd), total_tok, duration, agent.api_call_count);
-        let stat_font = egui::FontId::monospace(9.0);
-        clip_painter.text(
-            egui::pos2(text_x, a_rect.center().y + row_h * 0.18),
-            egui::Align2::LEFT_CENTER, &stat_str,
-            stat_font, stat_col,
-        );
-
-        *row_idx += 1;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Legend row drawing helper
-// ---------------------------------------------------------------------------
-
-/// Stats for legend row display.
-struct LegendStats {
-    cost: f64,
-    last_input: u64,
-    total_tokens: u64,      // input + output across entire session/group
-    session_count: u32,     // 1 for flat rows, N for group headers
-    api_call_count: u32,
-    agent_cost: f64,        // total subagent cost (0 if no agents)
-}
-
-impl LegendStats {
-    fn cost_per_token(&self) -> f64 {
-        if self.total_tokens > 0 { self.cost / self.total_tokens as f64 * 1_000_000.0 } else { 0.0 }
-    }
-    fn avg_tokens_per_session(&self) -> u64 {
-        if self.session_count > 0 { self.total_tokens / self.session_count as u64 } else { 0 }
-    }
-    fn avg_cost_per_session(&self) -> f64 {
-        if self.session_count > 0 { self.cost / self.session_count as f64 } else { 0.0 }
-    }
-}
-
-fn draw_legend_row(
-    ui: &egui::Ui,
-    row_rect: egui::Rect,
-    row_h: f32,
-    timeline_w: f32,
-    week_start_secs: u64,
-    week_span: f32,
-    name: &str,
-    swatch_col: egui::Color32,
-    name_col: egui::Color32,
-    dim_col: egui::Color32,
-    is_active: bool,
-    _is_hidden: bool,
-    stats: &LegendStats,
-    model: &str,
-    // Some((active_cost, group_total_cost)) for active groups, None otherwise
-    _active_group_costs: Option<(f64, f64)>,
-    // Sessions to draw in the mini timeline
-    timeline_sessions: &[(&agent_harnesses::claude_code::SessionData, egui::Color32)],
-    effective_hidden: &HashSet<String>,
-    indent: Option<f32>,
-) {
-    let painter = ui.painter();
-    let indent_px = indent.unwrap_or(0.0);
-    let bar_x = row_rect.left() + 2.0 + indent_px;
-    let bar_top_y = row_rect.top() + (row_h * 0.1).max(2.0);
-    let bar_h_px = row_h - (row_h * 0.2).max(4.0);
-    let bar_w = 8.0_f32;
-
-    // Color swatch -- active: fill proportional to context usage; inactive: solid full bar
-    if is_active {
-        let faded_col = egui::Color32::from_rgba_unmultiplied(swatch_col.r(), swatch_col.g(), swatch_col.b(), 35);
-        painter.rect_filled(
-            egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
-            2.0, faded_col,
-        );
-        let ctx_frac = (stats.last_input as f32 / 200_000.0).clamp(0.02, 1.0);
-        let swatch_h = (bar_h_px * ctx_frac).max(3.0);
-        let swatch_top = bar_top_y + bar_h_px - swatch_h;
-        painter.rect_filled(
-            egui::Rect::from_min_size(egui::pos2(bar_x, swatch_top), egui::vec2(bar_w, swatch_h)),
-            2.0, swatch_col,
-        );
-    } else {
-        painter.rect_filled(
-            egui::Rect::from_min_size(egui::pos2(bar_x, bar_top_y), egui::vec2(bar_w, bar_h_px)),
-            2.0, swatch_col,
-        );
-    }
-
-    // Active dot
-    if is_active {
-        painter.circle_filled(
-            egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
-            2.5, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 200),
-        );
-    } else {
-        painter.circle_filled(
-            egui::pos2(bar_x + bar_w + 5.0, bar_top_y + bar_h_px * 0.25),
-            2.0, egui::Color32::from_rgba_unmultiplied(80, 75, 65, 100),
-        );
-    }
-
-    // Mini timeline (right side)
-    let tl_right = row_rect.right() - 4.0;
-    let tl_left = tl_right - timeline_w;
-    let tl_rect = egui::Rect::from_min_size(
-        egui::pos2(tl_left, bar_top_y),
-        egui::vec2(timeline_w, bar_h_px),
-    );
-
-    // Text area
-    let text_x = bar_x + 16.0;
-    let text_max_x = tl_left - 6.0;
-    let cy = row_rect.center().y;
-    let font_name = egui::FontId::monospace((row_h * 0.35).clamp(9.0, 13.0));
-    let font_stat = egui::FontId::monospace((row_h * 0.27).clamp(8.0, 10.0));
-
-    let text_clip = egui::Rect::from_min_max(
-        egui::pos2(row_rect.left(), row_rect.top()),
-        egui::pos2(text_max_x, row_rect.bottom()),
-    );
-    let text_painter = ui.painter().with_clip_rect(text_clip);
-
-    // Name (primary line) -- calls count first, cost secondary
-    text_painter.text(egui::pos2(text_x, cy - row_h * 0.12), egui::Align2::LEFT_CENTER,
-        name, font_name, name_col);
-
-    // Stats (secondary line) -- monospace fixed-width fields for column alignment
-    if row_h >= 22.0 {
-        let sy = cy + row_h * 0.18;
-        let ag_tag = if stats.agent_cost > 0.0 {
-            format!("  {}ag", format_cost(stats.agent_cost))
-        } else {
-            String::new()
-        };
-        let stat_str = if stats.session_count > 1 {
-            let avg_cost = format_cost(stats.avg_cost_per_session());
-            let avg_tok = format_tokens(stats.avg_tokens_per_session());
-            if is_active {
-                let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-                format!("{:>3.0}% ctx  {:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
-                    ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok, ag_tag)
-            } else {
-                format!("{:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
-                    format_cost(stats.cost), format_tokens(stats.total_tokens), avg_cost, avg_tok, ag_tag)
-            }
-        } else if is_active {
-            let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
-            let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-            format!("{:>3.0}% ctx  {:>8}  {:>6}  {}{}",
-                ctx_pct, format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag, ag_tag)
-        } else {
-            let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
-            format!("{:>8}  {:>6}  {}{}",
-                format_cost(stats.cost), format_tokens(stats.total_tokens), model_tag, ag_tag)
-        };
-        text_painter.text(egui::pos2(text_x, sy), egui::Align2::LEFT_CENTER,
-            &stat_str, font_stat, dim_col);
-    }
-
-    // Timeline bg
-    painter.rect_filled(tl_rect, 2.0,
-        egui::Color32::from_rgba_unmultiplied(swatch_col.r(), swatch_col.g(), swatch_col.b(), 18));
-
-    // Per-session lanes in timeline
-    let n_sessions = timeline_sessions.len();
-    let seg_h = (bar_h_px / n_sessions.max(1) as f32).max(2.0);
-
-    for (lane, (s, col)) in timeline_sessions.iter().enumerate() {
-        let seg_alpha = if effective_hidden.contains(&s.session_id) {
-            30u8
-        } else if s.is_active {
-            220u8
-        } else {
-            80u8
-        };
-        let seg_col_a = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), seg_alpha);
-
-        let seg_top = tl_rect.top() + lane as f32 * seg_h;
-        let seg_bot = (seg_top + seg_h).min(tl_rect.bottom());
-
-        if s.first_ts > 0 {
-            let x0f = ((s.first_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
-            let x1f = ((s.last_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
-            let px0 = tl_rect.left() + x0f * timeline_w;
-            let px1 = (tl_rect.left() + x1f * timeline_w).max(px0 + 3.0).min(tl_rect.right());
-            painter.rect_filled(
-                egui::Rect::from_min_max(egui::pos2(px0, seg_top), egui::pos2(px1, seg_bot)),
-                1.0, seg_col_a,
-            );
-            if s.is_active {
-                painter.rect_filled(
-                    egui::Rect::from_min_max(
-                        egui::pos2(px1 - 2.0, seg_top),
-                        egui::pos2(px1, seg_bot),
-                    ),
-                    0.0, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 160),
-                );
-            }
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Small mode (compact 3-row overlay for a single session)
@@ -858,9 +540,6 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
         .unwrap_or_default()
         .as_secs();
     let now_min = now_secs as f64 / 60.0;
-    let week_start_secs = now_secs.saturating_sub(7 * 24 * 3600);
-    let week_span = (now_secs - week_start_secs).max(1) as f32;
-
     // Responsive layout: sections collapse as height shrinks
     let controls_h = 14.0_f32;
     let nav_h_full = 10.0_f32;
@@ -889,9 +568,6 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     let chart_w = (w - gap) / 2.0;
     let cost_rect = egui::Rect::from_min_size(egui::pos2(x0, charts_y), egui::vec2(chart_w, charts_h));
     let tok_rect = egui::Rect::from_min_size(egui::pos2(x0 + chart_w + gap, charts_y), egui::vec2(chart_w, charts_h));
-
-    let eye_w = 20.0_f32;
-    let timeline_w = 60.0_f32;
 
     // Find the selected session
     let selected_session = data.sessions.iter().find(|s| s.session_id == session_id);
@@ -1094,23 +770,23 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
         });
     }
 
-    // --- Row 2: Legend ---
+    // --- Row 2: Legend (single session summary) ---
     if show_legend {
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
             panel_frame().show(ui, |ui| {
-                let name_col = Palette::TEXT_BRIGHT;
-                let dim_col = Palette::TEXT_DIM;
-
                 let inner = ui.available_rect_before_wrap();
-                let no_hidden = HashSet::new();
-                draw_legend_row(ui, inner, legend_h_full, timeline_w, week_start_secs, week_span,
-                    &session.project, sess_col, name_col, dim_col,
-                    session.is_active, false,
-                    &LegendStats { cost: session.total_cost_usd, last_input: session.last_input_tokens,
-                        total_tokens: session.total_input + session.total_output, session_count: 1, api_call_count: session.api_call_count,
-                        agent_cost: session.subagents.iter().map(|a| a.total_cost_usd).sum() },
-                    &session.model, None,
-                    &[(session, sess_col)], &no_hidden, Some(eye_w));
+                let cy = inner.center().y;
+                let painter = ui.painter();
+                let total_tokens = session.total_input + session.total_output;
+                let cost_str = scene::format_cost(session.total_cost_usd);
+                let tok_str = scene::format_tokens(total_tokens);
+                let model_str = scene::short_model_label(&session.model);
+                let label = format!("{} | {} | {} | {}", session.project, cost_str, tok_str, model_str);
+                painter.text(egui::pos2(inner.left() + 4.0, cy), egui::Align2::LEFT_CENTER,
+                    &label, egui::FontId::monospace(10.0), Palette::TEXT_BRIGHT);
+                if session.is_active {
+                    painter.circle_filled(egui::pos2(inner.right() - 8.0, cy), 3.0, sess_col);
+                }
             });
         });
     }
@@ -1311,8 +987,6 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             groups.push((session.cwd.clone(), vec![(si, 0)]));
         }
     }
-    let legend_row_h = 42.0_f32;
-    let row_gap = 3.0_f32;
     let legend_h = (h * 0.30).clamp(100.0, 220.0);
 
     // Dynamic layout: hidden sections give their space to the main chart row
@@ -1687,490 +1361,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         });
     }
 
-    // Groups with <=2 sessions: flat rows, click toggles visibility.
-    // Groups with 3+: collapsible header, click expands/collapses sub-session list.
-    // Sub-session rows: click toggles individual session visibility.
-    let row_h = legend_row_h;
-    let timeline_w = 120.0_f32;
+    // Legend panel (StripBuilder-based, see 2_legend.rs)
+    let actions = legend::draw_legend_panel(
+        ui, legend_rect, &data, &groups,
+        filter_set, effective_hidden, expanded_groups, expanded_sessions,
+        week_start_secs, week_span,
+    );
+    actions.apply(filter_set, expanded_groups, expanded_sessions, small_mode_session);
 
-    let eye_w = 20.0_f32;
-
-    // Collect toggle actions to apply after rendering
-    let mut toggle_ids: Vec<String> = vec![];
-    let mut group_toggle: Option<(String, Vec<String>)> = None; // (cwd, all member ids)
-    let mut toggle_expand: Option<String> = None;
-    let mut toggle_session_agents: Vec<String> = vec![];
-    let mut enter_small_mode: Option<String> = None;
-    let legend_hl_id = egui::Id::new("legend_highlight");
-    // Clear highlight each frame; legend hover will re-set it
-    ui.ctx().data_mut(|d| d.insert_temp(legend_hl_id, LegendHighlight::default()));
-
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            // --- Aggregate stats strip (fixed, above scroll area) ---
-            {
-                let mut agg_cost = 0.0f64;
-                let mut agg_tokens = 0u64;
-                let mut agg_session_count = 0u32;
-                let mut agg_over_200k_count = 0u32;
-                let mut agg_over_200k_cost = 0.0f64;
-                let mut agg_agent_cost = 0.0f64;
-                let mut agg_agent_count = 0u32;
-                let mut agg_active_secs = 0u64;
-                let mut earliest_ts = u64::MAX;
-                let mut latest_ts = 0u64;
-                for s in &data.sessions {
-                    if effective_hidden.contains(&s.session_id) { continue; }
-                    agg_cost += s.total_cost_usd;
-                    agg_tokens += s.total_input + s.total_output;
-                    agg_session_count += 1;
-                    if s.total_input + s.total_output > 200_000 {
-                        agg_over_200k_count += 1;
-                        agg_over_200k_cost += s.total_cost_usd;
-                    }
-                    agg_agent_cost += s.subagents.iter().map(|a| a.total_cost_usd).sum::<f64>();
-                    agg_agent_count += s.agent_count;
-                    if s.first_ts > 0 && s.last_ts > s.first_ts {
-                        agg_active_secs += s.last_ts - s.first_ts;
-                        if s.first_ts < earliest_ts { earliest_ts = s.first_ts; }
-                        if s.last_ts > latest_ts { latest_ts = s.last_ts; }
-                    }
-                }
-                let avg_cost_sesh      = if agg_session_count > 0 { agg_cost / agg_session_count as f64 } else { 0.0 };
-                let proj_200k          = if agg_tokens > 0 { (agg_cost / agg_tokens as f64) * 200_000.0 } else { 0.0 };
-                let cptm               = if agg_tokens > 0 { agg_cost / agg_tokens as f64 * 1_000_000.0 } else { 0.0 };
-                let agent_pct          = if agg_cost > 0.0 { agg_agent_cost / agg_cost * 100.0 } else { 0.0 };
-                let avg_agent_cost     = if agg_agent_count > 0 { agg_agent_cost / agg_agent_count as f64 } else { 0.0 };
-                let avg_ag_sesh        = if agg_session_count > 0 { agg_agent_count as f64 / agg_session_count as f64 } else { 0.0 };
-                let avg_over_200k_cost = if agg_over_200k_count > 0 { agg_over_200k_cost / agg_over_200k_count as f64 } else { 0.0 };
-                let active_hours       = agg_active_secs as f64 / 3600.0;
-                let span_days          = if latest_ts > earliest_ts { (latest_ts - earliest_ts) as f64 / 86400.0 } else { 1.0 };
-                let cost_per_active_hr = if active_hours > 0.0 { agg_cost / active_hours } else { 0.0 };
-                let active_hrs_per_day = active_hours / span_days.max(1.0);
-
-                let strip_h = 32.0_f32;
-                let (strip_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), strip_h), egui::Sense::hover());
-                let painter = ui.painter();
-                let font = egui::FontId::monospace(9.0);
-                let col  = Palette::TEXT_DIM;
-                let pad  = 6.0_f32;
-
-                let row1 = format!(
-                    "avg {}/sesh   proj {}/200k   >200k: {}/{}(avg {})   {}/Mtok   {}/active hr   {:.1}h/day({})",
-                    format_cost(avg_cost_sesh), format_cost(proj_200k),
-                    agg_over_200k_count, agg_session_count, format_cost(avg_over_200k_cost),
-                    format_cost(cptm), format_cost(cost_per_active_hr),
-                    active_hrs_per_day, format_cost(active_hrs_per_day * cost_per_active_hr),
-                );
-                let row2 = format!(
-                    "agents: {:.0}%   avg {}/agent   {:.1} ag/sesh",
-                    agent_pct, format_cost(avg_agent_cost), avg_ag_sesh,
-                );
-                let x = strip_rect.left() + pad;
-                painter.text(egui::pos2(x, strip_rect.top() + 10.0), egui::Align2::LEFT_CENTER, &row1, font.clone(), col);
-                painter.text(egui::pos2(x, strip_rect.top() + 22.0), egui::Align2::LEFT_CENTER, &row2, font.clone(), col);
-                painter.line_segment(
-                    [egui::pos2(strip_rect.left() + 4.0, strip_rect.bottom()),
-                     egui::pos2(strip_rect.right() - 4.0, strip_rect.bottom())],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 80, 80, 60)),
-                );
-            }
-
-            // Boost scroll speed 4x: read raw delta, apply extra offset after ScrollArea
-            let extra_scroll = ui.input(|i| i.smooth_scroll_delta.y) * 3.0; // 3x extra = 4x total
-            let legend_scroll_id = egui::Id::new("legend_scroll");
-            let scroll_out = egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .id_salt(legend_scroll_id)
-                .show(ui, |ui| {
-            let inner = ui.available_rect_before_wrap();
-            let mut row_idx = 0usize;
-
-            for (gi, (cwd, members)) in groups.iter().enumerate() {
-                let group_col = scene_to_egui(session_color(members[0].0));
-                let is_flat = members.len() <= 2;
-                let is_expanded = expanded_groups.contains(cwd);
-
-                // Aggregate stats for group header
-                let mut g_cost = 0.0f64;
-                let mut g_last_input = 0u64;
-                let mut g_active_cost = 0.0f64;
-                let mut any_active = false;
-                let mut active_count = 0u32;
-                let mut all_hidden = true;
-                let mut g_model = String::new();
-                let mut g_total_tokens = 0u64;
-                let mut g_api_calls = 0u32;
-                let mut g_agent_cost = 0.0f64;
-
-                for (si, _) in members {
-                    let s = &data.sessions[*si];
-                    g_cost    += s.total_cost_usd;
-                    g_total_tokens += s.total_input + s.total_output;
-                    g_api_calls += s.api_call_count;
-                    g_agent_cost += s.subagents.iter().map(|a| a.total_cost_usd).sum::<f64>();
-                    if s.is_active {
-                        any_active = true;
-                        active_count += 1;
-                        g_model = s.model.clone();
-                        g_last_input = s.last_input_tokens;
-                        g_active_cost += s.total_cost_usd;
-                    }
-                    if !effective_hidden.contains(&s.session_id) { all_hidden = false; }
-                }
-                // If no active session, use the first member (already sorted most-recent-first)
-                if !any_active {
-                    if let Some((si, _)) = members.first() {
-                        let s = &data.sessions[*si];
-                        g_last_input = s.last_input_tokens;
-                        g_model = s.model.clone();
-                    }
-                }
-
-                if is_flat {
-                    // Flat: render each session as its own row
-                    for (si, _) in members {
-                        let s = &data.sessions[*si];
-                        let sess_col = scene_to_egui(session_color(*si));
-                        let is_hidden = effective_hidden.contains(&s.session_id);
-                        let in_filter = filter_set.contains(&s.session_id);
-                        let text_alpha = if is_hidden { 80u8 } else { 230u8 };
-                        let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
-                        let dim_col = egui::Color32::from_rgba_unmultiplied(170, 160, 140, (text_alpha as u16 * 3 / 4) as u8);
-
-                        let row_top = inner.top() + row_idx as f32 * (row_h + row_gap);
-                        let row_rect = egui::Rect::from_min_size(
-                            egui::pos2(inner.left(), row_top),
-                            egui::vec2(inner.width(), row_h),
-                        );
-                        let resp = ui.interact(row_rect, egui::Id::new(("legend_flat", gi, *si)), egui::Sense::click());
-                        if resp.clicked() { toggle_ids.push(s.session_id.clone()); }
-                        ui.painter().rect_filled(row_rect, 2.0,
-                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4));
-                        if resp.hovered() {
-                            ui.painter().rect_filled(row_rect, 2.0,
-                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
-                            if s.first_ts > 0 {
-                                ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
-                                    .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
-                            }
-                        }
-
-                        // Eye icon: filled = in filter set, outline = not in set
-                        let eye_cx = row_rect.left() + eye_w * 0.5 + 2.0;
-                        let eye_cy = row_rect.center().y;
-                        let eye_r = 4.0;
-                        if in_filter {
-                            ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r,
-                                egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180));
-                        } else {
-                            ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
-                                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(120, 110, 95, 120)));
-                        }
-
-                        // [→] button to enter small mode (left of timeline)
-                        let btn_w = 36.0;
-                        let btn_h = row_h - 4.0;
-                        let btn_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.right() - timeline_w - btn_w - 6.0, row_rect.top() + 2.0),
-                            egui::vec2(btn_w, btn_h),
-                        );
-                        let btn_resp = ui.interact(btn_rect, egui::Id::new(("legend_small_btn", gi, *si)), egui::Sense::click());
-                        if btn_resp.clicked() { enter_small_mode = Some(s.session_id.clone()); }
-                        if btn_resp.hovered() {
-                            ui.painter().rect_filled(btn_rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20));
-                        }
-                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y - 4.0),
-                            egui::Align2::CENTER_CENTER, "→",
-                            egui::FontId::monospace(18.0), Palette::TEXT_DIM);
-                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y + 10.0),
-                            egui::Align2::CENTER_CENTER, "detail",
-                            egui::FontId::monospace(7.0), Palette::TEXT_DIM);
-
-                        draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
-                            &s.project, sess_col, name_col, dim_col,
-                            s.is_active, is_hidden,
-                            &LegendStats { cost: s.total_cost_usd, last_input: s.last_input_tokens,
-                                total_tokens: s.total_input + s.total_output, session_count: 1, api_call_count: s.api_call_count,
-                                agent_cost: s.subagents.iter().map(|a| a.total_cost_usd).sum() },
-                            &s.model, None,
-                            &[(s, sess_col)], effective_hidden, Some(eye_w));
-
-                        row_idx += 1;
-
-                        // Subagent tree (toggle + rows)
-                        draw_subagent_tree(
-                            ui, inner, row_h, row_gap, timeline_w,
-                            &mut row_idx, row_rect, eye_w,
-                            s, expanded_sessions.contains(&s.session_id),
-                            &mut toggle_session_agents, gi, *si,
-                        );
-                    }
-                } else {
-                    // Group header row
-                    let text_alpha = if all_hidden { 80u8 } else { 230u8 };
-                    let bar_col = egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), text_alpha);
-                    let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
-                    let dim_col = egui::Color32::from_rgba_unmultiplied(170, 160, 140, (text_alpha as u16 * 3 / 4) as u8);
-
-                    let row_top = inner.top() + row_idx as f32 * (row_h + row_gap);
-                    let row_rect = egui::Rect::from_min_size(
-                        egui::pos2(inner.left(), row_top),
-                        egui::vec2(inner.width(), row_h),
-                    );
-
-                    // Eye zone (left): toggles all members' visibility
-                    let eye_rect = egui::Rect::from_min_size(
-                        row_rect.left_top(),
-                        egui::vec2(eye_w + 4.0, row_h),
-                    );
-                    let eye_resp = ui.interact(eye_rect, egui::Id::new(("legend_group_eye", gi)), egui::Sense::click());
-                    if eye_resp.clicked() {
-                        let member_ids: Vec<String> = members.iter()
-                            .map(|(si, _)| data.sessions[*si].session_id.clone())
-                            .collect();
-                        group_toggle = Some((cwd.clone(), member_ids));
-                    }
-                    // Main zone (right of eye): expand/collapse
-                    let main_rect = egui::Rect::from_min_max(
-                        egui::pos2(row_rect.left() + eye_w + 4.0, row_rect.top()),
-                        row_rect.right_bottom(),
-                    );
-                    let main_resp = ui.interact(main_rect, egui::Id::new(("legend_group", gi)), egui::Sense::click());
-                    if main_resp.clicked() { toggle_expand = Some(cwd.clone()); }
-
-                    // Row bg
-                    ui.painter().rect_filled(row_rect, 2.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4));
-                    if main_resp.hovered() || eye_resp.hovered() {
-                        ui.painter().rect_filled(row_rect, 2.0,
-                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
-                        ui.ctx().data_mut(|d| {
-                            let hl = d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id);
-                            for (si, _) in members {
-                                let s = &data.sessions[*si];
-                                if s.first_ts > 0 {
-                                    hl.ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0));
-                                }
-                            }
-                        });
-                    }
-
-                    // Eye icon for group: filled = some visible, outline = all hidden, half = mixed
-                    let eye_cx = row_rect.left() + eye_w * 0.5 + 2.0;
-                    let eye_cy = row_rect.center().y;
-                    let eye_r = 4.5;
-                    let none_hidden = members.iter().all(|(si, _)| !effective_hidden.contains(&data.sessions[*si].session_id));
-                    if all_hidden {
-                        ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
-                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(180, 170, 150, 120)));
-                    } else if none_hidden {
-                        ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r,
-                            egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180));
-                    } else {
-                        // Mixed: half-filled -- outline + smaller filled inner
-                        ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
-                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(200, 190, 170, 150)));
-                        ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r * 0.5,
-                            egui::Color32::from_rgba_unmultiplied(200, 190, 170, 150));
-                    }
-                    // Hover highlight on eye zone
-                    if eye_resp.hovered() {
-                        ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r + 2.0,
-                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40)));
-                    }
-
-                    // Build session refs for timeline
-                    let sess_refs: Vec<(&SessionData, egui::Color32)> = members.iter()
-                        .map(|(si, _)| (&data.sessions[*si], scene_to_egui(session_color(*si))))
-                        .collect();
-
-                    let badge = if active_count > 0 {
-                        format!("{} x{} ({} active)", cwd, members.len(), active_count)
-                    } else {
-                        format!("{} x{}", cwd, members.len())
-                    };
-                    let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
-                    let header_name = format!("{} {}", arrow, badge);
-
-                    let agc = if any_active { Some((g_active_cost, g_cost)) } else { None };
-
-                    // [→] button to enter small mode (picks active session, or first)
-                    let small_target = members.iter()
-                        .find(|(si, _)| data.sessions[*si].is_active)
-                        .or(members.first())
-                        .map(|(si, _)| data.sessions[*si].session_id.clone());
-                    if let Some(ref target_id) = small_target {
-                        let btn_w = 36.0;
-                        let btn_h = row_h - 4.0;
-                        let btn_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.right() - timeline_w - btn_w - 6.0, row_rect.top() + 2.0),
-                            egui::vec2(btn_w, btn_h),
-                        );
-                        let btn_resp = ui.interact(btn_rect, egui::Id::new(("legend_small_grp", gi)), egui::Sense::click());
-                        if btn_resp.clicked() { enter_small_mode = Some(target_id.clone()); }
-                        if btn_resp.hovered() {
-                            ui.painter().rect_filled(btn_rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20));
-                        }
-                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y - 4.0),
-                            egui::Align2::CENTER_CENTER, "→",
-                            egui::FontId::monospace(18.0), Palette::TEXT_DIM);
-                        ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y + 10.0),
-                            egui::Align2::CENTER_CENTER, "detail",
-                            egui::FontId::monospace(7.0), Palette::TEXT_DIM);
-                    }
-
-                    draw_legend_row(ui, row_rect, row_h, timeline_w, week_start_secs, week_span,
-                        &header_name, bar_col, name_col, dim_col,
-                        any_active, all_hidden,
-                        &LegendStats { cost: g_cost, last_input: g_last_input,
-                            total_tokens: g_total_tokens, session_count: members.len() as u32, api_call_count: g_api_calls,
-                            agent_cost: g_agent_cost },
-                        &g_model, agc,
-                        &sess_refs, effective_hidden, Some(eye_w));
-
-                    row_idx += 1;
-
-                    // Expanded sub-rows
-                    if is_expanded {
-                        for (si, _) in members {
-                            let s = &data.sessions[*si];
-                            let sess_col = scene_to_egui(session_color(*si));
-                            let is_hidden = effective_hidden.contains(&s.session_id);
-                            let in_filter = filter_set.contains(&s.session_id);
-                            let sub_alpha = if is_hidden { 60u8 } else { 230u8 };
-                            let sub_name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, sub_alpha);
-                            let sub_dim = egui::Color32::from_rgba_unmultiplied(155, 145, 130, (sub_alpha as u16 * 3 / 4) as u8);
-
-                            let sub_top = inner.top() + row_idx as f32 * (row_h + row_gap);
-                            let sub_rect = egui::Rect::from_min_size(
-                                egui::pos2(inner.left(), sub_top),
-                                egui::vec2(inner.width(), row_h),
-                            );
-                            let sub_resp = ui.interact(sub_rect, egui::Id::new(("legend_sub", gi, *si)), egui::Sense::click());
-                            if sub_resp.clicked() { toggle_ids.push(s.session_id.clone()); }
-                            ui.painter().rect_filled(sub_rect, 2.0,
-                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 3));
-                            if sub_resp.hovered() {
-                                ui.painter().rect_filled(sub_rect, 2.0,
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
-                                if s.first_ts > 0 {
-                                    ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
-                                        .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
-                                }
-                            }
-
-                            // Eye icon for sub-row
-                            let eye_cx = sub_rect.left() + eye_w * 0.5 + 2.0 + 16.0;
-                            let eye_cy = sub_rect.center().y;
-                            let eye_r = 3.5;
-                            if in_filter {
-                                ui.painter().circle_filled(egui::pos2(eye_cx, eye_cy), eye_r,
-                                    egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180));
-                            } else {
-                                ui.painter().circle_stroke(egui::pos2(eye_cx, eye_cy), eye_r,
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(120, 110, 95, 120)));
-                            }
-
-                            // [→] button to enter small mode (left of timeline)
-                            let btn_w = 36.0;
-                            let btn_h = row_h - 4.0;
-                            let btn_rect = egui::Rect::from_min_size(
-                                egui::pos2(sub_rect.right() - timeline_w - btn_w - 6.0, sub_rect.top() + 2.0),
-                                egui::vec2(btn_w, btn_h),
-                            );
-                            let btn_resp = ui.interact(btn_rect, egui::Id::new(("legend_small_btn_sub", gi, *si)), egui::Sense::click());
-                            if btn_resp.clicked() { enter_small_mode = Some(s.session_id.clone()); }
-                            if btn_resp.hovered() {
-                                ui.painter().rect_filled(btn_rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20));
-                            }
-                            ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y - 4.0),
-                                egui::Align2::CENTER_CENTER, "→",
-                                egui::FontId::monospace(18.0), Palette::TEXT_DIM);
-                            ui.painter().text(egui::pos2(btn_rect.center().x, btn_rect.center().y + 10.0),
-                                egui::Align2::CENTER_CENTER, "detail",
-                                egui::FontId::monospace(7.0), Palette::TEXT_DIM);
-
-                            // Session label: short id + active marker
-                            let sid_short = if s.session_id.len() > 8 { &s.session_id[..8] } else { &s.session_id };
-                            let sub_label = if s.is_active {
-                                format!("  {} (active)", sid_short)
-                            } else {
-                                format!("  {}", sid_short)
-                            };
-
-                            draw_legend_row(ui, sub_rect, row_h, timeline_w, week_start_secs, week_span,
-                                &sub_label, sess_col, sub_name_col, sub_dim,
-                                s.is_active, is_hidden,
-                                &LegendStats { cost: s.total_cost_usd, last_input: s.last_input_tokens,
-                                    total_tokens: s.total_input + s.total_output, session_count: 1, api_call_count: s.api_call_count,
-                                    agent_cost: s.subagents.iter().map(|a| a.total_cost_usd).sum() },
-                                &s.model, None,
-                                &[(s, sess_col)], effective_hidden, Some(16.0 + eye_w));
-
-                            row_idx += 1;
-
-                            // Subagent tree (toggle + rows)
-                            draw_subagent_tree(
-                                ui, inner, row_h, row_gap, timeline_w,
-                                &mut row_idx, sub_rect, 16.0 + eye_w,
-                                s, expanded_sessions.contains(&s.session_id),
-                                &mut toggle_session_agents, gi, *si,
-                            );
-                        }
-                    }
-                }
-            }
-            // Tell ScrollArea the total content height so scrolling works
-            let total_h = row_idx as f32 * (row_h + row_gap);
-            ui.allocate_space(egui::vec2(ui.available_width(), total_h));
-            }); // ScrollArea
-            // Apply boosted scroll offset
-            if extra_scroll.abs() > 0.1 {
-                let mut state = scroll_out.state;
-                state.offset.y = (state.offset.y - extra_scroll).max(0.0);
-                state.store(ui.ctx(), legend_scroll_id);
-            }
-        });
-    });
-
-    // Apply expand/collapse
-    if let Some(cwd) = toggle_expand {
-        if expanded_groups.contains(&cwd) {
-            expanded_groups.remove(&cwd);
-        } else {
-            expanded_groups.insert(cwd);
-        }
-    }
-    // Apply session agent tree toggles
-    for sid in toggle_session_agents {
-        if expanded_sessions.contains(&sid) {
-            expanded_sessions.remove(&sid);
-        } else {
-            expanded_sessions.insert(sid);
-        }
-    }
-    // Apply group toggle: toggle all members in/out of filter_set
-    if let Some((_cwd, member_ids)) = group_toggle {
-        let any_in = member_ids.iter().any(|id| filter_set.contains(id));
-        if any_in {
-            for id in &member_ids { filter_set.remove(id); }
-        } else {
-            for id in member_ids { filter_set.insert(id); }
-        }
-    }
-    // Apply individual session toggles
-    for id in toggle_ids {
-        if filter_set.contains(&id) {
-            filter_set.remove(&id);
-        } else {
-            filter_set.insert(id);
-        }
-    }
-    // Apply small mode entry
-    if let Some(session_id) = enter_small_mode {
-        *small_mode_session = Some(session_id);
-    }
 
     let cursor_id = egui::Id::new("all_charts_cursor");
     let hover_id = egui::Id::new("hud_hover_turn");
@@ -2303,6 +1501,7 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     };
 
     // Read legend highlight for drawing VLines on charts
+    let legend_hl_id = egui::Id::new("legend_highlight");
     let _legend_hl: LegendHighlight = ui.ctx().data(|d| d.get_temp(legend_hl_id).unwrap_or_default());
     let hl_color = egui::Color32::from_rgba_unmultiplied(220, 60, 60, 140);
     let _draw_legend_hl = |pui: &mut egui_plot::PlotUi, hl: &LegendHighlight| {
@@ -3169,8 +2368,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                 }
 
                                 // Column colors matching bar segments
-                                let c_input = egui::Color32::from_rgb(100, 160, 220);  // input (blue)
-                                let c_cached = egui::Color32::from_rgb(80, 180, 100);   // input cached (green)
+                                let c_input = egui::Color32::from_rgb(60, 120, 200);    // fresh input (blue) — matches fresh$ bars
+                                let c_cache_read = egui::Color32::from_rgb(80, 180, 100); // cache read (green) — matches read$ bars
+                                let c_cache_create = egui::Color32::from_rgb(220, 160, 60); // cache create (gold) — matches create$ bars
                                 let c_output = egui::Color32::from_rgb(220, 160, 60);   // output (gold)
                                 let c_think = egui::Color32::from_rgb(180, 80, 200);    // output thinking (purple)
                                 let c_total = Palette::TEXT_BRIGHT;
@@ -3222,7 +2422,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                     match hs.source {
                                         HoverSource::Cost => {
                                             cell(ui, "input", c_input, &mono);
-                                            cell(ui, "in(cached)", c_cached, &mono);
+                                            cell(ui, "in(read)", c_cache_read, &mono);
+                                            cell(ui, "in(write)", c_cache_create, &mono);
                                             cell(ui, "output", c_output, &mono);
                                             cell(ui, "out(think)", c_think, &mono);
                                             cell(ui, "turn", c_total, &mono);
@@ -3230,7 +2431,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         }
                                         HoverSource::Tokens => {
                                             cell(ui, "input", c_input, &mono);
-                                            cell(ui, "in(cached)", c_cached, &mono);
+                                            cell(ui, "in(read)", c_cache_read, &mono);
+                                            cell(ui, "in(write)", c_cache_create, &mono);
                                             cell(ui, "output", c_output, &mono);
                                             cell(ui, "out(think)", c_think, &mono);
                                             cell(ui, "cumul", c_meta, &mono);
@@ -3260,28 +2462,28 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         lcell(ui, &format!("{}{}", t.model_short, think_mark), c_meta, &mono);
                                         match hs.source {
                                             HoverSource::Cost => {
-                                                let cache_cost = t.cache_read_cost + t.cache_create_cost;
                                                 let (out_reg, out_think) = if t.has_thinking {
                                                     (0.0, t.out_cost)
                                                 } else {
                                                     (t.out_cost, 0.0)
                                                 };
                                                 cell(ui, &format_cost(t.fresh_input_cost), c_input, &mono);
-                                                cell(ui, &format_cost(cache_cost), c_cached, &mono);
+                                                cell(ui, &format_cost(t.cache_read_cost), c_cache_read, &mono);
+                                                cell(ui, &format_cost(t.cache_create_cost), c_cache_create, &mono);
                                                 cell(ui, &format_cost(out_reg), c_output, &mono);
                                                 cell(ui, &format_cost(out_think), c_think, &mono);
                                                 cell(ui, &format_cost(t.cost_change), c_total, &mono);
                                                 cell(ui, &format_cost(t.total_cost), c_meta, &mono);
                                             }
                                             HoverSource::Tokens => {
-                                                let cached = t.cache_read_tok + t.cache_create_tok;
                                                 let (out_reg, out_think) = if t.has_thinking {
                                                     (0, t.out_tok)
                                                 } else {
                                                     (t.out_tok, 0)
                                                 };
                                                 cell(ui, &format_tokens(t.in_tok), c_input, &mono);
-                                                cell(ui, &format_tokens(cached), c_cached, &mono);
+                                                cell(ui, &format_tokens(t.cache_read_tok), c_cache_read, &mono);
+                                                cell(ui, &format_tokens(t.cache_create_tok), c_cache_create, &mono);
                                                 cell(ui, &format_tokens(out_reg), c_output, &mono);
                                                 cell(ui, &format_tokens(out_think), c_think, &mono);
                                                 let cumul_tok = t.total_in_tok + t.total_out_tok;
@@ -3310,14 +2512,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                         match hs.source {
                                             HoverSource::Cost => {
                                                 let turn_total = t.cost_change.max(1e-9);
-                                                let cache_cost = t.cache_read_cost + t.cache_create_cost;
                                                 let (out_reg, out_think) = if t.has_thinking {
                                                     (0.0, t.out_cost)
                                                 } else {
                                                     (t.out_cost, 0.0)
                                                 };
                                                 cell(ui, &fmt_pct(t.fresh_input_cost, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(cache_cost, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(t.cache_read_cost, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(t.cache_create_cost, turn_total), c_pct, &mono_sm);
                                                 cell(ui, &fmt_pct(out_reg, turn_total), c_pct, &mono_sm);
                                                 cell(ui, &fmt_pct(out_think, turn_total), c_pct, &mono_sm);
                                                 cell(ui, &fmt_pct(t.cost_change, t.total_cost), c_pct, &mono_sm);
@@ -3325,7 +2527,6 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                             }
                                             HoverSource::Tokens => {
                                                 let turn_total = (t.in_tok + t.cache_read_tok + t.cache_create_tok + t.out_tok) as f64;
-                                                let cached = (t.cache_read_tok + t.cache_create_tok) as f64;
                                                 let (out_reg, out_think) = if t.has_thinking {
                                                     (0.0, t.out_tok as f64)
                                                 } else {
@@ -3333,7 +2534,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                                                 };
                                                 let cumul_tok = (t.total_in_tok + t.total_out_tok) as f64;
                                                 cell(ui, &fmt_pct(t.in_tok as f64, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(cached, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(t.cache_read_tok as f64, turn_total), c_pct, &mono_sm);
+                                                cell(ui, &fmt_pct(t.cache_create_tok as f64, turn_total), c_pct, &mono_sm);
                                                 cell(ui, &fmt_pct(out_reg, turn_total), c_pct, &mono_sm);
                                                 cell(ui, &fmt_pct(out_think, turn_total), c_pct, &mono_sm);
                                                 cell(ui, &fmt_pct(turn_total, cumul_tok), c_pct, &mono_sm);

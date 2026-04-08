@@ -9,3 +9,5 @@ pub mod model_registry;
 pub mod energy;
 #[path = "0_scene.rs"]
 pub mod scene;
+#[path = "2_legend.rs"]
+pub mod legend;

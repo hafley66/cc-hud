@@ -5,13 +5,14 @@ edition = "2024"
 
 [features]
 default = ["egui-backend"]
-egui-backend = ["dep:egui", "dep:egui_plot", "dep:egui_overlay"]
+egui-backend = ["dep:egui", "dep:egui_plot", "dep:egui_extras", "dep:egui_overlay"]
 iced-backend = ["dep:iced", "dep:plotters", "dep:plotters-iced"]
 
 [dependencies]
 # egui backend (default)
 egui = { version = "0.29", optional = true }
 egui_plot = { version = "0.29", optional = true }
+egui_extras = { version = "0.29", optional = true }
 egui_overlay = { version = "0.9", default-features = false, features = ["egui_default", "glfw_default", "wgpu"], optional = true }
 
 # iced backend
