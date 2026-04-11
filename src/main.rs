@@ -1,9 +1,7 @@
 #![allow(dead_code)]
 
 mod agent_harnesses;
-mod anchors;
 mod energy;
-mod geometry;
 #[path = "2_legend.rs"]
 mod legend;
 #[path = "2_model_registry.rs"]
@@ -18,17 +16,14 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use egui_overlay::egui_render_wgpu::WgpuBackend as DefaultGfxBackend;
-use egui_overlay::egui_window_glfw_passthrough::GlfwBackend;
-use egui_overlay::EguiOverlay;
+use eframe::{App, CreationContext};
 use egui_plot::{Bar, BarChart, Plot, VLine};
 
 use agent_harnesses::claude_code::{Event, HudData};
-use geometry::PixelRect;
 
 use scene::{ChartData, TurnInfo};
 
-fn main() {
+fn main() -> eframe::Result {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
     let log_file = std::fs::File::create("/tmp/cc-hud.log").expect("could not create log file");
     tracing_subscriber::registry()
@@ -74,15 +69,6 @@ fn main() {
         });
     }
 
-    // Always use big mode (fixed floating window)
-    let state = Arc::new(Mutex::new(PixelRect {
-        x: 100,
-        y: 80,
-        w: 960,
-        h: 460,
-    }));
-
-    let visible = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let hud_data = Arc::new(Mutex::new(HudData::default()));
     let usage_data = Arc::new(Mutex::new(usage::UsageData::default()));
 
@@ -96,44 +82,16 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud {
-        first_frame: true,
-        state,
-        visible,
-        hud_data,
-        usage_data,
-        exclude_set: HashSet::new(),
-        include_set: HashSet::new(),
-        filter_mode: FilterMode::Exclude,
-        show_active_only: false,
-        show_bars: true,
-        time_axis: false,
-        autofit: true,
-        nav_view: None,
-        expanded_groups: HashSet::new(),
-        expanded_sessions: HashSet::new(),
-        chart_vis: ChartVisibility::default(),
-        show_budget: false,
-        billing: BillingConfig::load(),
-        cached_chart: None,
-    });
-}
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 460.0]),
+        ..Default::default()
+    };
 
-fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
-    let term_pid = anchors::terminal::terminal_pid()?;
-    let pane = anchors::tmux::find_pane(target)?;
-    let tty = pane.tty.as_deref()?;
-    let metrics = anchors::terminal::cell_metrics_from_tty(tty)?;
-    let origin = anchors::terminal::terminal_window_origin(term_pid)?;
-    let insets = geometry::TerminalInsets::iterm2_default();
-    Some(geometry::compute_overlay_rect(
-        &pane.cell_rect,
-        &metrics,
-        &origin,
-        &insets,
-        3,
-        1,
-    ))
+    eframe::run_native(
+        "cc-hud",
+        native_options,
+        Box::new(|cc| Ok(Box::new(Hud::new(cc, hud_data, usage_data)))),
+    )
 }
 
 /// Which chart sections are visible in big mode.
@@ -242,6 +200,23 @@ impl BillingConfig {
         }
         cfg
     }
+
+    fn save_to_file(&self) {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let json = serde_json::json!({
+            "reset_day": self.reset_day,
+            "reset_hour": self.reset_hour,
+            "limit_usd": self.limit_usd,
+            "web_reported": self.web_reported,
+        });
+        let _ = std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json).unwrap_or_default(),
+        );
+    }
 }
 
 impl BillingConfig {
@@ -292,9 +267,6 @@ enum FilterMode {
 }
 
 struct Hud {
-    first_frame: bool,
-    state: Arc<Mutex<PixelRect>>,
-    visible: Arc<std::sync::atomic::AtomicBool>,
     hud_data: Arc<Mutex<HudData>>,
     usage_data: Arc<Mutex<usage::UsageData>>,
     exclude_set: HashSet<String>,
@@ -311,6 +283,33 @@ struct Hud {
     show_budget: bool,
     billing: BillingConfig,
     cached_chart: Option<(usize, HashSet<String>, bool, ChartData)>,
+}
+
+impl Hud {
+    fn new(
+        _cc: &CreationContext<'_>,
+        hud_data: Arc<Mutex<HudData>>,
+        usage_data: Arc<Mutex<usage::UsageData>>,
+    ) -> Self {
+        Self {
+            hud_data,
+            usage_data,
+            exclude_set: HashSet::new(),
+            include_set: HashSet::new(),
+            filter_mode: FilterMode::Exclude,
+            show_active_only: false,
+            show_bars: true,
+            time_axis: false,
+            autofit: true,
+            nav_view: None,
+            expanded_groups: HashSet::new(),
+            expanded_sessions: HashSet::new(),
+            chart_vis: ChartVisibility::default(),
+            show_budget: false,
+            billing: BillingConfig::load(),
+            cached_chart: None,
+        }
+    }
 }
 
 // --- colors ---
@@ -489,7 +488,7 @@ fn base_plot(id: &str) -> Plot<'_> {
         .show_background(false)
         .set_margin_fraction(egui::Vec2::ZERO)
         .label_formatter(|_, _| String::new())
-        .auto_bounds(egui::Vec2b::new(true, true))
+        .auto_bounds([true, true])
 }
 
 /// Handle scroll/drag on an egui_plot chart, updating the shared nav_view.
@@ -1180,6 +1179,7 @@ fn draw_big(
                 ),
                 1.0,
                 egui::Stroke::new(1.0, Palette::TEXT_DIM),
+                egui::StrokeKind::Outside,
             );
 
             // Handle drag: pan the viewport
@@ -1420,7 +1420,7 @@ fn draw_big(
             None
         };
         if let Some(x) = vline_x {
-            pui.vline(VLine::new(x).color(hover_vline_color).width(1.0));
+            pui.vline(VLine::new("", x).color(hover_vline_color).width(1.0));
         }
         // When pinned, don't update hover state -- tooltip data stays frozen
         if is_pinned {
@@ -1480,9 +1480,9 @@ fn draw_big(
     let hl_color = egui::Color32::from_rgba_unmultiplied(220, 60, 60, 140);
     let _draw_legend_hl = |pui: &mut egui_plot::PlotUi, hl: &LegendHighlight| {
         for (start, end) in &hl.ranges {
-            pui.vline(VLine::new(*start).color(hl_color).width(1.0));
+            pui.vline(VLine::new("", *start).color(hl_color).width(1.0));
             if (end - start).abs() > 0.5 {
-                pui.vline(VLine::new(*end).color(hl_color).width(1.0));
+                pui.vline(VLine::new("", *end).color(hl_color).width(1.0));
             }
         }
     };
@@ -1504,7 +1504,7 @@ fn draw_big(
                     1.0
                 };
                 let mut p = base_plot("cost_big")
-                    .link_cursor(cursor_id, true, false)
+                    .link_cursor(cursor_id, [true, false])
                     .include_y(cd.per_turn_in_cost_max)
                     .include_y(-cd.per_turn_out_cost_max)
                     .y_axis_formatter(move |v, _| {
@@ -1518,37 +1518,31 @@ fn draw_big(
                     .show_axes([false, true])
                     .show_grid(true);
                 if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p
-                        .include_x(vmin)
-                        .include_x(vmax)
-                        .auto_bounds(egui::Vec2b::new(false, true));
+                    p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
                     if *show_bars {
-                        let fresh = BarChart::new(bars_to_egui_hl(
-                            &cd.in_cost_fresh_bars,
-                            &hovered_sessions,
-                        ))
-                        .name("fresh$");
-                        let read = BarChart::new(bars_to_egui_hl(
-                            &cd.in_cost_cache_read_bars,
-                            &hovered_sessions,
-                        ))
-                        .name("read$")
+                        let fresh = BarChart::new(
+                            "fresh$",
+                            bars_to_egui_hl(&cd.in_cost_fresh_bars, &hovered_sessions),
+                        );
+                        let read = BarChart::new(
+                            "read$",
+                            bars_to_egui_hl(&cd.in_cost_cache_read_bars, &hovered_sessions),
+                        )
                         .stack_on(&[&fresh]);
-                        let create = BarChart::new(bars_to_egui_hl(
-                            &cd.in_cost_cache_create_bars,
-                            &hovered_sessions,
-                        ))
-                        .name("create$")
+                        let create = BarChart::new(
+                            "create$",
+                            bars_to_egui_hl(&cd.in_cost_cache_create_bars, &hovered_sessions),
+                        )
                         .stack_on(&[&fresh, &read]);
                         pui.bar_chart(fresh);
                         pui.bar_chart(read);
                         pui.bar_chart(create);
-                        pui.bar_chart(
-                            BarChart::new(bars_to_egui_hl(&cd.out_cost_bars, &hovered_sessions))
-                                .name("gen$"),
-                        );
+                        pui.bar_chart(BarChart::new(
+                            "gen$",
+                            bars_to_egui_hl(&cd.out_cost_bars, &hovered_sessions),
+                        ));
                     }
                     // Overlay: total cost lines scaled into bar coordinate space
                     for (si, (color, points)) in cd.total_cost_lines.iter().enumerate() {
@@ -1562,7 +1556,7 @@ fn draw_big(
                         let scaled: Vec<[f64; 2]> =
                             points.iter().map(|[x, y]| [*x, y * cost_scale]).collect();
                         pui.line(
-                            egui_plot::Line::new(scaled)
+                            egui_plot::Line::new("", scaled)
                                 .color(scene_to_egui(*color).gamma_multiply(alpha))
                                 .width(w),
                         );
@@ -1613,8 +1607,8 @@ fn draw_big(
                     1.0
                 };
                 let mut p = base_plot("tok_big")
-                    .link_cursor(cursor_id, true, false)
-                    .auto_bounds(egui::Vec2b::new(true, true))
+                    .link_cursor(cursor_id, [true, false])
+                    .auto_bounds([true, true])
                     .y_axis_formatter(move |v, _| {
                         let abs = v.value.abs();
                         if abs < 0.5 {
@@ -1626,37 +1620,31 @@ fn draw_big(
                     .show_axes([false, true])
                     .show_grid(true);
                 if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p
-                        .include_x(vmin)
-                        .include_x(vmax)
-                        .auto_bounds(egui::Vec2b::new(false, true));
+                    p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
                     if *show_bars {
-                        let fresh = BarChart::new(bars_to_egui_hl(
-                            &cd.in_tok_fresh_bars,
-                            &hovered_sessions,
-                        ))
-                        .name("fresh");
-                        let read = BarChart::new(bars_to_egui_hl(
-                            &cd.in_tok_cache_read_bars,
-                            &hovered_sessions,
-                        ))
-                        .name("cached");
-                        let create = BarChart::new(bars_to_egui_hl(
-                            &cd.in_tok_cache_create_bars,
-                            &hovered_sessions,
-                        ))
-                        .name("create");
+                        let fresh = BarChart::new(
+                            "fresh",
+                            bars_to_egui_hl(&cd.in_tok_fresh_bars, &hovered_sessions),
+                        );
+                        let read = BarChart::new(
+                            "cached",
+                            bars_to_egui_hl(&cd.in_tok_cache_read_bars, &hovered_sessions),
+                        );
+                        let create = BarChart::new(
+                            "create",
+                            bars_to_egui_hl(&cd.in_tok_cache_create_bars, &hovered_sessions),
+                        );
                         let read = read.stack_on(&[&fresh]);
                         let create = create.stack_on(&[&fresh, &read]);
                         pui.bar_chart(fresh);
                         pui.bar_chart(read);
                         pui.bar_chart(create);
-                        pui.bar_chart(
-                            BarChart::new(bars_to_egui_hl(&cd.out_tok_bars, &hovered_sessions))
-                                .name("out"),
-                        );
+                        pui.bar_chart(BarChart::new(
+                            "out",
+                            bars_to_egui_hl(&cd.out_tok_bars, &hovered_sessions),
+                        ));
                     }
                     // Overlay: total token lines (input solid, output dashed) scaled into bar space
                     for (si, (color, in_pts, out_pts)) in cd.total_tok_lines.iter().enumerate() {
@@ -1672,12 +1660,12 @@ fn draw_big(
                         let scaled_out: Vec<[f64; 2]> =
                             out_pts.iter().map(|[x, y]| [*x, -y * tok_scale]).collect();
                         pui.line(
-                            egui_plot::Line::new(scaled_in)
+                            egui_plot::Line::new("in", scaled_in)
                                 .color(scene_to_egui(*color).gamma_multiply(alpha))
                                 .width(w),
                         );
                         pui.line(
-                            egui_plot::Line::new(scaled_out)
+                            egui_plot::Line::new("out", scaled_out)
                                 .color(scene_to_egui(*color).gamma_multiply(alpha * 0.7))
                                 .width(w * 0.6)
                                 .style(egui_plot::LineStyle::Dashed { length: 6.0 }),
@@ -1977,19 +1965,16 @@ fn draw_big(
                         .allow_scroll(false)
                         .show_background(false)
                         .set_margin_fraction(egui::Vec2::ZERO)
-                        .auto_bounds(egui::Vec2b::new(true, true))
+                        .auto_bounds([true, true])
                         .include_y(0.0)
                         .include_y(billing.limit_usd * 1.05)
                         .y_axis_formatter(budget_y_fmt)
                         .x_axis_formatter(time_x_fmt);
                     // In time mode, share viewport with other charts; otherwise auto-fit to billing period
                     if is_time {
-                        p = p.link_cursor(cursor_id, true, false);
+                        p = p.link_cursor(cursor_id, [true, false]);
                         if let Some((vmin, vmax)) = *nav_view {
-                            p = p
-                                .include_x(vmin)
-                                .include_x(vmax)
-                                .auto_bounds(egui::Vec2b::new(false, true));
+                            p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                         }
                     }
                     // If web reported total > CLI total, include it in Y range
@@ -2001,21 +1986,20 @@ fn draw_big(
                     let plot_resp = p.show(ui, |pui| {
                         let pts = step_pts(&zeroed); // budget always uses time-based x
                         pui.line(
-                            egui_plot::Line::new(pts)
+                            egui_plot::Line::new("CLI spent", pts)
                                 .color(pct_color)
                                 .width(2.0)
-                                .fill(0.0)
-                                .name("CLI spent"),
+                                .fill(0.0),
                         );
                         // Budget limit line
                         pui.hline(
-                            egui_plot::HLine::new(billing.limit_usd)
+                            egui_plot::HLine::new("", billing.limit_usd)
                                 .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 120))
                                 .width(1.0),
                         );
                         // Period start marker
                         pui.vline(
-                            VLine::new(period_start_for_chart)
+                            VLine::new("", period_start_for_chart)
                                 .color(egui::Color32::from_rgba_unmultiplied(100, 180, 100, 60))
                                 .width(0.5),
                         );
@@ -2025,20 +2009,20 @@ fn draw_big(
                             let web_color = egui::Color32::from_rgb(180, 140, 220); // purple
                                                                                     // Horizontal line at web-reported value
                             pui.hline(
-                                egui_plot::HLine::new(web_val)
+                                egui_plot::HLine::new("", web_val)
                                     .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 80))
                                     .width(1.0),
                             );
                             // Point marker at the time it was reported
                             pui.points(
-                                egui_plot::Points::new(vec![[web_x, web_val]])
+                                egui_plot::Points::new("", vec![[web_x, web_val]])
                                     .color(web_color)
                                     .radius(4.0)
                                     .name("web reported"),
                             );
                             // Vertical line at report time
                             pui.vline(
-                                VLine::new(web_x)
+                                VLine::new("", web_x)
                                     .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 40))
                                     .width(0.5),
                             );
@@ -2058,7 +2042,7 @@ fn draw_big(
                                     [web_x - 0.5, web_val],
                                 ];
                                 pui.polygon(
-                                    egui_plot::Polygon::new(gap_pts)
+                                    egui_plot::Polygon::new("", gap_pts)
                                         .fill_color(egui::Color32::from_rgba_unmultiplied(
                                             180, 140, 220, 30,
                                         ))
@@ -2174,7 +2158,7 @@ fn draw_big(
                         .allow_scroll(false)
                         .show_background(false)
                         .set_margin_fraction(egui::Vec2::ZERO)
-                        .auto_bounds(egui::Vec2b::new(true, true))
+                        .auto_bounds([true, true])
                         .include_y(0.0)
                         .include_y(100.0)
                         .y_axis_formatter(|v, _| {
@@ -2187,26 +2171,21 @@ fn draw_big(
                         .x_axis_formatter(usage_time_fmt)
                         .label_formatter(tip_fmt);
                     if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                        p = p
-                            .include_x(vmin)
-                            .include_x(vmax)
-                            .auto_bounds(egui::Vec2b::new(false, true));
+                        p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                     }
                     let plot_resp = p.show(ui, |pui| {
                         pui.line(
-                            egui_plot::Line::new(five_h_pts)
+                            egui_plot::Line::new("5h", five_h_pts)
                                 .color(egui::Color32::from_rgb(220, 160, 60))
-                                .width(1.5)
-                                .name("5h"),
+                                .width(1.5),
                         );
                         pui.line(
-                            egui_plot::Line::new(seven_d_pts)
+                            egui_plot::Line::new("7d", seven_d_pts)
                                 .color(egui::Color32::from_rgb(100, 160, 220))
-                                .width(1.5)
-                                .name("7d"),
+                                .width(1.5),
                         );
                         pui.hline(
-                            egui_plot::HLine::new(100.0)
+                            egui_plot::HLine::new("", 100.0)
                                 .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 80))
                                 .width(0.5),
                         );
@@ -2321,7 +2300,7 @@ fn draw_big(
                     1.0
                 };
                 let mut p = base_plot("energy_wh")
-                    .link_cursor(cursor_id, true, false)
+                    .link_cursor(cursor_id, [true, false])
                     .include_y(0.0)
                     .include_y(cd.energy_wh_max)
                     .y_axis_formatter(move |v, _| {
@@ -2334,17 +2313,14 @@ fn draw_big(
                     .show_axes([false, true])
                     .show_grid(true);
                 if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p
-                        .include_x(vmin)
-                        .include_x(vmax)
-                        .auto_bounds(egui::Vec2b::new(false, true));
+                    p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
                     if *show_bars {
-                        pui.bar_chart(
-                            BarChart::new(bars_to_egui_hl(&cd.energy_wh_bars, &hovered_sessions))
-                                .name("Wh"),
-                        );
+                        pui.bar_chart(BarChart::new(
+                            "Wh",
+                            bars_to_egui_hl(&cd.energy_wh_bars, &hovered_sessions),
+                        ));
                     }
                     for (si, (color, pts)) in cd.total_energy_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
@@ -2357,7 +2333,7 @@ fn draw_big(
                         let scaled: Vec<[f64; 2]> =
                             pts.iter().map(|[x, y]| [*x, y * energy_scale]).collect();
                         pui.line(
-                            egui_plot::Line::new(scaled)
+                            egui_plot::Line::new("", scaled)
                                 .color(scene_to_egui(*color).gamma_multiply(alpha))
                                 .width(w),
                         );
@@ -2395,7 +2371,7 @@ fn draw_big(
                     1.0
                 };
                 let mut p = base_plot("water_ml")
-                    .link_cursor(cursor_id, true, false)
+                    .link_cursor(cursor_id, [true, false])
                     .include_y(0.0)
                     .include_y(cd.water_ml_max)
                     .y_axis_formatter(move |v, _| {
@@ -2408,17 +2384,14 @@ fn draw_big(
                     .show_axes([false, true])
                     .show_grid(true);
                 if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p
-                        .include_x(vmin)
-                        .include_x(vmax)
-                        .auto_bounds(egui::Vec2b::new(false, true));
+                    p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
                     if *show_bars {
-                        pui.bar_chart(
-                            BarChart::new(bars_to_egui_hl(&cd.water_ml_bars, &hovered_sessions))
-                                .name("mL"),
-                        );
+                        pui.bar_chart(BarChart::new(
+                            "mL",
+                            bars_to_egui_hl(&cd.water_ml_bars, &hovered_sessions),
+                        ));
                     }
                     for (si, (color, pts)) in cd.total_water_lines.iter().enumerate() {
                         let (alpha, w) = if hovered_sessions.is_empty() {
@@ -2431,7 +2404,7 @@ fn draw_big(
                         let scaled: Vec<[f64; 2]> =
                             pts.iter().map(|[x, y]| [*x, y * water_scale]).collect();
                         pui.line(
-                            egui_plot::Line::new(scaled)
+                            egui_plot::Line::new("", scaled)
                                 .color(scene_to_egui(*color).gamma_multiply(alpha))
                                 .width(w),
                         );
@@ -2474,7 +2447,7 @@ fn draw_big(
 
                 // Normalize all series to [0..1] range, then plot in [0..1] Y space
                 let mut p = base_plot("totals_combined")
-                    .link_cursor(cursor_id, true, false)
+                    .link_cursor(cursor_id, [true, false])
                     .include_y(0.0)
                     .include_y(1.05)
                     .y_axis_formatter(move |v, _| {
@@ -2491,10 +2464,7 @@ fn draw_big(
                     p = p.x_axis_formatter(time_x_fmt);
                 }
                 if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p
-                        .include_x(vmin)
-                        .include_x(vmax)
-                        .auto_bounds(egui::Vec2b::new(false, true));
+                    p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let cost_color = egui::Color32::from_rgb(220, 180, 60); // gold
                 let tok_color = egui::Color32::from_rgb(100, 160, 220); // blue
@@ -2510,10 +2480,9 @@ fn draw_big(
                             .map(|[x, y]| [*x, y / cd.combined_cost_max])
                             .collect();
                         pui.line(
-                            egui_plot::Line::new(norm)
+                            egui_plot::Line::new("cost", norm)
                                 .color(cost_color)
-                                .width(2.0)
-                                .name("cost"),
+                                .width(2.0),
                         );
                     }
                     // Total tokens line (input, normalized) -- per session
@@ -2532,10 +2501,9 @@ fn draw_big(
                                 .collect();
                             let norm = norm;
                             pui.line(
-                                egui_plot::Line::new(norm)
+                                egui_plot::Line::new("tokens", norm)
                                     .color(tok_color.gamma_multiply(alpha))
-                                    .width(w)
-                                    .name("tokens"),
+                                    .width(w),
                             );
                         }
                     }
@@ -2555,10 +2523,9 @@ fn draw_big(
                                 .collect();
                             let norm = norm;
                             pui.line(
-                                egui_plot::Line::new(norm)
+                                egui_plot::Line::new("energy", norm)
                                     .color(energy_color.gamma_multiply(alpha))
-                                    .width(w)
-                                    .name("energy"),
+                                    .width(w),
                             );
                         }
                     }
@@ -2578,10 +2545,9 @@ fn draw_big(
                                 .collect();
                             let norm = norm;
                             pui.line(
-                                egui_plot::Line::new(norm)
+                                egui_plot::Line::new("water", norm)
                                     .color(water_color.gamma_multiply(alpha))
-                                    .width(w)
-                                    .name("water"),
+                                    .width(w),
                             );
                         }
                     }
@@ -2880,7 +2846,7 @@ fn draw_big(
                 };
 
             if !entries.is_empty() {
-                let win_rect = ui.ctx().screen_rect();
+                let win_rect = ui.ctx().viewport_rect();
                 let tip_w = 420.0_f32;
                 let row_count = entries.len()
                     + if running_total_header.is_some() { 1 } else { 0 }
@@ -3583,51 +3549,18 @@ fn draw_chart_label(ui: &mut egui::Ui, title: &str, top_label: &str, bot_label: 
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// EguiOverlay impl
+// eframe App impl
 // ---------------------------------------------------------------------------
 
-impl EguiOverlay for Hud {
-    fn gui_run(
-        &mut self,
-        egui_context: &egui::Context,
-        _default_gfx_backend: &mut DefaultGfxBackend,
-        glfw_backend: &mut GlfwBackend,
-    ) {
-        let rect = *self.state.lock().unwrap();
-        let is_visible = self.visible.load(std::sync::atomic::Ordering::Relaxed);
-
-        if !is_visible {
-            glfw_backend.window.set_pos(-9999, -9999);
-            glfw_backend.set_window_size([1.0, 1.0]);
-            egui_context.request_repaint();
-            return;
-        }
-
-        if self.first_frame {
-            self.first_frame = false;
-            glfw_backend.window.set_pos(rect.x, rect.y);
-            glfw_backend.window.set_size(rect.w as i32, rect.h as i32);
-            glfw_backend.window.show();
-        }
-
+impl App for Hud {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let data = self.hud_data.lock().unwrap().clone();
 
         let bg = egui::Color32::from_rgb(14, 12, 9);
 
-        // Keyboard shortcuts
-        if egui_context.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.visible
-                .store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-        if egui_context.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::H)) {
-            let current = self.visible.load(std::sync::atomic::Ordering::Relaxed);
-            self.visible
-                .store(!current, std::sync::atomic::Ordering::Relaxed);
-        }
-
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(bg))
-            .show(egui_context, |ui| {
+            .show_inside(ui, |ui| {
                 if data.sessions.is_empty() {
                     let area = ui.available_rect_before_wrap();
                     ui.painter().text(
@@ -3637,7 +3570,7 @@ impl EguiOverlay for Hud {
                         egui::FontId::monospace(16.0),
                         Palette::TEXT_DIM,
                     );
-                    egui_context.request_repaint();
+                    ui.ctx().request_repaint();
                     return;
                 }
 
@@ -3698,59 +3631,16 @@ impl EguiOverlay for Hud {
                 );
             });
 
-        egui_context.request_repaint();
+        ui.ctx().request_repaint();
     }
-}
 
-fn start_overlay(user_data: Hud) {
-    use egui_overlay::egui_render_wgpu::{WgpuBackend, WgpuConfig};
-    use egui_overlay::egui_window_glfw_passthrough::{glfw, GlfwConfig};
-    use egui_overlay::OverlayApp;
-
-    let mut glfw_backend = GlfwBackend::new(GlfwConfig {
-        glfw_callback: Box::new(move |gtx| {
-            (GlfwConfig::default().glfw_callback)(gtx);
-            gtx.window_hint(glfw::WindowHint::ScaleToMonitor(true));
-            gtx.window_hint(glfw::WindowHint::FocusOnShow(false));
-            gtx.window_hint(glfw::WindowHint::Visible(false));
-        }),
-        opengl_window: Some(false),
-        transparent_window: Some(false),
-        ..Default::default()
-    });
-
-    let latest_size = glfw_backend.window.get_framebuffer_size();
-    let latest_size = [latest_size.0 as _, latest_size.1 as _];
-
-    let mut wgpu_config = WgpuConfig::default();
-    wgpu_config
-        .device_descriptor
-        .required_limits
-        .max_texture_dimension_2d = 8192;
-
-    let default_gfx_backend = WgpuBackend::new(
-        wgpu_config,
-        Some(Box::new(glfw_backend.window.render_context())),
-        latest_size,
-    );
-
-    OverlayApp {
-        user_data,
-        egui_context: Default::default(),
-        default_gfx_backend,
-        glfw_backend,
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        self.billing.save_to_file();
     }
-    .enter_event_loop();
-}
 
-fn hide_dock_icon() {
-    #[cfg(target_os = "macos")]
-    {
-        use objc2::MainThreadMarker;
-        use objc2_app_kit::NSApplication;
-        use objc2_app_kit::NSApplicationActivationPolicy;
-        let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let app = NSApplication::sharedApplication(mtm);
-        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    fn on_exit(&mut self) {}
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Color32::from_rgb(14, 12, 9).to_normalized_gamma_f32()
     }
 }

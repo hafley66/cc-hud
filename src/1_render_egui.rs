@@ -241,6 +241,6 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
 pub fn render_markers(pui: &mut egui_plot::PlotUi, markers: &[Marker]) {
     use egui_plot::VLine;
     for m in markers {
-        pui.vline(VLine::new(m.x).color(color(m.color)).width(m.width));
+        pui.vline(VLine::new("", m.x).color(color(m.color)).width(m.width));
     }
 }
