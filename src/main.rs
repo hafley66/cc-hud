@@ -590,11 +590,11 @@ fn make_tooltip<F: Fn(&TurnInfo) -> String>(
 }
 
 fn panel_frame() -> egui::Frame {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(Palette::BG_PANEL)
         .stroke(egui::Stroke::new(0.5, Palette::SEPARATOR))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::same(6.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(6))
 }
 
 // (draw_subagent_tree, draw_legend_row, LegendStats moved to 2_legend.rs)
@@ -2918,11 +2918,11 @@ fn draw_big(
                         } else {
                             egui::Stroke::new(0.5, Palette::SEPARATOR)
                         };
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(egui::Color32::from_rgb(20, 18, 14))
                             .stroke(frame_stroke)
-                            .rounding(5.0)
-                            .inner_margin(egui::Margin::same(8.0))
+                            .corner_radius(5.0)
+                            .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
                                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                                 let font = egui::FontId::monospace(10.0);
@@ -3007,14 +3007,14 @@ fn draw_big(
                                                 .order(egui::Order::Tooltip)
                                                 .fixed_pos(egui::pos2(pos.x, pos.y + 20.0))
                                                 .show(ui.ctx(), |ui| {
-                                                    egui::Frame::none()
+                                                    egui::Frame::NONE
                                                         .fill(egui::Color32::from_rgb(30, 28, 20))
                                                         .stroke(egui::Stroke::new(
                                                             0.5,
                                                             egui::Color32::from_rgb(100, 95, 80),
                                                         ))
-                                                        .rounding(3.0)
-                                                        .inner_margin(egui::Margin::same(4.0))
+                                                        .corner_radius(3.0)
+                                                        .inner_margin(egui::Margin::same(4))
                                                         .show(ui, |ui| {
                                                             ui.label(tooltip);
                                                         });
@@ -3626,7 +3626,7 @@ impl EguiOverlay for Hud {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(bg))
+            .frame(egui::Frame::NONE.fill(bg))
             .show(egui_context, |ui| {
                 if data.sessions.is_empty() {
                     let area = ui.available_rect_before_wrap();

@@ -22,11 +22,11 @@ fn scene_to_egui(c: scene::Color) -> egui::Color32 {
 }
 
 fn panel_frame() -> egui::Frame {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(BG_PANEL)
         .stroke(egui::Stroke::new(0.5, SEPARATOR))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(6.0, 6.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 6))
 }
 
 fn format_duration_secs(first: u64, last: u64) -> String {

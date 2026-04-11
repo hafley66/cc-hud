@@ -1,1 +1,1 @@
-20260408.0.cc-hud-legend-stripbuilder-refactor.md
+20260411.0.remove-small-mode-and-fix-window-controls.md
