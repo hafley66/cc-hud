@@ -26,7 +26,7 @@ fn panel_frame() -> egui::Frame {
         .fill(BG_PANEL)
         .stroke(egui::Stroke::new(0.5, SEPARATOR))
         .rounding(4.0)
-        .inner_margin(egui::Margin::same(6.0))
+        .inner_margin(egui::Margin::symmetric(6.0, 6.0))
 }
 
 fn format_duration_secs(first: u64, last: u64) -> String {
@@ -885,6 +885,71 @@ fn draw_stats_strip(ui: &mut egui::Ui, data: &HudData, effective_hidden: &HashSe
     );
 }
 
+fn draw_table_header(ui: &mut egui::Ui, eye_w: f32, timeline_w: f32) {
+    let header_row_h = 24.0;
+    let (header_rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), header_row_h),
+        egui::Sense::hover(),
+    );
+
+    let painter = ui.painter();
+    let font = egui::FontId::monospace(10.0);
+    let header_col = egui::Color32::from_rgba_unmultiplied(100, 95, 85, 100);
+
+    // Header background
+    painter.rect_filled(
+        header_rect,
+        0.0,
+        egui::Color32::from_rgba_unmultiplied(40, 38, 35, 60),
+    );
+
+    // Bottom border
+    painter.line_segment(
+        [
+            egui::pos2(header_rect.left(), header_rect.bottom()),
+            egui::pos2(header_rect.right(), header_rect.bottom()),
+        ],
+        egui::Stroke::new(1.0, SEPARATOR),
+    );
+
+    // Header text labels
+    let labels = ["", "", "Session", "", "Timeline"];
+    let col_widths = [eye_w, 14.0, 0.0, 36.0, timeline_w];
+    let total_w = eye_w + 14.0 + 36.0 + timeline_w;
+    let name_w = ui.available_width() - total_w;
+
+    let mut x = header_rect.left() + 4.0;
+    for (i, (label, w)) in labels.iter().zip(col_widths.iter()).enumerate() {
+        if i == 2 {
+            // Name column uses remaining width
+            let name_rect = egui::Rect::from_min_size(
+                egui::pos2(x, header_rect.top() + 4.0),
+                egui::vec2(name_w, header_row_h - 8.0),
+            );
+            painter.text(
+                egui::pos2(name_rect.left() + 6.0, header_rect.top() + 6.0),
+                egui::Align2::LEFT_TOP,
+                label,
+                font.clone(),
+                header_col,
+            );
+        } else if *w > 0.0 {
+            let col_rect = egui::Rect::from_min_size(
+                egui::pos2(x, header_rect.top() + 4.0),
+                egui::vec2(*w, header_row_h - 8.0),
+            );
+            painter.text(
+                egui::pos2(col_rect.left() + 2.0, header_rect.top() + 6.0),
+                egui::Align2::LEFT_TOP,
+                label,
+                font.clone(),
+                header_col,
+            );
+        }
+        x += *w;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -918,6 +983,9 @@ pub(crate) fn draw_legend_panel(
         panel_frame().show(ui, |ui| {
             // Aggregate stats strip
             draw_stats_strip(ui, data, effective_hidden);
+
+            // Table header
+            draw_table_header(ui, eye_w, timeline_w);
 
             // Scroll area with 4x scroll boost
             let extra_scroll = ui.input(|i| i.smooth_scroll_delta.y) * 3.0;
