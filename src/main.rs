@@ -3715,22 +3715,9 @@ fn start_overlay(user_data: Hud) {
             gtx.window_hint(glfw::WindowHint::Visible(false));
         }),
         opengl_window: Some(false),
-        transparent_window: Some(true),
+        transparent_window: Some(false),
         ..Default::default()
     });
-    glfw_backend.window.set_floating(true);
-
-    #[cfg(target_os = "macos")]
-    {
-        use objc2::rc::Retained;
-        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-        let raw = glfw_backend.window.get_cocoa_window() as *mut objc2::runtime::AnyObject;
-        let ns_window: Retained<NSWindow> = unsafe { Retained::retain(raw.cast()).unwrap() };
-        ns_window.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
-    }
 
     let latest_size = glfw_backend.window.get_framebuffer_size();
     let latest_size = [latest_size.0 as _, latest_size.1 as _];
