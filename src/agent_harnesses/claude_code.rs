@@ -17,8 +17,16 @@ pub fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
 }
 
 /// Returns (input_cost, output_cost) separately.
-fn compute_cost_split(model: &str, input: u64, output: u64, cache_read: u64, cache_create: u64) -> (f64, f64) {
-    model_registry::lookup(model).pricing.cost_split(input, output, cache_read, cache_create)
+fn compute_cost_split(
+    model: &str,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_create: u64,
+) -> (f64, f64) {
+    model_registry::lookup(model)
+        .pricing
+        .cost_split(input, output, cache_read, cache_create)
 }
 
 /// One event in the session timeline.
@@ -41,15 +49,9 @@ pub enum Event {
         has_thinking: bool,
     },
     /// A tool invocation.
-    ToolUse {
-        seq: u32,
-        name: String,
-    },
+    ToolUse { seq: u32, name: String },
     /// A skill invocation (Skill tool with extracted skill name).
-    SkillUse {
-        seq: u32,
-        skill: String,
-    },
+    SkillUse { seq: u32, skill: String },
     /// A notable file read (CLAUDE.md, memory, etc.)
     ReadFile {
         seq: u32,
@@ -62,10 +64,7 @@ pub enum Event {
         description: String,
     },
     /// Context compaction boundary.
-    Compaction {
-        seq: u32,
-        timestamp_secs: u64,
-    },
+    Compaction { seq: u32, timestamp_secs: u64 },
 }
 
 impl Event {
@@ -118,11 +117,12 @@ pub struct SessionData {
     pub api_call_count: u32,
     pub agent_count: u32,
     pub is_active: bool,
-    pub first_ts: u64,   // unix seconds of first ApiCall (0 if none)
-    pub last_ts: u64,    // unix seconds of last ApiCall  (0 if none)
-    pub model: String,   // most recent model used
-    pub last_input_tokens: u64, // input tokens of most recent API call (context fullness)
+    pub first_ts: u64,
+    pub last_ts: u64,
+    pub model: String,
+    pub last_input_tokens: u64,
     pub subagents: Vec<SubagentData>,
+    pub harness: String,
     #[serde(skip)]
     pub energy: SessionEnergy,
 }
@@ -160,17 +160,30 @@ struct JsonlLine {
 /// Parse ISO 8601 UTC timestamp ("2026-03-18T19:38:00.000Z") -> unix seconds.
 fn parse_iso_secs(s: &str) -> u64 {
     let b = s.as_bytes();
-    if b.len() < 19 { return 0; }
+    if b.len() < 19 {
+        return 0;
+    }
     let n = |sl: &[u8]| -> u64 {
-        std::str::from_utf8(sl).ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+        std::str::from_utf8(sl)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
     };
-    let yr = n(&b[0..4]); let mo = n(&b[5..7]); let dy = n(&b[8..10]);
-    let hr = n(&b[11..13]); let mn = n(&b[14..16]); let sc = n(&b[17..19]);
+    let yr = n(&b[0..4]);
+    let mo = n(&b[5..7]);
+    let dy = n(&b[8..10]);
+    let hr = n(&b[11..13]);
+    let mn = n(&b[14..16]);
+    let sc = n(&b[17..19]);
     let leap = |y: u64| y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let dim: [u64; 13] = [0,31,28,31,30,31,30,31,31,30,31,30,31];
+    let dim: [u64; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut days = 0u64;
-    for y in 1970..yr { days += if leap(y) { 366 } else { 365 }; }
-    for m in 1..mo { days += dim[m as usize] + if m == 2 && leap(yr) { 1 } else { 0 }; }
+    for y in 1970..yr {
+        days += if leap(y) { 366 } else { 365 };
+    }
+    for m in 1..mo {
+        days += dim[m as usize] + if m == 2 && leap(yr) { 1 } else { 0 };
+    }
     days += dy.saturating_sub(1);
     days * 86400 + hr * 3600 + mn * 60 + sc
 }
@@ -232,7 +245,7 @@ fn project_from_dir(dir_name: &str) -> String {
     // Take last 2 segments for context: "projects-foo" or "chris-projects"
     let parts: Vec<&str> = dir_name.split('-').filter(|s| !s.is_empty()).collect();
     if parts.len() >= 2 {
-        parts[parts.len()-1].to_string()
+        parts[parts.len() - 1].to_string()
     } else {
         dir_name.to_string()
     }
@@ -256,38 +269,60 @@ fn projects_dir() -> String {
 
 fn discover_active() -> Vec<SessionFile> {
     let dir = sessions_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
 
-    entries.flatten().filter_map(|entry| {
-        let path = entry.path();
-        if path.extension()?.to_str()? != "json" { return None; }
-        let contents = std::fs::read_to_string(&path).ok()?;
-        let sf: SessionFile = serde_json::from_str(&contents).ok()?;
-        if pid_alive(sf.pid) { Some(sf) } else { None }
-    }).collect()
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()?.to_str()? != "json" {
+                return None;
+            }
+            let contents = std::fs::read_to_string(&path).ok()?;
+            let sf: SessionFile = serde_json::from_str(&contents).ok()?;
+            if pid_alive(sf.pid) {
+                Some(sf)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Discover all JSONL session files across all projects.
 /// Returns (session_id, project_dir_name, jsonl_path).
 fn discover_all_jsonl() -> Vec<(String, String, String)> {
     let pdir = projects_dir();
-    let Ok(projects) = std::fs::read_dir(&pdir) else { return vec![] };
+    let Ok(projects) = std::fs::read_dir(&pdir) else {
+        return vec![];
+    };
 
     let mut result = Vec::new();
     for proj in projects.flatten() {
         let proj_path = proj.path();
-        if !proj_path.is_dir() { continue; }
+        if !proj_path.is_dir() {
+            continue;
+        }
         let proj_name = proj.file_name().to_string_lossy().to_string();
 
-        let Ok(files) = std::fs::read_dir(&proj_path) else { continue };
+        let Ok(files) = std::fs::read_dir(&proj_path) else {
+            continue;
+        };
         for file in files.flatten() {
             let fpath = file.path();
-            if fpath.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
-            let sid = fpath.file_stem()
+            if fpath.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let sid = fpath
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            if sid.is_empty() { continue; }
+            if sid.is_empty() {
+                continue;
+            }
             result.push((sid, proj_name.clone(), fpath.to_string_lossy().to_string()));
         }
     }
@@ -296,7 +331,12 @@ fn discover_all_jsonl() -> Vec<(String, String, String)> {
 
 fn jsonl_path_for_session(sf: &SessionFile) -> String {
     let project_dir = cwd_to_project_dir(&sf.cwd);
-    format!("{}/.claude/projects/{}/{}.jsonl", home_dir(), project_dir, sf.session_id)
+    format!(
+        "{}/.claude/projects/{}/{}.jsonl",
+        home_dir(),
+        project_dir,
+        sf.session_id
+    )
 }
 
 /// Discover subagent dir for a session JSONL path.
@@ -309,12 +349,18 @@ fn subagents_dir_for_jsonl(jsonl_path: &str) -> String {
 
 fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
     let dir = subagents_dir_for_jsonl(jsonl_path);
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
 
     let mut meta_files: Vec<String> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         if name.ends_with(".meta.json") {
             meta_files.push(name);
         }
@@ -323,7 +369,10 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
     let mut subagents = Vec::new();
     for meta_name in &meta_files {
         let meta_path = format!("{}/{}", dir, meta_name);
-        let agent_id = meta_name.strip_suffix(".meta.json").unwrap_or("").to_string();
+        let agent_id = meta_name
+            .strip_suffix(".meta.json")
+            .unwrap_or("")
+            .to_string();
         let jsonl_name = format!("{}.jsonl", agent_id);
         let jsonl_path = format!("{}/{}", dir, jsonl_name);
 
@@ -352,7 +401,15 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
 
         for ev in &events {
             match ev {
-                Event::ApiCall { input_tokens, output_tokens, cumulative_input_cost, cumulative_output_cost, timestamp_secs, model, .. } => {
+                Event::ApiCall {
+                    input_tokens,
+                    output_tokens,
+                    cumulative_input_cost,
+                    cumulative_output_cost,
+                    timestamp_secs,
+                    model,
+                    ..
+                } => {
                     last_model = model.clone();
                     total_input_cost = *cumulative_input_cost;
                     total_output_cost = *cumulative_output_cost;
@@ -360,7 +417,9 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
                     total_output += output_tokens;
                     api_calls += 1;
                     if *timestamp_secs > 0 {
-                        if first_ts == 0 { first_ts = *timestamp_secs; }
+                        if first_ts == 0 {
+                            first_ts = *timestamp_secs;
+                        }
                         last_ts = *timestamp_secs;
                     }
                 }
@@ -402,7 +461,10 @@ fn discover_subagents(jsonl_path: &str) -> Vec<SubagentData> {
 
 fn parse_jsonl_full(path: &str) -> (Vec<Event>, TailState) {
     let mut state = TailState {
-        offset: 0, seq: 0, cumulative_input_cost: 0.0, cumulative_output_cost: 0.0,
+        offset: 0,
+        seq: 0,
+        cumulative_input_cost: 0.0,
+        cumulative_output_cost: 0.0,
     };
     let events = tail_jsonl(path, &mut state);
     (events, state)
@@ -411,7 +473,9 @@ fn parse_jsonl_full(path: &str) -> (Vec<Event>, TailState) {
 fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
-    let Ok(mut file) = std::fs::File::open(path) else { return vec![] };
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return vec![];
+    };
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
 
     if file_len < state.offset {
@@ -420,8 +484,12 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
         state.cumulative_input_cost = 0.0;
         state.cumulative_output_cost = 0.0;
     }
-    if file_len <= state.offset { return vec![]; }
-    if file.seek(SeekFrom::Start(state.offset)).is_err() { return vec![]; }
+    if file_len <= state.offset {
+        return vec![];
+    }
+    if file.seek(SeekFrom::Start(state.offset)).is_err() {
+        return vec![];
+    }
 
     let mut events = Vec::new();
     let reader = BufReader::new(&file);
@@ -442,8 +510,12 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
 
     for line in reader.lines() {
         let Ok(line) = line else { break };
-        if line.trim().is_empty() { continue; }
-        let Ok(parsed) = serde_json::from_str::<JsonlLine>(&line) else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<JsonlLine>(&line) else {
+            continue;
+        };
 
         // Handle compact_boundary system events
         if parsed.msg_type.as_deref() == Some("system")
@@ -451,12 +523,19 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
         {
             state.seq += 1;
             let timestamp_secs = parsed.timestamp.as_deref().map(parse_iso_secs).unwrap_or(0);
-            events.push(Event::Compaction { seq: state.seq, timestamp_secs });
+            events.push(Event::Compaction {
+                seq: state.seq,
+                timestamp_secs,
+            });
             continue;
         }
 
-        if parsed.msg_type.as_deref() != Some("assistant") { continue; }
-        let Some(msg) = parsed.message else { continue; };
+        if parsed.msg_type.as_deref() != Some("assistant") {
+            continue;
+        }
+        let Some(msg) = parsed.message else {
+            continue;
+        };
 
         let msg_id = msg.id.clone().unwrap_or_default();
         let is_final = msg.stop_reason.is_some();
@@ -479,52 +558,81 @@ fn tail_jsonl(path: &str, state: &mut TailState) -> Vec<Event> {
                     let name = block.name.clone().unwrap_or_else(|| "?".to_string());
                     state.seq += 1;
                     if name == "Agent" {
-                        let subagent_type = block.input.as_ref()
+                        let subagent_type = block
+                            .input
+                            .as_ref()
                             .and_then(|v| v.get("subagent_type"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("general-purpose")
                             .to_string();
-                        let description = block.input.as_ref()
+                        let description = block
+                            .input
+                            .as_ref()
                             .and_then(|v| v.get("description"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        p.tool_events.push(Event::AgentSpawn { seq: state.seq, subagent_type, description });
+                        p.tool_events.push(Event::AgentSpawn {
+                            seq: state.seq,
+                            subagent_type,
+                            description,
+                        });
                     } else if name == "Skill" {
-                        let skill = block.input.as_ref()
+                        let skill = block
+                            .input
+                            .as_ref()
                             .and_then(|v| v.get("skill"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("?")
                             .to_string();
-                        p.tool_events.push(Event::SkillUse { seq: state.seq, skill });
+                        p.tool_events.push(Event::SkillUse {
+                            seq: state.seq,
+                            skill,
+                        });
                     } else if name == "Read" {
-                        let file_path = block.input.as_ref()
+                        let file_path = block
+                            .input
+                            .as_ref()
                             .and_then(|v| v.get("file_path"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
                         let category = if file_path.contains("CLAUDE.md") {
                             Some("CLAUDE.md")
-                        } else if file_path.contains("/memory/") || file_path.contains("MEMORY.md") {
+                        } else if file_path.contains("/memory/") || file_path.contains("MEMORY.md")
+                        {
                             Some("memory")
                         } else {
                             None
                         };
-                        p.tool_events.push(Event::ToolUse { seq: state.seq, name });
+                        p.tool_events.push(Event::ToolUse {
+                            seq: state.seq,
+                            name,
+                        });
                         if let Some(cat) = category {
-                            p.tool_events.push(Event::ReadFile { seq: state.seq, category: cat.to_string() });
+                            p.tool_events.push(Event::ReadFile {
+                                seq: state.seq,
+                                category: cat.to_string(),
+                            });
                         }
                     } else {
-                        p.tool_events.push(Event::ToolUse { seq: state.seq, name });
+                        p.tool_events.push(Event::ToolUse {
+                            seq: state.seq,
+                            name,
+                        });
                     }
                 }
             }
         }
 
         // Only emit ApiCall on the final entry (real usage) or if no message ID
-        if !is_final && !msg_id.is_empty() { continue; }
+        if !is_final && !msg_id.is_empty() {
+            continue;
+        }
 
         let p = pending.remove(&msg_id).unwrap_or(Pending {
-            has_thinking: false, tool_events: Vec::new(), timestamp_secs,
+            has_thinking: false,
+            tool_events: Vec::new(),
+            timestamp_secs,
         });
 
         // Flush accumulated tool events
@@ -591,7 +699,19 @@ fn build_session_data(
 
     for ev in &events {
         match ev {
-            Event::ApiCall { input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, input_cost_usd, output_cost_usd, cumulative_input_cost, cumulative_output_cost, timestamp_secs, model, .. } => {
+            Event::ApiCall {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_create_tokens,
+                input_cost_usd,
+                output_cost_usd,
+                cumulative_input_cost,
+                cumulative_output_cost,
+                timestamp_secs,
+                model,
+                ..
+            } => {
                 last_model = model.clone();
                 last_input_tokens = input_tokens + cache_read_tokens + cache_create_tokens;
                 total_input_cost = *cumulative_input_cost;
@@ -600,12 +720,19 @@ fn build_session_data(
                 total_output += output_tokens;
                 api_calls += 1;
                 if *timestamp_secs > 0 {
-                    if first_ts == 0 { first_ts = *timestamp_secs; }
+                    if first_ts == 0 {
+                        first_ts = *timestamp_secs;
+                    }
                     last_ts = *timestamp_secs;
                 }
                 session_energy.add_call(
-                    *input_tokens, *output_tokens, *cache_read_tokens, *cache_create_tokens,
-                    model, input_cost_usd + output_cost_usd, &energy_config,
+                    *input_tokens,
+                    *output_tokens,
+                    *cache_read_tokens,
+                    *cache_create_tokens,
+                    model,
+                    input_cost_usd + output_cost_usd,
+                    &energy_config,
                 );
             }
             Event::ToolUse { name, .. } => {
@@ -617,7 +744,9 @@ fn build_session_data(
             Event::ReadFile { category, .. } => {
                 *read_counts.entry(category.clone()).or_default() += 1;
             }
-            Event::AgentSpawn { .. } => { agents += 1; }
+            Event::AgentSpawn { .. } => {
+                agents += 1;
+            }
             Event::Compaction { .. } => {}
         }
     }
@@ -644,6 +773,7 @@ fn build_session_data(
         model: last_model,
         last_input_tokens,
         subagents,
+        harness: "claude".to_string(),
         energy: session_energy,
     }
 }
@@ -664,10 +794,18 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             if !oc_data.sessions.is_empty() {
                 let mut d = data.lock().unwrap();
                 // Remove previous OpenCode sessions (pid == 0 and session_id starts with "ses_")
-                d.sessions.retain(|s| !(s.pid == 0 && s.session_id.starts_with("ses_")));
+                d.sessions
+                    .retain(|s| !(s.pid == 0 && s.session_id.starts_with("ses_")));
                 d.sessions.extend(oc_data.sessions);
                 d.generation += 1;
-                tracing::info!(count = d.sessions.iter().filter(|s| s.pid == 0 && s.session_id.starts_with("ses_")).count(), "loaded opencode sessions");
+                tracing::info!(
+                    count = d
+                        .sessions
+                        .iter()
+                        .filter(|s| s.pid == 0 && s.session_id.starts_with("ses_"))
+                        .count(),
+                    "loaded opencode sessions"
+                );
             }
             opencode_loaded = true;
         }
@@ -686,7 +824,9 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             for (sid, proj_dir, path) in &all_jsonl {
                 let is_active = active_ids.contains(sid);
                 let (events, tail_state) = parse_jsonl_full(path);
-                if events.is_empty() { continue; }
+                if events.is_empty() {
+                    continue;
+                }
 
                 let project = project_from_dir(proj_dir);
                 let subs = discover_subagents(path);
@@ -703,7 +843,11 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             }
 
             // Sort by total cost descending
-            sessions.sort_by(|a, b| b.total_cost_usd.partial_cmp(&a.total_cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+            sessions.sort_by(|a, b| {
+                b.total_cost_usd
+                    .partial_cmp(&a.total_cost_usd)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
 
             {
                 let mut d = data.lock().unwrap();
@@ -739,11 +883,16 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
         for (sid, sf) in &known_sessions {
             let path = jsonl_path_for_session(sf);
             let state = tail_states.entry(sid.clone()).or_insert(TailState {
-                offset: 0, seq: 0, cumulative_input_cost: 0.0, cumulative_output_cost: 0.0,
+                offset: 0,
+                seq: 0,
+                cumulative_input_cost: 0.0,
+                cumulative_output_cost: 0.0,
             });
 
             let new_events = tail_jsonl(&path, state);
-            if new_events.is_empty() { continue; }
+            if new_events.is_empty() {
+                continue;
+            }
             updated = true;
 
             let mut d = data.lock().unwrap();
@@ -762,7 +911,15 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
             } else {
                 let events = new_events;
                 let subs = discover_subagents(&path);
-                let sd = build_session_data(sid, &short_name(&sf.cwd), &short_name(&sf.cwd), sf.pid, events, true, subs);
+                let sd = build_session_data(
+                    sid,
+                    &short_name(&sf.cwd),
+                    &short_name(&sf.cwd),
+                    sf.pid,
+                    events,
+                    true,
+                    subs,
+                );
                 d.sessions.insert(0, sd);
             }
             d.generation += 1;
@@ -789,7 +946,15 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
                     let (events, ts) = parse_jsonl_full(&path);
                     tail_states.insert(sid.clone(), ts);
                     let subs = discover_subagents(&path);
-                    all_sessions.push(build_session_data(sid, &short_name(&sf.cwd), &short_name(&sf.cwd), sf.pid, events, true, subs));
+                    all_sessions.push(build_session_data(
+                        sid,
+                        &short_name(&sf.cwd),
+                        &short_name(&sf.cwd),
+                        sf.pid,
+                        events,
+                        true,
+                        subs,
+                    ));
                 }
             }
             if !all_sessions.is_empty() {
@@ -806,7 +971,10 @@ mod tests {
     use super::*;
 
     fn fixture_path() -> String {
-        format!("{}/src/agent_harnesses/fixtures/sample_session.jsonl", env!("CARGO_MANIFEST_DIR"))
+        format!(
+            "{}/src/agent_harnesses/fixtures/sample_session.jsonl",
+            env!("CARGO_MANIFEST_DIR")
+        )
     }
 
     #[test]
@@ -818,7 +986,15 @@ mod tests {
     #[test]
     fn build_sample_session() {
         let (events, _) = parse_jsonl_full(&fixture_path());
-        let sd = build_session_data("test-session-001", "cc-hud", "cc-hud", 12345, events, true, vec![]);
+        let sd = build_session_data(
+            "test-session-001",
+            "cc-hud",
+            "cc-hud",
+            12345,
+            events,
+            true,
+            vec![],
+        );
 
         let mut tool_counts: Vec<_> = sd.tool_counts.into_iter().collect();
         tool_counts.sort_by(|a, b| a.0.cmp(&b.0));
@@ -827,21 +1003,24 @@ mod tests {
         let mut read_counts: Vec<_> = sd.read_counts.into_iter().collect();
         read_counts.sort_by(|a, b| a.0.cmp(&b.0));
 
-        insta::assert_yaml_snapshot!("session_aggregates", &serde_json::json!({
-            "session_id": sd.session_id,
-            "total_cost_usd": (sd.total_cost_usd * 100000.0).round() / 100000.0,
-            "total_input_cost": (sd.total_input_cost * 100000.0).round() / 100000.0,
-            "total_output_cost": (sd.total_output_cost * 100000.0).round() / 100000.0,
-            "total_input": sd.total_input,
-            "total_output": sd.total_output,
-            "api_call_count": sd.api_call_count,
-            "agent_count": sd.agent_count,
-            "tool_counts": tool_counts,
-            "skill_counts": skill_counts,
-            "read_counts": read_counts,
-            "model": sd.model,
-            "is_active": sd.is_active,
-        }));
+        insta::assert_yaml_snapshot!(
+            "session_aggregates",
+            &serde_json::json!({
+                "session_id": sd.session_id,
+                "total_cost_usd": (sd.total_cost_usd * 100000.0).round() / 100000.0,
+                "total_input_cost": (sd.total_input_cost * 100000.0).round() / 100000.0,
+                "total_output_cost": (sd.total_output_cost * 100000.0).round() / 100000.0,
+                "total_input": sd.total_input,
+                "total_output": sd.total_output,
+                "api_call_count": sd.api_call_count,
+                "agent_count": sd.agent_count,
+                "tool_counts": tool_counts,
+                "skill_counts": skill_counts,
+                "read_counts": read_counts,
+                "model": sd.model,
+                "is_active": sd.is_active,
+            })
+        );
     }
 
     #[test]
@@ -858,9 +1037,13 @@ mod tests {
 
         for ev in &events {
             match ev {
-                Event::ApiCall { has_thinking: t, .. } => {
+                Event::ApiCall {
+                    has_thinking: t, ..
+                } => {
                     has_api = true;
-                    if *t { has_thinking = true; }
+                    if *t {
+                        has_thinking = true;
+                    }
                 }
                 Event::ToolUse { .. } => has_tool = true,
                 Event::SkillUse { .. } => has_skill = true,
@@ -876,6 +1059,9 @@ mod tests {
         assert!(has_read_file, "fixture must contain ReadFile events");
         assert!(has_agent, "fixture must contain AgentSpawn events");
         assert!(has_compaction, "fixture must contain Compaction events");
-        assert!(has_thinking, "fixture must contain ApiCall with has_thinking=true");
+        assert!(
+            has_thinking,
+            "fixture must contain ApiCall with has_thinking=true"
+        );
     }
 }

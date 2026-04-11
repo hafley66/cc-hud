@@ -1,30 +1,30 @@
 #![allow(dead_code)]
 
-mod geometry;
-mod anchors;
 mod agent_harnesses;
-mod usage;
-#[path = "2_model_registry.rs"]
-mod model_registry;
+mod anchors;
 mod energy;
-#[path = "0_scene.rs"]
-mod scene;
-#[path = "1_render_egui.rs"]
-mod render_egui;
+mod geometry;
 #[path = "2_legend.rs"]
 mod legend;
+#[path = "2_model_registry.rs"]
+mod model_registry;
+#[path = "1_render_egui.rs"]
+mod render_egui;
+#[path = "0_scene.rs"]
+mod scene;
+mod usage;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use egui_overlay::EguiOverlay;
 use egui_overlay::egui_render_wgpu::WgpuBackend as DefaultGfxBackend;
 use egui_overlay::egui_window_glfw_passthrough::GlfwBackend;
+use egui_overlay::EguiOverlay;
 use egui_plot::{Bar, BarChart, Plot, VLine};
 
-use geometry::PixelRect;
 use agent_harnesses::claude_code::{Event, HudData};
+use geometry::PixelRect;
 
 use scene::{ChartData, TurnInfo};
 
@@ -34,8 +34,7 @@ fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(log_file))
         .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or(EnvFilter::new("info,wgpu=warn,naga=warn")),
+            EnvFilter::try_from_default_env().unwrap_or(EnvFilter::new("info,wgpu=warn,naga=warn")),
         )
         .init();
 
@@ -47,11 +46,25 @@ fn main() {
     // Optional additive-only rsync backup (only if rsync exists)
     if do_backup {
         std::thread::spawn(|| {
-            if std::process::Command::new("which").arg("rsync").output().map(|o| o.status.success()).unwrap_or(false) {
-                let dest = format!("{}/.cc-hud-backup/projects", std::env::var("HOME").unwrap_or_default());
+            if std::process::Command::new("which")
+                .arg("rsync")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                let dest = format!(
+                    "{}/.cc-hud-backup/projects",
+                    std::env::var("HOME").unwrap_or_default()
+                );
                 let _ = std::fs::create_dir_all(&dest);
-                let src = format!("{}/.claude/projects/", std::env::var("HOME").unwrap_or_default());
-                match std::process::Command::new("rsync").args(["-a", "--ignore-existing", &src, &dest]).status() {
+                let src = format!(
+                    "{}/.claude/projects/",
+                    std::env::var("HOME").unwrap_or_default()
+                );
+                match std::process::Command::new("rsync")
+                    .args(["-a", "--ignore-existing", &src, &dest])
+                    .status()
+                {
                     Ok(s) if s.success() => tracing::info!(dest, "backup complete"),
                     Ok(s) => tracing::warn!(code = ?s.code(), "rsync exited non-zero"),
                     Err(e) => tracing::warn!(%e, "rsync failed"),
@@ -64,7 +77,12 @@ fn main() {
 
     let (state, poll_target) = if big_mode {
         // Fixed floating window — no tmux anchoring
-        let r = Arc::new(Mutex::new(PixelRect { x: 100, y: 80, w: 960, h: 460 }));
+        let r = Arc::new(Mutex::new(PixelRect {
+            x: 100,
+            y: 80,
+            w: 960,
+            h: 460,
+        }));
         (r, None)
     } else {
         let target = match args.get(1).filter(|a| !a.starts_with('-')) {
@@ -83,7 +101,12 @@ fn main() {
                 }
             },
         };
-        let initial = compute_pane_rect(&target).unwrap_or(PixelRect { x: 0, y: 0, w: 800, h: 60 });
+        let initial = compute_pane_rect(&target).unwrap_or(PixelRect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 60,
+        });
         let r = Arc::new(Mutex::new(initial));
         (r, Some(target))
     };
@@ -95,7 +118,9 @@ fn main() {
     if let Some(target) = poll_target {
         let poll_state = state.clone();
         let poll_visible = visible.clone();
-        std::thread::spawn(move || { pane_poll_loop(target, poll_state, poll_visible); });
+        std::thread::spawn(move || {
+            pane_poll_loop(target, poll_state, poll_visible);
+        });
     }
 
     let feed_data = hud_data.clone();
@@ -108,7 +133,30 @@ fn main() {
         usage::poll_loop(feed_usage, Duration::from_secs(90));
     });
 
-    start_overlay(Hud { first_frame: true, state, visible, hud_data, usage_data, big_mode, exclude_set: HashSet::new(), include_set: HashSet::new(), filter_mode: FilterMode::Exclude, show_active_only: false, show_bars: true, time_axis: false, autofit: true, nav_view: None, expanded_groups: HashSet::new(), expanded_sessions: HashSet::new(), small_mode_session: None, pre_small_window_size: None, chart_vis: ChartVisibility::default(), show_budget: false, billing: BillingConfig::load(), cached_chart: None });
+    start_overlay(Hud {
+        first_frame: true,
+        state,
+        visible,
+        hud_data,
+        usage_data,
+        big_mode,
+        exclude_set: HashSet::new(),
+        include_set: HashSet::new(),
+        filter_mode: FilterMode::Exclude,
+        show_active_only: false,
+        show_bars: true,
+        time_axis: false,
+        autofit: true,
+        nav_view: None,
+        expanded_groups: HashSet::new(),
+        expanded_sessions: HashSet::new(),
+        small_mode_session: None,
+        pre_small_window_size: None,
+        chart_vis: ChartVisibility::default(),
+        show_budget: false,
+        billing: BillingConfig::load(),
+        cached_chart: None,
+    });
 }
 
 fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
@@ -118,7 +166,14 @@ fn compute_pane_rect(target: &anchors::tmux::TmuxTarget) -> Option<PixelRect> {
     let metrics = anchors::terminal::cell_metrics_from_tty(tty)?;
     let origin = anchors::terminal::terminal_window_origin(term_pid)?;
     let insets = geometry::TerminalInsets::iterm2_default();
-    Some(geometry::compute_overlay_rect(&pane.cell_rect, &metrics, &origin, &insets, 3, 1))
+    Some(geometry::compute_overlay_rect(
+        &pane.cell_rect,
+        &metrics,
+        &origin,
+        &insets,
+        3,
+        1,
+    ))
 }
 
 fn pane_poll_loop(
@@ -129,7 +184,9 @@ fn pane_poll_loop(
     loop {
         if let Some(rect) = compute_pane_rect(&target) {
             let mut s = state.lock().unwrap();
-            if *s != rect { *s = rect; }
+            if *s != rect {
+                *s = rect;
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -147,7 +204,13 @@ struct ChartVisibility {
 
 impl Default for ChartVisibility {
     fn default() -> Self {
-        Self { cost: true, tokens: true, energy: true, water: true, totals: true }
+        Self {
+            cost: true,
+            tokens: true,
+            energy: true,
+            water: true,
+            totals: true,
+        }
     }
 }
 
@@ -171,7 +234,14 @@ struct BillingConfig {
 
 impl Default for BillingConfig {
     fn default() -> Self {
-        Self { reset_day: 1, reset_hour: 0, limit_usd: 100.0, web_reported: None, web_input_buf: String::new(), limit_input_buf: "100".into() }
+        Self {
+            reset_day: 1,
+            reset_hour: 0,
+            limit_usd: 100.0,
+            web_reported: None,
+            web_input_buf: String::new(),
+            limit_input_buf: "100".into(),
+        }
     }
 }
 
@@ -196,7 +266,10 @@ impl BillingConfig {
             "limit_usd": self.limit_usd,
             "web_reported": self.web_reported,
         });
-        let _ = std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap_or_default());
+        let _ = std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json).unwrap_or_default(),
+        );
     }
 
     fn load() -> Self {
@@ -204,9 +277,16 @@ impl BillingConfig {
         let mut cfg = BillingConfig::default();
         if let Ok(data) = std::fs::read_to_string(&path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Some(d) = v["reset_day"].as_u64() { cfg.reset_day = d.min(28).max(1) as u8; }
-                if let Some(h) = v["reset_hour"].as_u64() { cfg.reset_hour = h.min(23) as u8; }
-                if let Some(l) = v["limit_usd"].as_f64() { cfg.limit_usd = l.max(1.0); cfg.limit_input_buf = format!("{:.0}", l); }
+                if let Some(d) = v["reset_day"].as_u64() {
+                    cfg.reset_day = d.min(28).max(1) as u8;
+                }
+                if let Some(h) = v["reset_hour"].as_u64() {
+                    cfg.reset_hour = h.min(23) as u8;
+                }
+                if let Some(l) = v["limit_usd"].as_f64() {
+                    cfg.limit_usd = l.max(1.0);
+                    cfg.limit_input_buf = format!("{:.0}", l);
+                }
                 if let Some(arr) = v["web_reported"].as_array() {
                     if arr.len() == 2 {
                         if let (Some(val), Some(ts)) = (arr[0].as_f64(), arr[1].as_u64()) {
@@ -224,9 +304,13 @@ impl BillingConfig {
     /// Compute the start of the current billing period as epoch seconds.
     fn period_start_epoch(&self) -> u64 {
         let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as libc::time_t;
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as libc::time_t;
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        unsafe { libc::localtime_r(&now_secs, &mut tm); }
+        unsafe {
+            libc::localtime_r(&now_secs, &mut tm);
+        }
 
         // Set to reset_day at reset_hour:00:00
         tm.tm_mday = self.reset_day as i32;
@@ -239,7 +323,10 @@ impl BillingConfig {
         // If candidate is in the future, go back one month
         if candidate > now_secs {
             tm.tm_mon -= 1;
-            if tm.tm_mon < 0 { tm.tm_mon = 11; tm.tm_year -= 1; }
+            if tm.tm_mon < 0 {
+                tm.tm_mon = 11;
+                tm.tm_year -= 1;
+            }
             tm.tm_isdst = -1;
             let prev = unsafe { libc::mktime(&mut tm) };
             prev as u64
@@ -255,7 +342,10 @@ impl BillingConfig {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum FilterMode { Include, Exclude }
+enum FilterMode {
+    Include,
+    Exclude,
+}
 
 struct Hud {
     first_frame: bool,
@@ -310,13 +400,26 @@ impl Palette {
 
 /// Which chart region the hover originated from.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum HoverSource { Cost, Tokens, TotalCost, TotalTokens, WeeklyCost, WeeklyRate, Energy, Water, Budget }
+enum HoverSource {
+    Cost,
+    Tokens,
+    TotalCost,
+    TotalTokens,
+    WeeklyCost,
+    WeeklyRate,
+    Energy,
+    Water,
+    Budget,
+}
 
 use legend::LegendHighlight;
 
 /// Wrapper for storing hover state in egui temp storage.
 #[derive(Clone, Copy)]
-struct HoverState { x: f64, source: HoverSource }
+struct HoverState {
+    x: f64,
+    source: HoverSource,
+}
 
 /// Which panel row is hovered, used to highlight corresponding vlines on charts.
 #[derive(Clone, Default)]
@@ -330,18 +433,26 @@ fn scene_to_egui(c: scene::Color) -> egui::Color32 {
 }
 
 fn bars_to_egui(bars: &[scene::BarData]) -> Vec<Bar> {
-    bars.iter().map(|b| Bar::new(b.x, b.height).width(b.width).fill(scene_to_egui(b.color))).collect()
+    bars.iter()
+        .map(|b| {
+            Bar::new(b.x, b.height)
+                .width(b.width)
+                .fill(scene_to_egui(b.color))
+        })
+        .collect()
 }
 
 fn bars_to_egui_hl(bars: &[scene::BarData], hl: &[bool]) -> Vec<Bar> {
-    bars.iter().map(|b| {
-        let col = if hl.is_empty() || hl.get(b.session_idx).copied().unwrap_or(true) {
-            scene_to_egui(b.color)
-        } else {
-            scene_to_egui(b.color).gamma_multiply(0.12)
-        };
-        Bar::new(b.x, b.height).width(b.width).fill(col)
-    }).collect()
+    bars.iter()
+        .map(|b| {
+            let col = if hl.is_empty() || hl.get(b.session_idx).copied().unwrap_or(true) {
+                scene_to_egui(b.color)
+            } else {
+                scene_to_egui(b.color).gamma_multiply(0.12)
+            };
+            Bar::new(b.x, b.height).width(b.width).fill(col)
+        })
+        .collect()
 }
 
 use scene::{format_cost, format_tokens, session_color};
@@ -350,12 +461,14 @@ use scene::{format_cost, format_tokens, session_color};
 /// Each point stays flat at the previous value until the next x, then steps up.
 /// This correctly represents discrete events (turns) rather than continuous accumulation.
 fn step_pts(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    if pts.len() < 2 { return pts.to_vec(); }
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
     let mut out = Vec::with_capacity(pts.len() * 2 - 1);
     out.push(pts[0]);
     for w in pts.windows(2) {
         out.push([w[1][0], w[0][1]]); // horizontal at prev y up to next x
-        out.push(w[1]);               // vertical step up
+        out.push(w[1]); // vertical step up
     }
     out
 }
@@ -364,15 +477,20 @@ fn step_pts(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
 fn format_epoch_local(epoch_secs: u64) -> String {
     let ts = epoch_secs as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&ts, &mut tm); }
-    format!("{:04}/{:02}/{:02} {:02}:{:02}",
-        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-        tm.tm_hour, tm.tm_min)
+    unsafe {
+        libc::localtime_r(&ts, &mut tm);
+    }
+    format!(
+        "{:04}/{:02}/{:02} {:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min
+    )
 }
 
 use scene::build_chart_data;
-
-
 
 // ---------------------------------------------------------------------------
 // Grid spacer for token axes: picks 1-2-5 steps (e.g. 1k, 2k, 5k, 10k, 50k)
@@ -380,7 +498,9 @@ use scene::build_chart_data;
 
 fn token_grid_spacer(input: egui_plot::GridInput) -> Vec<egui_plot::GridMark> {
     let range = (input.bounds.1 - input.bounds.0).abs();
-    if range < 1.0 { return vec![]; }
+    if range < 1.0 {
+        return vec![];
+    }
 
     // Target ~4-6 grid lines in the visible range
     let raw_step = range / 5.0;
@@ -388,7 +508,15 @@ fn token_grid_spacer(input: egui_plot::GridInput) -> Vec<egui_plot::GridMark> {
     // Round to nearest 1-2-5 sequence
     let mag = 10.0_f64.powf(raw_step.log10().floor());
     let norm = raw_step / mag;
-    let step = if norm <= 1.5 { mag } else if norm <= 3.5 { 2.0 * mag } else if norm <= 7.5 { 5.0 * mag } else { 10.0 * mag };
+    let step = if norm <= 1.5 {
+        mag
+    } else if norm <= 3.5 {
+        2.0 * mag
+    } else if norm <= 7.5 {
+        5.0 * mag
+    } else {
+        10.0 * mag
+    };
 
     // Sub-steps for thinner lines (half and fifth of main step)
     let sub_step = step / 2.0;
@@ -402,8 +530,11 @@ fn token_grid_spacer(input: egui_plot::GridInput) -> Vec<egui_plot::GridMark> {
     let end = (hi / sub_step).ceil() as i64;
     for i in start..=end {
         let value = i as f64 * sub_step;
-        if value < lo - sub_step || value > hi + sub_step { continue; }
-        let is_major = (value / step).round() * step == value || (value - (value / step).round() * step).abs() < step * 0.01;
+        if value < lo - sub_step || value > hi + sub_step {
+            continue;
+        }
+        let is_major = (value / step).round() * step == value
+            || (value - (value / step).round() * step).abs() < step * 0.01;
         marks.push(egui_plot::GridMark {
             value,
             step_size: if is_major { step } else { sub_step },
@@ -454,8 +585,14 @@ fn handle_chart_nav(
         let vspan = vmax - vmin;
         vmin -= dx_time;
         vmax -= dx_time;
-        if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
-        if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+        if vmin < full_min {
+            vmin = full_min;
+            vmax = vmin + vspan;
+        }
+        if vmax > full_max {
+            vmax = full_max;
+            vmin = vmax - vspan;
+        }
         *nav_view = Some((vmin, vmax));
     }
 
@@ -466,7 +603,8 @@ fn handle_chart_nav(
         let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
         let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
         let vspan = vmax - vmin;
-        let anchor = ctx.input(|i| i.pointer.hover_pos())
+        let anchor = ctx
+            .input(|i| i.pointer.hover_pos())
             .map(|p| {
                 let frac = ((p.x - resp.rect.left()) / resp.rect.width()).clamp(0.0, 1.0) as f64;
                 x_min + frac * x_span
@@ -489,8 +627,14 @@ fn handle_chart_nav(
         let vspan = vmax - vmin;
         vmin -= dx_time;
         vmax -= dx_time;
-        if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
-        if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+        if vmin < full_min {
+            vmin = full_min;
+            vmax = vmin + vspan;
+        }
+        if vmax > full_max {
+            vmax = full_max;
+            vmin = vmax - vspan;
+        }
         *nav_view = Some((vmin, vmax));
     }
 }
@@ -506,7 +650,11 @@ fn make_tooltip<F: Fn(&TurnInfo) -> String>(
             lines.push(format!("{}: {}", name, fmt(t)));
         }
     }
-    if lines.len() > 1 { Some(lines.join("\n")) } else { None }
+    if lines.len() > 1 {
+        Some(lines.join("\n"))
+    } else {
+        None
+    }
 }
 
 fn panel_frame() -> egui::Frame {
@@ -519,12 +667,23 @@ fn panel_frame() -> egui::Frame {
 
 // (draw_subagent_tree, draw_legend_row, LegendStats moved to 2_legend.rs)
 
-
 // ---------------------------------------------------------------------------
 // Small mode (compact 3-row overlay for a single session)
 // ---------------------------------------------------------------------------
 
-fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage::UsageData, session_id: &str, _filter_set: &HashSet<String>, _filter_mode: &mut FilterMode, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, small_mode_session: &mut Option<String>) {
+fn draw_small(
+    ui: &mut egui::Ui,
+    data: &HudData,
+    _cd: &ChartData,
+    usage: &usage::UsageData,
+    session_id: &str,
+    _filter_set: &HashSet<String>,
+    _filter_mode: &mut FilterMode,
+    time_axis: &mut bool,
+    autofit: &mut bool,
+    nav_view: &mut Option<(f64, f64)>,
+    small_mode_session: &mut Option<String>,
+) {
     let area = ui.available_rect_before_wrap();
     let pad = 4.0;
     let gap = 3.0;
@@ -551,7 +710,11 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     let show_nav = budget >= nav_h_full + gap;
     let nav_budget = if show_nav { nav_h_full + gap } else { 0.0 };
     let show_legend = budget - nav_budget >= legend_h_full + gap;
-    let legend_budget = if show_legend { legend_h_full + gap } else { 0.0 };
+    let legend_budget = if show_legend {
+        legend_h_full + gap
+    } else {
+        0.0
+    };
     let charts_budget = budget - nav_budget - legend_budget;
     let show_charts = charts_budget >= min_chart_h;
 
@@ -561,17 +724,29 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     let nav_rect = egui::Rect::from_min_size(egui::pos2(x0, nav_y), egui::vec2(w, nav_h_full));
 
     let legend_y = nav_y + if show_nav { nav_h_full + gap } else { 0.0 };
-    let legend_rect = egui::Rect::from_min_size(egui::pos2(x0, legend_y), egui::vec2(w, legend_h_full));
+    let legend_rect =
+        egui::Rect::from_min_size(egui::pos2(x0, legend_y), egui::vec2(w, legend_h_full));
 
-    let charts_y = legend_y + if show_legend { legend_h_full + gap } else { 0.0 };
+    let charts_y = legend_y
+        + if show_legend {
+            legend_h_full + gap
+        } else {
+            0.0
+        };
     let charts_h = if show_charts { charts_budget } else { 0.0 };
     let chart_w = (w - gap) / 2.0;
-    let cost_rect = egui::Rect::from_min_size(egui::pos2(x0, charts_y), egui::vec2(chart_w, charts_h));
-    let tok_rect = egui::Rect::from_min_size(egui::pos2(x0 + chart_w + gap, charts_y), egui::vec2(chart_w, charts_h));
+    let cost_rect =
+        egui::Rect::from_min_size(egui::pos2(x0, charts_y), egui::vec2(chart_w, charts_h));
+    let tok_rect = egui::Rect::from_min_size(
+        egui::pos2(x0 + chart_w + gap, charts_y),
+        egui::vec2(chart_w, charts_h),
+    );
 
     // Find the selected session
     let selected_session = data.sessions.iter().find(|s| s.session_id == session_id);
-    let Some(session) = selected_session else { return; };
+    let Some(session) = selected_session else {
+        return;
+    };
 
     // --- Row 0: Controls + usage bars ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
@@ -583,41 +758,95 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
 
             // [▲ back]
             let btn_size = egui::vec2(46.0, btn_h);
-            let btn_rect = egui::Rect::from_min_size(egui::pos2(inner.left() + 2.0, cy - btn_h / 2.0), btn_size);
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(inner.left() + 2.0, cy - btn_h / 2.0),
+                btn_size,
+            );
             let btn_resp = ui.interact(btn_rect, egui::Id::new("small_back"), egui::Sense::click());
-            if btn_resp.clicked() { *small_mode_session = None; }
-            if btn_resp.hovered() {
-                painter.rect_filled(btn_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+            if btn_resp.clicked() {
+                *small_mode_session = None;
             }
-            painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER,
-                "▲ back", egui::FontId::monospace(8.0), Palette::TEXT_DIM);
+            if btn_resp.hovered() {
+                painter.rect_filled(
+                    btn_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
+            }
+            painter.text(
+                btn_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "▲ back",
+                egui::FontId::monospace(8.0),
+                Palette::TEXT_DIM,
+            );
 
             // "time" toggle
             let ta_label = if *time_axis { "● time" } else { "○ time" };
-            let ta_col = if *time_axis { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let ta_rect = egui::Rect::from_min_size(egui::pos2(btn_rect.right() + 4.0, cy - btn_h / 2.0), egui::vec2(46.0, btn_h));
-            let ta_resp = ui.interact(ta_rect, egui::Id::new("small_time_axis"), egui::Sense::click());
+            let ta_col = if *time_axis {
+                Palette::TEXT_BRIGHT
+            } else {
+                Palette::TEXT_DIM
+            };
+            let ta_rect = egui::Rect::from_min_size(
+                egui::pos2(btn_rect.right() + 4.0, cy - btn_h / 2.0),
+                egui::vec2(46.0, btn_h),
+            );
+            let ta_resp = ui.interact(
+                ta_rect,
+                egui::Id::new("small_time_axis"),
+                egui::Sense::click(),
+            );
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
-                *autofit = true; *nav_view = None;
+                *autofit = true;
+                *nav_view = None;
             }
             if ta_resp.hovered() {
-                painter.rect_filled(ta_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                painter.rect_filled(
+                    ta_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
             }
-            painter.text(ta_rect.center(), egui::Align2::CENTER_CENTER,
-                ta_label, egui::FontId::monospace(8.0), ta_col);
+            painter.text(
+                ta_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                ta_label,
+                egui::FontId::monospace(8.0),
+                ta_col,
+            );
 
             // "fit" button (time mode only)
             if *time_axis {
-                let fit_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 4.0, cy - btn_h / 2.0), egui::vec2(30.0, btn_h));
-                let fit_resp = ui.interact(fit_rect, egui::Id::new("small_fit"), egui::Sense::click());
-                if fit_resp.clicked() { *autofit = !*autofit; }
-                if *autofit || fit_resp.hovered() {
-                    painter.rect_filled(fit_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                let fit_rect = egui::Rect::from_min_size(
+                    egui::pos2(ta_rect.right() + 4.0, cy - btn_h / 2.0),
+                    egui::vec2(30.0, btn_h),
+                );
+                let fit_resp =
+                    ui.interact(fit_rect, egui::Id::new("small_fit"), egui::Sense::click());
+                if fit_resp.clicked() {
+                    *autofit = !*autofit;
                 }
-                let fit_col = if *autofit { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-                painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER,
-                    "fit", egui::FontId::monospace(8.0), fit_col);
+                if *autofit || fit_resp.hovered() {
+                    painter.rect_filled(
+                        fit_rect,
+                        3.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                    );
+                }
+                let fit_col = if *autofit {
+                    Palette::TEXT_BRIGHT
+                } else {
+                    Palette::TEXT_DIM
+                };
+                painter.text(
+                    fit_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "fit",
+                    egui::FontId::monospace(8.0),
+                    fit_col,
+                );
             }
 
             // Usage bars at right side of controls
@@ -630,26 +859,67 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 let usage_x = label_x - label_w - 2.0;
 
                 // "usage" label
-                painter.text(egui::pos2(usage_x, cy), egui::Align2::RIGHT_CENTER,
-                    "usage", egui::FontId::monospace(7.0), Palette::TEXT_DIM);
+                painter.text(
+                    egui::pos2(usage_x, cy),
+                    egui::Align2::RIGHT_CENTER,
+                    "usage",
+                    egui::FontId::monospace(7.0),
+                    Palette::TEXT_DIM,
+                );
 
                 // 5h bar
                 let fill_5h = (latest.five_hour as f32 / 100.0).clamp(0.0, 1.0);
-                let bar_5h = egui::Rect::from_min_size(egui::pos2(bar_x, cy - bar_h - 1.0), egui::vec2(bar_w, bar_h));
-                painter.rect_filled(bar_5h, 1.0, egui::Color32::from_rgba_unmultiplied(60, 55, 45, 100));
-                painter.rect_filled(egui::Rect::from_min_size(bar_5h.left_top(), egui::vec2(bar_w * fill_5h, bar_h)),
-                    1.0, egui::Color32::from_rgb(220, 160, 60));
-                painter.text(egui::pos2(label_x, bar_5h.center().y), egui::Align2::RIGHT_CENTER,
-                    &format!("5h {:>3.0}%", latest.five_hour), egui::FontId::monospace(7.0), egui::Color32::from_rgb(220, 160, 60));
+                let bar_5h = egui::Rect::from_min_size(
+                    egui::pos2(bar_x, cy - bar_h - 1.0),
+                    egui::vec2(bar_w, bar_h),
+                );
+                painter.rect_filled(
+                    bar_5h,
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 55, 45, 100),
+                );
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        bar_5h.left_top(),
+                        egui::vec2(bar_w * fill_5h, bar_h),
+                    ),
+                    1.0,
+                    egui::Color32::from_rgb(220, 160, 60),
+                );
+                painter.text(
+                    egui::pos2(label_x, bar_5h.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    &format!("5h {:>3.0}%", latest.five_hour),
+                    egui::FontId::monospace(7.0),
+                    egui::Color32::from_rgb(220, 160, 60),
+                );
 
                 // 7d bar
                 let fill_7d = (latest.seven_day as f32 / 100.0).clamp(0.0, 1.0);
-                let bar_7d = egui::Rect::from_min_size(egui::pos2(bar_x, cy + 1.0), egui::vec2(bar_w, bar_h));
-                painter.rect_filled(bar_7d, 1.0, egui::Color32::from_rgba_unmultiplied(60, 55, 45, 100));
-                painter.rect_filled(egui::Rect::from_min_size(bar_7d.left_top(), egui::vec2(bar_w * fill_7d, bar_h)),
-                    1.0, egui::Color32::from_rgb(100, 160, 220));
-                painter.text(egui::pos2(label_x, bar_7d.center().y), egui::Align2::RIGHT_CENTER,
-                    &format!("7d {:>3.0}%", latest.seven_day), egui::FontId::monospace(7.0), egui::Color32::from_rgb(100, 160, 220));
+                let bar_7d = egui::Rect::from_min_size(
+                    egui::pos2(bar_x, cy + 1.0),
+                    egui::vec2(bar_w, bar_h),
+                );
+                painter.rect_filled(
+                    bar_7d,
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 55, 45, 100),
+                );
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        bar_7d.left_top(),
+                        egui::vec2(bar_w * fill_7d, bar_h),
+                    ),
+                    1.0,
+                    egui::Color32::from_rgb(100, 160, 220),
+                );
+                painter.text(
+                    egui::pos2(label_x, bar_7d.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    &format!("7d {:>3.0}%", latest.seven_day),
+                    egui::FontId::monospace(7.0),
+                    egui::Color32::from_rgb(100, 160, 220),
+                );
             }
         });
     });
@@ -669,7 +939,10 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
             }
         }
     }
-    if all_x_min > all_x_max { all_x_min = now_min - 60.0; all_x_max = now_min; }
+    if all_x_min > all_x_max {
+        all_x_min = now_min - 60.0;
+        all_x_max = now_min;
+    }
     let data_span = (all_x_max - all_x_min).max(1.0);
     let full_min = all_x_min - data_span * 0.02;
     let full_max = all_x_max + data_span * 0.02;
@@ -688,10 +961,18 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     if show_nav {
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
             let bar = ui.available_rect_before_wrap();
-            let resp = ui.interact(bar, egui::Id::new("small_nav_bar"), egui::Sense::click_and_drag());
+            let resp = ui.interact(
+                bar,
+                egui::Id::new("small_nav_bar"),
+                egui::Sense::click_and_drag(),
+            );
             let painter = ui.painter();
 
-            painter.rect_filled(bar, 1.0, egui::Color32::from_rgba_unmultiplied(18, 15, 10, 200));
+            painter.rect_filled(
+                bar,
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(18, 15, 10, 200),
+            );
 
             let bar_w = bar.width();
             let cy = bar.center().y;
@@ -705,22 +986,34 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
                 let v0 = ((vmin - full_min) / full_span) as f32;
                 let v1 = ((vmax - full_min) / full_span) as f32;
-                let vp_left  = bar.left() + v0.clamp(0.0, 1.0) * bar_w;
+                let vp_left = bar.left() + v0.clamp(0.0, 1.0) * bar_w;
                 let vp_right = bar.left() + v1.clamp(0.0, 1.0) * bar_w;
 
                 if vp_left > bar.left() {
                     painter.rect_filled(
                         egui::Rect::from_min_max(bar.left_top(), egui::pos2(vp_left, bar.bottom())),
-                        0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+                    );
                 }
                 if vp_right < bar.right() {
                     painter.rect_filled(
-                        egui::Rect::from_min_max(egui::pos2(vp_right, bar.top()), bar.right_bottom()),
-                        0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+                        egui::Rect::from_min_max(
+                            egui::pos2(vp_right, bar.top()),
+                            bar.right_bottom(),
+                        ),
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+                    );
                 }
                 painter.rect_stroke(
-                    egui::Rect::from_min_max(egui::pos2(vp_left, bar.top()), egui::pos2(vp_right, bar.bottom())),
-                    1.0, egui::Stroke::new(0.5, Palette::TEXT_DIM));
+                    egui::Rect::from_min_max(
+                        egui::pos2(vp_left, bar.top()),
+                        egui::pos2(vp_right, bar.bottom()),
+                    ),
+                    1.0,
+                    egui::Stroke::new(0.5, Palette::TEXT_DIM),
+                );
 
                 // Drag to pan
                 if resp.dragged() {
@@ -729,9 +1022,16 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                     let dx_min = (dx_px / bar_w) as f64 * full_span;
                     let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
                     let vspan = vmax - vmin;
-                    vmin += dx_min; vmax += dx_min;
-                    if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
-                    if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+                    vmin += dx_min;
+                    vmax += dx_min;
+                    if vmin < full_min {
+                        vmin = full_min;
+                        vmax = vmin + vspan;
+                    }
+                    if vmax > full_max {
+                        vmax = full_max;
+                        vmin = vmax - vspan;
+                    }
                     *nav_view = Some((vmin, vmax));
                 }
 
@@ -742,7 +1042,8 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                     let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
                     let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
                     let vspan = vmax - vmin;
-                    let mouse_frac = ui.input(|i| i.pointer.hover_pos())
+                    let mouse_frac = ui
+                        .input(|i| i.pointer.hover_pos())
                         .map(|p| ((p.x - bar.left()) / bar_w).clamp(0.0, 1.0) as f64)
                         .unwrap_or(0.5);
                     let anchor = full_min + mouse_frac * full_span;
@@ -761,9 +1062,16 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                     let dx_min = -(scroll_x as f64 / bar_w as f64) * full_span;
                     let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
                     let vspan = vmax - vmin;
-                    vmin += dx_min; vmax += dx_min;
-                    if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
-                    if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+                    vmin += dx_min;
+                    vmax += dx_min;
+                    if vmin < full_min {
+                        vmin = full_min;
+                        vmax = vmin + vspan;
+                    }
+                    if vmax > full_max {
+                        vmax = full_max;
+                        vmin = vmax - vspan;
+                    }
                     *nav_view = Some((vmin, vmax));
                 }
             }
@@ -781,9 +1089,17 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 let cost_str = scene::format_cost(session.total_cost_usd);
                 let tok_str = scene::format_tokens(total_tokens);
                 let model_str = scene::short_model_label(&session.model);
-                let label = format!("{} | {} | {} | {}", session.project, cost_str, tok_str, model_str);
-                painter.text(egui::pos2(inner.left() + 4.0, cy), egui::Align2::LEFT_CENTER,
-                    &label, egui::FontId::monospace(10.0), Palette::TEXT_BRIGHT);
+                let label = format!(
+                    "{} | {} | {} | {}",
+                    session.project, cost_str, tok_str, model_str
+                );
+                painter.text(
+                    egui::pos2(inner.left() + 4.0, cy),
+                    egui::Align2::LEFT_CENTER,
+                    &label,
+                    egui::FontId::monospace(10.0),
+                    Palette::TEXT_BRIGHT,
+                );
                 if session.is_active {
                     painter.circle_filled(egui::pos2(inner.right() - 8.0, cy), 3.0, sess_col);
                 }
@@ -792,33 +1108,66 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     }
 
     // --- Row 3: Two charts (only if space) ---
-    if !show_charts { return; }
-    struct TurnData { x: f64, cost: f64, total_cost: f64, toks: u64, total_toks: u64, idx: usize }
+    if !show_charts {
+        return;
+    }
+    struct TurnData {
+        x: f64,
+        cost: f64,
+        total_cost: f64,
+        toks: u64,
+        total_toks: u64,
+        idx: usize,
+    }
     let mut turns: Vec<TurnData> = vec![];
     let mut cum_cost = 0.0f64;
     let mut cum_toks = 0u64;
     let mut api_idx = 0usize;
     for ev in &session.events {
-        if let Event::ApiCall { input_cost_usd, output_cost_usd, input_tokens, output_tokens, timestamp_secs, .. } = ev {
-            let x = if is_time { *timestamp_secs as f64 / 60.0 } else { api_idx as f64 };
+        if let Event::ApiCall {
+            input_cost_usd,
+            output_cost_usd,
+            input_tokens,
+            output_tokens,
+            timestamp_secs,
+            ..
+        } = ev
+        {
+            let x = if is_time {
+                *timestamp_secs as f64 / 60.0
+            } else {
+                api_idx as f64
+            };
             let cost = input_cost_usd + output_cost_usd;
             let toks = input_tokens + output_tokens;
             cum_cost += cost;
             cum_toks += toks;
-            turns.push(TurnData { x, cost, total_cost: cum_cost, toks, total_toks: cum_toks, idx: api_idx });
+            turns.push(TurnData {
+                x,
+                cost,
+                total_cost: cum_cost,
+                toks,
+                total_toks: cum_toks,
+                idx: api_idx,
+            });
             api_idx += 1;
         }
     }
 
     let cursor_id = egui::Id::new("small_charts_cursor");
     let bar_w = if is_time { 0.5 } else { 0.8 };
-    let line_style = if is_time { egui_plot::LineStyle::Dashed { length: 8.0 } } else { egui_plot::LineStyle::Solid };
+    let line_style = if is_time {
+        egui_plot::LineStyle::Dashed { length: 8.0 }
+    } else {
+        egui_plot::LineStyle::Solid
+    };
     let hovered_data_x = std::cell::Cell::new(None::<f64>);
 
     // Cost chart
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(cost_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            let cost_bars: Vec<Bar> = turns.iter()
+            let cost_bars: Vec<Bar> = turns
+                .iter()
                 .map(|t| Bar::new(t.x, t.cost).width(bar_w).fill(Palette::INPUT_TINT))
                 .collect();
             let cost_line: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_cost]).collect();
@@ -830,26 +1179,50 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 .show_axes([false, false])
                 .show_grid(false);
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+                p = p
+                    .include_x(vmin)
+                    .include_x(vmax)
+                    .auto_bounds(egui::Vec2b::new(false, true));
             }
             let plot_resp = p.show(ui, |pui| {
                 pui.bar_chart(BarChart::new(cost_bars).color(Palette::INPUT_TINT));
                 if !cost_line.is_empty() {
-                    pui.line(egui_plot::Line::new(cost_line).color(Palette::OUTPUT_TINT).width(1.5).style(line_style));
+                    pui.line(
+                        egui_plot::Line::new(cost_line)
+                            .color(Palette::OUTPUT_TINT)
+                            .width(1.5)
+                            .style(line_style),
+                    );
                 }
             });
-            if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
+            if is_time {
+                handle_chart_nav(
+                    ui.ctx(),
+                    &plot_resp.response,
+                    plot_resp.transform.bounds(),
+                    nav_view,
+                    full_min,
+                    full_max,
+                    autofit,
+                );
+            }
 
             ui.painter().text(
                 egui::pos2(cost_rect.right() - 4.0, cost_rect.top() + 2.0),
-                egui::Align2::RIGHT_TOP, &format_cost(cum_cost),
-                egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+                egui::Align2::RIGHT_TOP,
+                &format_cost(cum_cost),
+                egui::FontId::monospace(10.0),
+                Palette::TEXT_DIM,
+            );
 
             // Capture hover x from this chart
             if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                 if cost_rect.contains(hover_pos) {
-                    if let Some(px) = plot_resp.response.hover_pos()
-                        .map(|p| plot_resp.transform.value_from_position(p).x) {
+                    if let Some(px) = plot_resp
+                        .response
+                        .hover_pos()
+                        .map(|p| plot_resp.transform.value_from_position(p).x)
+                    {
                         hovered_data_x.set(Some(px));
                     }
                 }
@@ -860,10 +1233,16 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
     // Token chart
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tok_rect), |ui| {
         panel_frame().show(ui, |ui| {
-            let tok_bars: Vec<Bar> = turns.iter()
-                .map(|t| Bar::new(t.x, t.toks as f64).width(bar_w).fill(Palette::OUTPUT_TINT))
+            let tok_bars: Vec<Bar> = turns
+                .iter()
+                .map(|t| {
+                    Bar::new(t.x, t.toks as f64)
+                        .width(bar_w)
+                        .fill(Palette::OUTPUT_TINT)
+                })
                 .collect();
-            let tok_line: Vec<[f64; 2]> = turns.iter().map(|t| [t.x, t.total_toks as f64]).collect();
+            let tok_line: Vec<[f64; 2]> =
+                turns.iter().map(|t| [t.x, t.total_toks as f64]).collect();
 
             let mut p = base_plot("small_tok")
                 .link_cursor(cursor_id, true, false)
@@ -872,26 +1251,50 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
                 .show_axes([false, false])
                 .show_grid(false);
             if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+                p = p
+                    .include_x(vmin)
+                    .include_x(vmax)
+                    .auto_bounds(egui::Vec2b::new(false, true));
             }
             let plot_resp = p.show(ui, |pui| {
                 pui.bar_chart(BarChart::new(tok_bars).color(Palette::OUTPUT_TINT));
                 if !tok_line.is_empty() {
-                    pui.line(egui_plot::Line::new(tok_line).color(Palette::INPUT_TINT).width(1.5).style(line_style));
+                    pui.line(
+                        egui_plot::Line::new(tok_line)
+                            .color(Palette::INPUT_TINT)
+                            .width(1.5)
+                            .style(line_style),
+                    );
                 }
             });
-            if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
+            if is_time {
+                handle_chart_nav(
+                    ui.ctx(),
+                    &plot_resp.response,
+                    plot_resp.transform.bounds(),
+                    nav_view,
+                    full_min,
+                    full_max,
+                    autofit,
+                );
+            }
 
             ui.painter().text(
                 egui::pos2(tok_rect.right() - 4.0, tok_rect.top() + 2.0),
-                egui::Align2::RIGHT_TOP, &format_tokens(cum_toks),
-                egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+                egui::Align2::RIGHT_TOP,
+                &format_tokens(cum_toks),
+                egui::FontId::monospace(10.0),
+                Palette::TEXT_DIM,
+            );
 
             // Capture hover x from this chart
             if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                 if tok_rect.contains(hover_pos) {
-                    if let Some(px) = plot_resp.response.hover_pos()
-                        .map(|p| plot_resp.transform.value_from_position(p).x) {
+                    if let Some(px) = plot_resp
+                        .response
+                        .hover_pos()
+                        .map(|p| plot_resp.transform.value_from_position(p).x)
+                    {
                         hovered_data_x.set(Some(px));
                     }
                 }
@@ -901,31 +1304,60 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
 
     // Both tooltips + navigator cursor (triggered by hovering either chart)
     if let Some(data_x) = hovered_data_x.get() {
-        if let Some(t) = turns.iter().min_by(|a, b|
-            (a.x - data_x).abs().partial_cmp(&(b.x - data_x).abs()).unwrap())
-        {
+        if let Some(t) = turns.iter().min_by(|a, b| {
+            (a.x - data_x)
+                .abs()
+                .partial_cmp(&(b.x - data_x).abs())
+                .unwrap()
+        }) {
             let font = egui::FontId::monospace(9.0);
             let tip_bg = egui::Color32::from_rgb(20, 18, 14);
 
             // Cost tooltip
-            let cost_tip = format!("t{}  {}  total {}", t.idx + 1, format_cost(t.cost), format_cost(t.total_cost));
-            let cost_galley = ui.painter().layout_no_wrap(cost_tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
+            let cost_tip = format!(
+                "t{}  {}  total {}",
+                t.idx + 1,
+                format_cost(t.cost),
+                format_cost(t.total_cost)
+            );
+            let cost_galley =
+                ui.painter()
+                    .layout_no_wrap(cost_tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
             let cost_tip_rect = egui::Rect::from_min_size(
                 egui::pos2(cost_rect.left() + 2.0, cost_rect.top() + 2.0),
-                cost_galley.size() + egui::vec2(8.0, 4.0));
+                cost_galley.size() + egui::vec2(8.0, 4.0),
+            );
             ui.painter().rect_filled(cost_tip_rect, 2.0, tip_bg);
-            ui.painter().text(cost_tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP,
-                &cost_tip, font.clone(), Palette::TEXT_BRIGHT);
+            ui.painter().text(
+                cost_tip_rect.min + egui::vec2(4.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                &cost_tip,
+                font.clone(),
+                Palette::TEXT_BRIGHT,
+            );
 
             // Token tooltip
-            let tok_tip = format!("t{}  {}  total {}", t.idx + 1, format_tokens(t.toks), format_tokens(t.total_toks));
-            let tok_galley = ui.painter().layout_no_wrap(tok_tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
+            let tok_tip = format!(
+                "t{}  {}  total {}",
+                t.idx + 1,
+                format_tokens(t.toks),
+                format_tokens(t.total_toks)
+            );
+            let tok_galley =
+                ui.painter()
+                    .layout_no_wrap(tok_tip.clone(), font.clone(), Palette::TEXT_BRIGHT);
             let tok_tip_rect = egui::Rect::from_min_size(
                 egui::pos2(tok_rect.left() + 2.0, tok_rect.top() + 2.0),
-                tok_galley.size() + egui::vec2(8.0, 4.0));
+                tok_galley.size() + egui::vec2(8.0, 4.0),
+            );
             ui.painter().rect_filled(tok_tip_rect, 2.0, tip_bg);
-            ui.painter().text(tok_tip_rect.min + egui::vec2(4.0, 2.0), egui::Align2::LEFT_TOP,
-                &tok_tip, font, Palette::TEXT_BRIGHT);
+            ui.painter().text(
+                tok_tip_rect.min + egui::vec2(4.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                &tok_tip,
+                font,
+                Palette::TEXT_BRIGHT,
+            );
         }
 
         // Cursor line on navigator
@@ -933,19 +1365,33 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
         let px = nav_rect.left() + frac * nav_rect.width();
         if px >= nav_rect.left() && px <= nav_rect.right() {
             ui.painter().line_segment(
-                [egui::pos2(px, nav_rect.top()), egui::pos2(px, nav_rect.bottom())],
-                egui::Stroke::new(1.0, Palette::TEXT_BRIGHT));
+                [
+                    egui::pos2(px, nav_rect.top()),
+                    egui::pos2(px, nav_rect.bottom()),
+                ],
+                egui::Stroke::new(1.0, Palette::TEXT_BRIGHT),
+            );
 
             // Timestamp label under cursor line
             if is_time {
                 let epoch_secs = (data_x * 60.0) as u64;
                 let label = format_epoch_local(epoch_secs);
                 let font = egui::FontId::monospace(7.0);
-                let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), Palette::TEXT_DIM);
+                let galley =
+                    ui.painter()
+                        .layout_no_wrap(label.clone(), font.clone(), Palette::TEXT_DIM);
                 let label_w = galley.size().x;
-                let label_x = px.clamp(nav_rect.left() + label_w * 0.5 + 1.0, nav_rect.right() - label_w * 0.5 - 1.0);
-                ui.painter().text(egui::pos2(label_x, nav_rect.bottom() + 1.0),
-                    egui::Align2::CENTER_TOP, &label, font, Palette::TEXT_DIM);
+                let label_x = px.clamp(
+                    nav_rect.left() + label_w * 0.5 + 1.0,
+                    nav_rect.right() - label_w * 0.5 - 1.0,
+                );
+                ui.painter().text(
+                    egui::pos2(label_x, nav_rect.bottom() + 1.0),
+                    egui::Align2::CENTER_TOP,
+                    &label,
+                    font,
+                    Palette::TEXT_DIM,
+                );
             }
         }
     }
@@ -955,7 +1401,26 @@ fn draw_small(ui: &mut egui::Ui, data: &HudData, _cd: &ChartData, usage: &usage:
 // Big dashboard layout
 // ---------------------------------------------------------------------------
 
-fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::UsageData, filter_set: &mut HashSet<String>, filter_mode: &mut FilterMode, show_active_only: &mut bool, show_bars: &mut bool, effective_hidden: &HashSet<String>, time_axis: &mut bool, autofit: &mut bool, nav_view: &mut Option<(f64, f64)>, expanded_groups: &mut HashSet<String>, expanded_sessions: &mut HashSet<String>, small_mode_session: &mut Option<String>, chart_vis: &mut ChartVisibility, show_budget: &mut bool, billing: &mut BillingConfig) {
+fn draw_big(
+    ui: &mut egui::Ui,
+    data: &HudData,
+    cd: &ChartData,
+    usage: &usage::UsageData,
+    filter_set: &mut HashSet<String>,
+    filter_mode: &mut FilterMode,
+    show_active_only: &mut bool,
+    show_bars: &mut bool,
+    effective_hidden: &HashSet<String>,
+    time_axis: &mut bool,
+    autofit: &mut bool,
+    nav_view: &mut Option<(f64, f64)>,
+    expanded_groups: &mut HashSet<String>,
+    expanded_sessions: &mut HashSet<String>,
+    small_mode_session: &mut Option<String>,
+    chart_vis: &mut ChartVisibility,
+    show_budget: &mut bool,
+    billing: &mut BillingConfig,
+) {
     let area = ui.available_rect_before_wrap();
     let pad = 8.0;
     let gap = 8.0;
@@ -971,10 +1436,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
     // Row 0.5: time navigator strip (always visible, compact)
     let nav_h = 16.0_f32;
-    let nav_rect = egui::Rect::from_min_size(
-        egui::pos2(x0, y0 + controls_h + gap),
-        egui::vec2(w, nav_h),
-    );
+    let nav_rect =
+        egui::Rect::from_min_size(egui::pos2(x0, y0 + controls_h + gap), egui::vec2(w, nav_h));
     let after_nav_y = y0 + controls_h + gap + nav_h + gap;
 
     // Row 1: legend strip -- group sessions by cwd, one row per group
@@ -996,34 +1459,66 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
     let base_energy_h = (h * 0.14).clamp(60.0, 130.0);
     let base_weekly_h = (h * 0.12).max(45.0);
-    let energy_row_h = if show_energy_water { base_energy_h } else { 0.0 };
+    let energy_row_h = if show_energy_water {
+        base_energy_h
+    } else {
+        0.0
+    };
     let weekly_h = if show_totals { base_weekly_h } else { 0.0 };
     let energy_gap = if show_energy_water { gap } else { 0.0 };
     let weekly_gap = if show_totals { gap } else { 0.0 };
 
-    let fixed_overhead = controls_h + gap + nav_h + gap + legend_h + energy_row_h + energy_gap + weekly_h + weekly_gap;
-    let chart_h = if show_cost_tok { (h - fixed_overhead - gap).max(40.0) } else { 0.0 };
+    let fixed_overhead = controls_h
+        + gap
+        + nav_h
+        + gap
+        + legend_h
+        + energy_row_h
+        + energy_gap
+        + weekly_h
+        + weekly_gap;
+    let chart_h = if show_cost_tok {
+        (h - fixed_overhead - gap).max(40.0)
+    } else {
+        0.0
+    };
     let chart_gap = if show_cost_tok { gap } else { 0.0 };
 
-    let legend_rect = egui::Rect::from_min_size(egui::pos2(x0, after_nav_y), egui::vec2(w, legend_h));
+    let legend_rect =
+        egui::Rect::from_min_size(egui::pos2(x0, after_nav_y), egui::vec2(w, legend_h));
 
-    let cost_w  = w * 0.50;
-    let tok_w   = w * 0.26;
-    let tool_w  = w - cost_w - tok_w - gap * 2.0;
+    let cost_w = w * 0.50;
+    let tok_w = w * 0.26;
+    let tool_w = w - cost_w - tok_w - gap * 2.0;
     let chart_y = after_nav_y + legend_h + chart_gap;
 
-    let cost_rect     = egui::Rect::from_min_size(egui::pos2(x0, chart_y), egui::vec2(cost_w, chart_h));
-    let tok_rect     = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, chart_y), egui::vec2(tok_w, chart_h));
+    let cost_rect = egui::Rect::from_min_size(egui::pos2(x0, chart_y), egui::vec2(cost_w, chart_h));
+    let tok_rect = egui::Rect::from_min_size(
+        egui::pos2(x0 + cost_w + gap, chart_y),
+        egui::vec2(tok_w, chart_h),
+    );
     let usage_chart_h = (chart_h * 0.45).floor();
     let tool_h = chart_h - usage_chart_h - gap;
     let right_x = x0 + cost_w + tok_w + gap * 2.0;
-    let usage_rect   = egui::Rect::from_min_size(egui::pos2(right_x, chart_y), egui::vec2(tool_w, usage_chart_h));
-    let tool_rect    = egui::Rect::from_min_size(egui::pos2(right_x, chart_y + usage_chart_h + gap), egui::vec2(tool_w, tool_h));
+    let usage_rect = egui::Rect::from_min_size(
+        egui::pos2(right_x, chart_y),
+        egui::vec2(tool_w, usage_chart_h),
+    );
+    let tool_rect = egui::Rect::from_min_size(
+        egui::pos2(right_x, chart_y + usage_chart_h + gap),
+        egui::vec2(tool_w, tool_h),
+    );
     // Row 3: per-turn energy (Wh) + per-turn water (mL), each with cumulative overlay
     let energy_y = chart_y + chart_h + energy_gap;
     let energy_half = (w - gap) / 2.0;
-    let energy_wh_rect = egui::Rect::from_min_size(egui::pos2(x0, energy_y), egui::vec2(energy_half, energy_row_h));
-    let water_ml_rect = egui::Rect::from_min_size(egui::pos2(x0 + energy_half + gap, energy_y), egui::vec2(energy_half, energy_row_h));
+    let energy_wh_rect = egui::Rect::from_min_size(
+        egui::pos2(x0, energy_y),
+        egui::vec2(energy_half, energy_row_h),
+    );
+    let water_ml_rect = egui::Rect::from_min_size(
+        egui::pos2(x0 + energy_half + gap, energy_y),
+        egui::vec2(energy_half, energy_row_h),
+    );
 
     let totals_y = energy_y + energy_row_h + weekly_gap;
     let totals_rect = egui::Rect::from_min_size(egui::pos2(x0, totals_y), egui::vec2(w, weekly_h));
@@ -1041,15 +1536,22 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let is_time = *time_axis;
 
     // Formatter for x-axis in time mode: minutes-from-epoch -> relative label
-    let time_x_fmt = move |v: egui_plot::GridMark, _range: &std::ops::RangeInclusive<f64>| -> String {
-        let ago_min = now_min - v.value;
-        if ago_min < 0.5 { return "now".into(); }
-        if ago_min < 60.0 { return format!("{}m", ago_min.round() as i64); }
-        let ago_h = ago_min / 60.0;
-        if ago_h < 24.0 { return format!("{:.0}h", ago_h); }
-        let ago_d = ago_h / 24.0;
-        format!("{:.0}d", ago_d)
-    };
+    let time_x_fmt =
+        move |v: egui_plot::GridMark, _range: &std::ops::RangeInclusive<f64>| -> String {
+            let ago_min = now_min - v.value;
+            if ago_min < 0.5 {
+                return "now".into();
+            }
+            if ago_min < 60.0 {
+                return format!("{}m", ago_min.round() as i64);
+            }
+            let ago_h = ago_min / 60.0;
+            if ago_h < 24.0 {
+                return format!("{:.0}h", ago_h);
+            }
+            let ago_d = ago_h / 24.0;
+            format!("{:.0}d", ago_d)
+        };
 
     // --- controls strip ---
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
@@ -1063,10 +1565,21 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 FilterMode::Include => "include",
                 FilterMode::Exclude => "exclude",
             };
-            let mode_col = if filter_set.is_empty() { Palette::TEXT_DIM } else { Palette::TEXT_BRIGHT };
+            let mode_col = if filter_set.is_empty() {
+                Palette::TEXT_DIM
+            } else {
+                Palette::TEXT_BRIGHT
+            };
             let btn_size = egui::vec2(70.0, controls_h - 6.0);
-            let btn_rect = egui::Rect::from_min_size(egui::pos2(inner.left() + 2.0, cy - btn_size.y / 2.0), btn_size);
-            let btn_resp = ui.interact(btn_rect, egui::Id::new("ctrl_filter_mode"), egui::Sense::click());
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(inner.left() + 2.0, cy - btn_size.y / 2.0),
+                btn_size,
+            );
+            let btn_resp = ui.interact(
+                btn_rect,
+                egui::Id::new("ctrl_filter_mode"),
+                egui::Sense::click(),
+            );
             if btn_resp.clicked() {
                 *filter_mode = match *filter_mode {
                     FilterMode::Include => FilterMode::Exclude,
@@ -1075,83 +1588,234 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 // Don't clear -- each mode has its own independent set
             }
             if btn_resp.hovered() {
-                painter.rect_filled(btn_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                painter.rect_filled(
+                    btn_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
             }
-            painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER,
-                mode_label, egui::FontId::monospace(10.0), mode_col);
+            painter.text(
+                btn_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                mode_label,
+                egui::FontId::monospace(10.0),
+                mode_col,
+            );
             // Clear filter set button
             if !filter_set.is_empty() {
-                let clr_rect = egui::Rect::from_min_size(egui::pos2(btn_rect.right() + 4.0, cy - btn_size.y / 2.0), egui::vec2(20.0, btn_size.y));
-                let clr_resp = ui.interact(clr_rect, egui::Id::new("ctrl_filter_clear"), egui::Sense::click());
-                if clr_resp.clicked() { filter_set.clear(); }
-                if clr_resp.hovered() {
-                    painter.rect_filled(clr_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                let clr_rect = egui::Rect::from_min_size(
+                    egui::pos2(btn_rect.right() + 4.0, cy - btn_size.y / 2.0),
+                    egui::vec2(20.0, btn_size.y),
+                );
+                let clr_resp = ui.interact(
+                    clr_rect,
+                    egui::Id::new("ctrl_filter_clear"),
+                    egui::Sense::click(),
+                );
+                if clr_resp.clicked() {
+                    filter_set.clear();
                 }
-                painter.text(clr_rect.center(), egui::Align2::CENTER_CENTER,
-                    "x", egui::FontId::monospace(10.0), Palette::TEXT_DIM);
+                if clr_resp.hovered() {
+                    painter.rect_filled(
+                        clr_rect,
+                        3.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                    );
+                }
+                painter.text(
+                    clr_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "x",
+                    egui::FontId::monospace(10.0),
+                    Palette::TEXT_DIM,
+                );
             }
 
             // Next button x-cursor (advances after each button)
             let mut bx = btn_rect.right() + if filter_set.is_empty() { 8.0 } else { 30.0 };
 
             // "active" toggle
-            let ao_label = if *show_active_only { "● active" } else { "○ active" };
-            let ao_col = if *show_active_only { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let ao_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
-            let ao_resp = ui.interact(ao_rect, egui::Id::new("ctrl_active_only"), egui::Sense::click());
-            if ao_resp.clicked() { *show_active_only = !*show_active_only; }
-            if ao_resp.hovered() { painter.rect_filled(ao_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12)); }
-            painter.text(ao_rect.center(), egui::Align2::CENTER_CENTER, ao_label, egui::FontId::monospace(10.0), ao_col);
+            let ao_label = if *show_active_only {
+                "● active"
+            } else {
+                "○ active"
+            };
+            let ao_col = if *show_active_only {
+                Palette::TEXT_BRIGHT
+            } else {
+                Palette::TEXT_DIM
+            };
+            let ao_rect = egui::Rect::from_min_size(
+                egui::pos2(bx, cy - btn_size.y / 2.0),
+                egui::vec2(60.0, btn_size.y),
+            );
+            let ao_resp = ui.interact(
+                ao_rect,
+                egui::Id::new("ctrl_active_only"),
+                egui::Sense::click(),
+            );
+            if ao_resp.clicked() {
+                *show_active_only = !*show_active_only;
+            }
+            if ao_resp.hovered() {
+                painter.rect_filled(
+                    ao_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
+            }
+            painter.text(
+                ao_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                ao_label,
+                egui::FontId::monospace(10.0),
+                ao_col,
+            );
             bx = ao_rect.right() + 4.0;
 
             // "bars" toggle -- hide per-turn bars, show only cumulative lines
             let bars_label = if *show_bars { "● bars" } else { "○ bars" };
-            let bars_col = if *show_bars { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let bars_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(50.0, btn_size.y));
-            let bars_resp = ui.interact(bars_rect, egui::Id::new("ctrl_show_bars"), egui::Sense::click());
-            if bars_resp.clicked() { *show_bars = !*show_bars; }
-            if bars_resp.hovered() { painter.rect_filled(bars_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12)); }
-            painter.text(bars_rect.center(), egui::Align2::CENTER_CENTER, bars_label, egui::FontId::monospace(10.0), bars_col);
+            let bars_col = if *show_bars {
+                Palette::TEXT_BRIGHT
+            } else {
+                Palette::TEXT_DIM
+            };
+            let bars_rect = egui::Rect::from_min_size(
+                egui::pos2(bx, cy - btn_size.y / 2.0),
+                egui::vec2(50.0, btn_size.y),
+            );
+            let bars_resp = ui.interact(
+                bars_rect,
+                egui::Id::new("ctrl_show_bars"),
+                egui::Sense::click(),
+            );
+            if bars_resp.clicked() {
+                *show_bars = !*show_bars;
+            }
+            if bars_resp.hovered() {
+                painter.rect_filled(
+                    bars_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
+            }
+            painter.text(
+                bars_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                bars_label,
+                egui::FontId::monospace(10.0),
+                bars_col,
+            );
             bx = bars_rect.right() + 4.0;
 
             // "budget" toggle -- swap usage chart with billing period budget chart
-            let bdg_label = if *show_budget { "● budget" } else { "○ budget" };
-            let bdg_col = if *show_budget { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let bdg_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
-            let bdg_resp = ui.interact(bdg_rect, egui::Id::new("ctrl_show_budget"), egui::Sense::click());
-            if bdg_resp.clicked() { *show_budget = !*show_budget; }
-            if bdg_resp.hovered() { painter.rect_filled(bdg_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12)); }
-            painter.text(bdg_rect.center(), egui::Align2::CENTER_CENTER, bdg_label, egui::FontId::monospace(10.0), bdg_col);
+            let bdg_label = if *show_budget {
+                "● budget"
+            } else {
+                "○ budget"
+            };
+            let bdg_col = if *show_budget {
+                Palette::TEXT_BRIGHT
+            } else {
+                Palette::TEXT_DIM
+            };
+            let bdg_rect = egui::Rect::from_min_size(
+                egui::pos2(bx, cy - btn_size.y / 2.0),
+                egui::vec2(60.0, btn_size.y),
+            );
+            let bdg_resp = ui.interact(
+                bdg_rect,
+                egui::Id::new("ctrl_show_budget"),
+                egui::Sense::click(),
+            );
+            if bdg_resp.clicked() {
+                *show_budget = !*show_budget;
+            }
+            if bdg_resp.hovered() {
+                painter.rect_filled(
+                    bdg_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
+            }
+            painter.text(
+                bdg_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                bdg_label,
+                egui::FontId::monospace(10.0),
+                bdg_col,
+            );
             bx = bdg_rect.right() + 4.0;
 
             // "time axis" toggle button
             let ta_label = if *time_axis { "● time" } else { "○ time" };
-            let ta_col = if *time_axis { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-            let ta_rect = egui::Rect::from_min_size(egui::pos2(bx, cy - btn_size.y / 2.0), egui::vec2(60.0, btn_size.y));
-            let ta_resp = ui.interact(ta_rect, egui::Id::new("ctrl_time_axis"), egui::Sense::click());
+            let ta_col = if *time_axis {
+                Palette::TEXT_BRIGHT
+            } else {
+                Palette::TEXT_DIM
+            };
+            let ta_rect = egui::Rect::from_min_size(
+                egui::pos2(bx, cy - btn_size.y / 2.0),
+                egui::vec2(60.0, btn_size.y),
+            );
+            let ta_resp = ui.interact(
+                ta_rect,
+                egui::Id::new("ctrl_time_axis"),
+                egui::Sense::click(),
+            );
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
-                if *time_axis { *show_bars = false; }
+                if *time_axis {
+                    *show_bars = false;
+                }
                 *autofit = true;
                 *nav_view = None;
             }
             if ta_resp.hovered() {
-                painter.rect_filled(ta_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                painter.rect_filled(
+                    ta_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
             }
-            painter.text(ta_rect.center(), egui::Align2::CENTER_CENTER,
-                ta_label, egui::FontId::monospace(10.0), ta_col);
+            painter.text(
+                ta_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                ta_label,
+                egui::FontId::monospace(10.0),
+                ta_col,
+            );
 
             // "fit" button -- resets navigator zoom in time mode
             if *time_axis {
-                let af_rect = egui::Rect::from_min_size(egui::pos2(ta_rect.right() + 8.0, cy - btn_size.y / 2.0), egui::vec2(50.0, btn_size.y));
-                let af_resp = ui.interact(af_rect, egui::Id::new("ctrl_autofit"), egui::Sense::click());
-                if af_resp.clicked() { *autofit = !*autofit; }
-                if *autofit || af_resp.hovered() {
-                    painter.rect_filled(af_rect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                let af_rect = egui::Rect::from_min_size(
+                    egui::pos2(ta_rect.right() + 8.0, cy - btn_size.y / 2.0),
+                    egui::vec2(50.0, btn_size.y),
+                );
+                let af_resp =
+                    ui.interact(af_rect, egui::Id::new("ctrl_autofit"), egui::Sense::click());
+                if af_resp.clicked() {
+                    *autofit = !*autofit;
                 }
-                let fit_col = if *autofit { Palette::TEXT_BRIGHT } else { Palette::TEXT_DIM };
-                painter.text(af_rect.center(), egui::Align2::CENTER_CENTER,
-                    "fit", egui::FontId::monospace(10.0), fit_col);
+                if *autofit || af_resp.hovered() {
+                    painter.rect_filled(
+                        af_rect,
+                        3.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                    );
+                }
+                let fit_col = if *autofit {
+                    Palette::TEXT_BRIGHT
+                } else {
+                    Palette::TEXT_DIM
+                };
+                painter.text(
+                    af_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "fit",
+                    egui::FontId::monospace(10.0),
+                    fit_col,
+                );
             }
 
             // Chart section visibility toggles (right-aligned)
@@ -1168,15 +1832,37 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let mut vtog_x = inner.right() - vtog_total_w - 4.0;
             for (label, getter, toggler) in vis_toggles {
                 let on = getter(chart_vis);
-                let vrect = egui::Rect::from_min_size(egui::pos2(vtog_x, cy - btn_size.y / 2.0), egui::vec2(vtog_w, btn_size.y));
-                let vresp = ui.interact(vrect, egui::Id::new(("vis_toggle", *label)), egui::Sense::click());
-                if vresp.clicked() { toggler(chart_vis); }
-                if vresp.hovered() {
-                    painter.rect_filled(vrect, 3.0, egui::Color32::from_rgba_unmultiplied(255,255,255,12));
+                let vrect = egui::Rect::from_min_size(
+                    egui::pos2(vtog_x, cy - btn_size.y / 2.0),
+                    egui::vec2(vtog_w, btn_size.y),
+                );
+                let vresp = ui.interact(
+                    vrect,
+                    egui::Id::new(("vis_toggle", *label)),
+                    egui::Sense::click(),
+                );
+                if vresp.clicked() {
+                    toggler(chart_vis);
                 }
-                let vcol = if on { Palette::TEXT_BRIGHT } else { egui::Color32::from_rgba_unmultiplied(100, 90, 75, 120) };
-                painter.text(vrect.center(), egui::Align2::CENTER_CENTER,
-                    *label, egui::FontId::monospace(9.0), vcol);
+                if vresp.hovered() {
+                    painter.rect_filled(
+                        vrect,
+                        3.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                    );
+                }
+                let vcol = if on {
+                    Palette::TEXT_BRIGHT
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(100, 90, 75, 120)
+                };
+                painter.text(
+                    vrect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    *label,
+                    egui::FontId::monospace(9.0),
+                    vcol,
+                );
                 vtog_x += vtog_w + vtog_gap;
             }
         });
@@ -1189,7 +1875,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     let mut all_x_max = f64::MIN;
     let mut all_dots: Vec<(f64, egui::Color32)> = vec![];
     for (si, session) in data.sessions.iter().enumerate() {
-        if effective_hidden.contains(&session.session_id) { continue; }
+        if effective_hidden.contains(&session.session_id) {
+            continue;
+        }
         let col = scene_to_egui(session_color(si));
         let alpha = if session.is_active { 200u8 } else { 50u8 };
         let dot_col = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
@@ -1204,7 +1892,10 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             }
         }
     }
-    if all_x_min > all_x_max { all_x_min = now_min - 60.0; all_x_max = now_min; }
+    if all_x_min > all_x_max {
+        all_x_min = now_min - 60.0;
+        all_x_max = now_min;
+    }
     let data_span = (all_x_max - all_x_min).max(1.0);
     // Pad 2% on each side
     let full_min = all_x_min - data_span * 0.02;
@@ -1216,7 +1907,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         let mut fit_min = f64::MAX;
         let mut fit_max = f64::MIN;
         for session in &data.sessions {
-            if effective_hidden.contains(&session.session_id) { continue; }
+            if effective_hidden.contains(&session.session_id) {
+                continue;
+            }
             if session.first_ts > 0 {
                 fit_min = fit_min.min(session.first_ts as f64 / 60.0);
                 fit_max = fit_max.max(session.last_ts as f64 / 60.0);
@@ -1235,7 +1928,10 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
         // Bottom separator
         painter.line_segment(
-            [egui::pos2(bar.left(), bar.bottom()), egui::pos2(bar.right(), bar.bottom())],
+            [
+                egui::pos2(bar.left(), bar.bottom()),
+                egui::pos2(bar.right(), bar.bottom()),
+            ],
             egui::Stroke::new(0.5, Palette::SEPARATOR),
         );
 
@@ -1253,26 +1949,32 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
             let v0 = ((vmin - full_min) / full_span) as f32;
             let v1 = ((vmax - full_min) / full_span) as f32;
-            let vp_left  = bar.left() + v0.clamp(0.0, 1.0) * bar_w;
+            let vp_left = bar.left() + v0.clamp(0.0, 1.0) * bar_w;
             let vp_right = bar.left() + v1.clamp(0.0, 1.0) * bar_w;
 
             // Dim areas outside viewport
             if vp_left > bar.left() {
                 painter.rect_filled(
                     egui::Rect::from_min_max(bar.left_top(), egui::pos2(vp_left, bar.bottom())),
-                    0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
                 );
             }
             if vp_right < bar.right() {
                 painter.rect_filled(
                     egui::Rect::from_min_max(egui::pos2(vp_right, bar.top()), bar.right_bottom()),
-                    0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
                 );
             }
             // Viewport border
             painter.rect_stroke(
-                egui::Rect::from_min_max(egui::pos2(vp_left, bar.top()), egui::pos2(vp_right, bar.bottom())),
-                1.0, egui::Stroke::new(1.0, Palette::TEXT_DIM),
+                egui::Rect::from_min_max(
+                    egui::pos2(vp_left, bar.top()),
+                    egui::pos2(vp_right, bar.bottom()),
+                ),
+                1.0,
+                egui::Stroke::new(1.0, Palette::TEXT_DIM),
             );
 
             // Handle drag: pan the viewport
@@ -1285,8 +1987,14 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 vmin += dx_min;
                 vmax += dx_min;
                 // Clamp to full range
-                if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
-                if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+                if vmin < full_min {
+                    vmin = full_min;
+                    vmax = vmin + vspan;
+                }
+                if vmax > full_max {
+                    vmax = full_max;
+                    vmin = vmax - vspan;
+                }
                 *nav_view = Some((vmin, vmax));
             }
 
@@ -1297,7 +2005,8 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
                 let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
                 let vspan = vmax - vmin;
-                let mouse_frac = ui.input(|i| i.pointer.hover_pos())
+                let mouse_frac = ui
+                    .input(|i| i.pointer.hover_pos())
                     .map(|p| ((p.x - bar.left()) / bar_w).clamp(0.0, 1.0) as f64)
                     .unwrap_or(0.5);
                 let anchor = full_min + mouse_frac * full_span;
@@ -1316,9 +2025,16 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                 let dx_min = -(scroll_x as f64 / bar_w as f64) * full_span;
                 let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
                 let vspan = vmax - vmin;
-                vmin += dx_min; vmax += dx_min;
-                if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
-                if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+                vmin += dx_min;
+                vmax += dx_min;
+                if vmin < full_min {
+                    vmin = full_min;
+                    vmax = vmin + vspan;
+                }
+                if vmax > full_max {
+                    vmax = full_max;
+                    vmin = vmax - vspan;
+                }
                 *nav_view = Some((vmin, vmax));
             }
         }
@@ -1330,13 +2046,23 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             let frac = i as f64 / n_labels as f64;
             let t = full_min + frac * full_span;
             let ago_min = now_min - t;
-            let label = if ago_min.abs() < 1.0 { "now".into() }
-                else if ago_min < 60.0 { format!("{}m", ago_min.round() as i64) }
-                else if ago_min < 24.0 * 60.0 { format!("{:.0}h", ago_min / 60.0) }
-                else { format!("{:.0}d", ago_min / (24.0 * 60.0)) };
+            let label = if ago_min.abs() < 1.0 {
+                "now".into()
+            } else if ago_min < 60.0 {
+                format!("{}m", ago_min.round() as i64)
+            } else if ago_min < 24.0 * 60.0 {
+                format!("{:.0}h", ago_min / 60.0)
+            } else {
+                format!("{:.0}d", ago_min / (24.0 * 60.0))
+            };
             let px = bar.left() + frac as f32 * bar_w;
-            painter.text(egui::pos2(px, bar.bottom() - 1.0), egui::Align2::CENTER_BOTTOM,
-                &label, label_font.clone(), Palette::TEXT_DIM);
+            painter.text(
+                egui::pos2(px, bar.bottom() - 1.0),
+                egui::Align2::CENTER_BOTTOM,
+                &label,
+                label_font.clone(),
+                Palette::TEXT_DIM,
+            );
         }
     });
 
@@ -1345,12 +2071,19 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     groups.sort_by(|a, b| {
         let a_active = a.1.iter().any(|(si, _)| data.sessions[*si].is_active);
         let b_active = b.1.iter().any(|(si, _)| data.sessions[*si].is_active);
-        b_active.cmp(&a_active)
-            .then_with(|| {
-                let a_cost: f64 = a.1.iter().map(|(si, _)| data.sessions[*si].total_cost_usd).sum();
-                let b_cost: f64 = b.1.iter().map(|(si, _)| data.sessions[*si].total_cost_usd).sum();
-                b_cost.partial_cmp(&a_cost).unwrap_or(std::cmp::Ordering::Equal)
-            })
+        b_active.cmp(&a_active).then_with(|| {
+            let a_cost: f64 =
+                a.1.iter()
+                    .map(|(si, _)| data.sessions[*si].total_cost_usd)
+                    .sum();
+            let b_cost: f64 =
+                b.1.iter()
+                    .map(|(si, _)| data.sessions[*si].total_cost_usd)
+                    .sum();
+            b_cost
+                .partial_cmp(&a_cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     // Within each group, put active sessions first
     for (_, members) in &mut groups {
@@ -1363,29 +2096,51 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
     // Legend panel (StripBuilder-based, see 2_legend.rs)
     let actions = legend::draw_legend_panel(
-        ui, legend_rect, &data, &groups,
-        filter_set, effective_hidden, expanded_groups, expanded_sessions,
-        week_start_secs, week_span,
+        ui,
+        legend_rect,
+        &data,
+        &groups,
+        filter_set,
+        effective_hidden,
+        expanded_groups,
+        expanded_sessions,
+        week_start_secs,
+        week_span,
     );
-    actions.apply(filter_set, expanded_groups, expanded_sessions, small_mode_session);
-
+    actions.apply(filter_set, expanded_groups, expanded_sessions);
 
     let cursor_id = egui::Id::new("all_charts_cursor");
     let hover_id = egui::Id::new("hud_hover_turn");
     let panel_hl_id = egui::Id::new("panel_highlight");
-    let panel_hl: PanelHighlight = ui.ctx().data(|d| d.get_temp(panel_hl_id).unwrap_or_default());
+    let panel_hl: PanelHighlight = ui
+        .ctx()
+        .data(|d| d.get_temp(panel_hl_id).unwrap_or_default());
 
     // Clear hover state when pointer is outside chart areas or left the window.
     let mut all_charts_rect = egui::Rect::NOTHING;
-    if chart_vis.cost { all_charts_rect = all_charts_rect.union(cost_rect); }
-    if chart_vis.tokens { all_charts_rect = all_charts_rect.union(tok_rect); }
-    if chart_vis.energy { all_charts_rect = all_charts_rect.union(energy_wh_rect); }
-    if chart_vis.water { all_charts_rect = all_charts_rect.union(water_ml_rect); }
-    if chart_vis.totals { all_charts_rect = all_charts_rect.union(totals_rect); }
+    if chart_vis.cost {
+        all_charts_rect = all_charts_rect.union(cost_rect);
+    }
+    if chart_vis.tokens {
+        all_charts_rect = all_charts_rect.union(tok_rect);
+    }
+    if chart_vis.energy {
+        all_charts_rect = all_charts_rect.union(energy_wh_rect);
+    }
+    if chart_vis.water {
+        all_charts_rect = all_charts_rect.union(water_ml_rect);
+    }
+    if chart_vis.totals {
+        all_charts_rect = all_charts_rect.union(totals_rect);
+    }
     all_charts_rect = all_charts_rect.union(usage_rect); // usage/budget slot
     match ui.ctx().input(|i| i.pointer.hover_pos()) {
-        None => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
-        Some(pos) if !all_charts_rect.contains(pos) => { ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id)); }
+        None => {
+            ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
+        }
+        Some(pos) if !all_charts_rect.contains(pos) => {
+            ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
+        }
         _ => {}
     }
 
@@ -1420,9 +2175,10 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     };
     let hl_threshold = (visible_span * 0.03).max(if is_time { 2.0 } else { 0.6 });
     let hovered_sessions: Vec<bool> = if let Some(hx) = effective_hover_x {
-        cd.session_turns.iter().map(|(_, _, turns)| {
-            turns.iter().any(|t| (t.x - hx).abs() < hl_threshold)
-        }).collect()
+        cd.session_turns
+            .iter()
+            .map(|(_, _, turns)| turns.iter().any(|t| (t.x - hx).abs() < hl_threshold))
+            .collect()
     } else {
         vec![]
     };
@@ -1445,11 +2201,12 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
         // Draw highlight VLine at effective position (pinned or live).
         // In non-time mode, Budget uses time-x while other charts use turn-x.
         // Skip VLine when coordinate systems don't match to avoid auto-bounds explosion.
-        let coords_match = is_time || match (prev_hover.as_ref().map(|hs| hs.source), source) {
-            (Some(HoverSource::Budget), HoverSource::Budget) => true,
-            (Some(HoverSource::Budget), _) | (_, HoverSource::Budget) => false,
-            _ => true,
-        };
+        let coords_match = is_time
+            || match (prev_hover.as_ref().map(|hs| hs.source), source) {
+                (Some(HoverSource::Budget), HoverSource::Budget) => true,
+                (Some(HoverSource::Budget), _) | (_, HoverSource::Budget) => false,
+                _ => true,
+            };
         let vline_x = if is_pinned {
             pinned_x
         } else if coords_match {
@@ -1461,14 +2218,21 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             pui.vline(VLine::new(x).color(hover_vline_color).width(1.0));
         }
         // When pinned, don't update hover state -- tooltip data stays frozen
-        if is_pinned { return; }
-        let Some(hover_pos) = pui.ctx().input(|i| i.pointer.hover_pos()) else { return };
+        if is_pinned {
+            return;
+        }
+        let Some(hover_pos) = pui.ctx().input(|i| i.pointer.hover_pos()) else {
+            return;
+        };
         let b = pui.plot_bounds();
         let s_min = pui.screen_from_plot(egui_plot::PlotPoint::new(b.min()[0], b.min()[1]));
         let s_max = pui.screen_from_plot(egui_plot::PlotPoint::new(b.max()[0], b.max()[1]));
-        if !egui::Rect::from_two_pos(s_min, s_max).contains(hover_pos) { return; }
+        if !egui::Rect::from_two_pos(s_min, s_max).contains(hover_pos) {
+            return;
+        }
         let x = pui.plot_from_screen(hover_pos).x;
-        pui.ctx().data_mut(|d| d.insert_temp(hover_id, HoverState { x, source }));
+        pui.ctx()
+            .data_mut(|d| d.insert_temp(hover_id, HoverState { x, source }));
     };
 
     // Called after each chart's show(): if clicked and something is hovered, toggle pin.
@@ -1483,7 +2247,10 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         d.remove::<HoverState>(pinned_hover_id);
                     });
                 } else {
-                    let cursor = resp.ctx.input(|i| i.pointer.hover_pos()).unwrap_or_default();
+                    let cursor = resp
+                        .ctx
+                        .input(|i| i.pointer.hover_pos())
+                        .unwrap_or_default();
                     resp.ctx.data_mut(|d| {
                         d.insert_temp(pinned_x_id, hs.x);
                         d.insert_temp(pinned_pos_id, cursor);
@@ -1502,7 +2269,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
     // Read legend highlight for drawing VLines on charts
     let legend_hl_id = egui::Id::new("legend_highlight");
-    let _legend_hl: LegendHighlight = ui.ctx().data(|d| d.get_temp(legend_hl_id).unwrap_or_default());
+    let _legend_hl: LegendHighlight = ui
+        .ctx()
+        .data(|d| d.get_temp(legend_hl_id).unwrap_or_default());
     let hl_color = egui::Color32::from_rgba_unmultiplied(220, 60, 60, 140);
     let _draw_legend_hl = |pui: &mut egui_plot::PlotUi, hl: &LegendHighlight| {
         for (start, end) in &hl.ranges {
@@ -1514,36 +2283,67 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     };
 
     // --- cost per-turn chart with total cost overlay (right Y) ---
-    if chart_vis.cost { ui.allocate_new_ui(egui::UiBuilder::new().max_rect(cost_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            let total_label = if let Some(last) = cd.combined_cost_pts.last() {
-                format!("total {}", format_cost(last[1]))
-            } else { String::new() };
-            draw_chart_label(ui, "cost / turn", "input  cached  output", &total_label);
-            // Scale cumulative lines into bar Y-range: map [0..total_cost_max] -> [0..per_turn_in_cost_max]
-            let cost_scale = if cd.total_cost_max > 0.0 { cd.per_turn_in_cost_max / cd.total_cost_max } else { 1.0 };
-            let mut p = base_plot("cost_big")
-                .link_cursor(cursor_id, true, false)
-                .include_y(cd.per_turn_in_cost_max)
-                .include_y(-cd.per_turn_out_cost_max)
-                .y_axis_formatter(move |v, _| {
-                    let abs = v.value.abs();
-                    if abs < 1e-9 { String::new() } else { format_cost(abs) }
-                })
-                .show_axes([false, true])
-                .show_grid(true);
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-            }
-            let plot_resp = p.show(ui, |pui| {
+    if chart_vis.cost {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(cost_rect), |ui| {
+            panel_frame().show(ui, |ui| {
+                let total_label = if let Some(last) = cd.combined_cost_pts.last() {
+                    format!("total {}", format_cost(last[1]))
+                } else {
+                    String::new()
+                };
+                draw_chart_label(ui, "cost / turn", "input  cached  output", &total_label);
+                // Scale cumulative lines into bar Y-range: map [0..total_cost_max] -> [0..per_turn_in_cost_max]
+                let cost_scale = if cd.total_cost_max > 0.0 {
+                    cd.per_turn_in_cost_max / cd.total_cost_max
+                } else {
+                    1.0
+                };
+                let mut p = base_plot("cost_big")
+                    .link_cursor(cursor_id, true, false)
+                    .include_y(cd.per_turn_in_cost_max)
+                    .include_y(-cd.per_turn_out_cost_max)
+                    .y_axis_formatter(move |v, _| {
+                        let abs = v.value.abs();
+                        if abs < 1e-9 {
+                            String::new()
+                        } else {
+                            format_cost(abs)
+                        }
+                    })
+                    .show_axes([false, true])
+                    .show_grid(true);
+                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    p = p
+                        .include_x(vmin)
+                        .include_x(vmax)
+                        .auto_bounds(egui::Vec2b::new(false, true));
+                }
+                let plot_resp = p.show(ui, |pui| {
                     if *show_bars {
-                        let fresh = BarChart::new(bars_to_egui_hl(&cd.in_cost_fresh_bars, &hovered_sessions)).name("fresh$");
-                        let read = BarChart::new(bars_to_egui_hl(&cd.in_cost_cache_read_bars, &hovered_sessions)).name("read$").stack_on(&[&fresh]);
-                        let create = BarChart::new(bars_to_egui_hl(&cd.in_cost_cache_create_bars, &hovered_sessions)).name("create$").stack_on(&[&fresh, &read]);
+                        let fresh = BarChart::new(bars_to_egui_hl(
+                            &cd.in_cost_fresh_bars,
+                            &hovered_sessions,
+                        ))
+                        .name("fresh$");
+                        let read = BarChart::new(bars_to_egui_hl(
+                            &cd.in_cost_cache_read_bars,
+                            &hovered_sessions,
+                        ))
+                        .name("read$")
+                        .stack_on(&[&fresh]);
+                        let create = BarChart::new(bars_to_egui_hl(
+                            &cd.in_cost_cache_create_bars,
+                            &hovered_sessions,
+                        ))
+                        .name("create$")
+                        .stack_on(&[&fresh, &read]);
                         pui.bar_chart(fresh);
                         pui.bar_chart(read);
                         pui.bar_chart(create);
-                        pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.out_cost_bars, &hovered_sessions)).name("gen$"));
+                        pui.bar_chart(
+                            BarChart::new(bars_to_egui_hl(&cd.out_cost_bars, &hovered_sessions))
+                                .name("gen$"),
+                        );
                     }
                     // Overlay: total cost lines scaled into bar coordinate space
                     for (si, (color, points)) in cd.total_cost_lines.iter().enumerate() {
@@ -1554,54 +2354,104 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         } else {
                             (0.12, 1.0)
                         };
-                        let scaled: Vec<[f64; 2]> = points.iter().map(|[x, y]| [*x, y * cost_scale]).collect();
-                        pui.line(egui_plot::Line::new(scaled)
-                            .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
+                        let scaled: Vec<[f64; 2]> =
+                            points.iter().map(|[x, y]| [*x, y * cost_scale]).collect();
+                        pui.line(
+                            egui_plot::Line::new(scaled)
+                                .color(scene_to_egui(*color).gamma_multiply(alpha))
+                                .width(w),
+                        );
                     }
                     if show_markers {
-                        render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
+                        render_egui::render_markers(
+                            pui,
+                            &scene::build_markers(
+                                &cd.agent_xs,
+                                &cd.skill_xs,
+                                &cd.compaction_xs,
+                                &panel_hl.key,
+                            ),
+                        );
                     }
                     update_hover_src(pui, HoverSource::Cost);
                 });
-            if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
-            try_pin(&plot_resp.response);
+                if is_time {
+                    handle_chart_nav(
+                        ui.ctx(),
+                        &plot_resp.response,
+                        plot_resp.transform.bounds(),
+                        nav_view,
+                        full_min,
+                        full_max,
+                        autofit,
+                    );
+                }
+                try_pin(&plot_resp.response);
+            });
         });
-    }); }
+    }
 
     // --- token per-turn chart with total token overlay (right Y) ---
-    if chart_vis.tokens { ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tok_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            let total_tok_label = if cd.total_tok_max > 0.0 {
-                format!("total {}", format_tokens(cd.total_tok_max as u64))
-            } else { String::new() };
-            draw_chart_label(ui, "tokens / turn", "in  out", &total_tok_label);
-            // Scale total token lines into bar Y-range
-            let tok_scale = if cd.total_tok_max > 0.0 { cd.in_max / cd.total_tok_max } else { 1.0 };
-            let mut p = base_plot("tok_big")
-                .link_cursor(cursor_id, true, false)
-                .auto_bounds(egui::Vec2b::new(true, true))
-                .y_axis_formatter(move |v, _| {
-                    let abs = v.value.abs();
-                    if abs < 0.5 { return String::new(); }
-                    format_tokens(abs.round() as u64)
-                })
-                .y_grid_spacer(token_grid_spacer)
-                .show_axes([false, true])
-                .show_grid(true);
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-            }
-            let plot_resp = p.show(ui, |pui| {
+    if chart_vis.tokens {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tok_rect), |ui| {
+            panel_frame().show(ui, |ui| {
+                let total_tok_label = if cd.total_tok_max > 0.0 {
+                    format!("total {}", format_tokens(cd.total_tok_max as u64))
+                } else {
+                    String::new()
+                };
+                draw_chart_label(ui, "tokens / turn", "in  out", &total_tok_label);
+                // Scale total token lines into bar Y-range
+                let tok_scale = if cd.total_tok_max > 0.0 {
+                    cd.in_max / cd.total_tok_max
+                } else {
+                    1.0
+                };
+                let mut p = base_plot("tok_big")
+                    .link_cursor(cursor_id, true, false)
+                    .auto_bounds(egui::Vec2b::new(true, true))
+                    .y_axis_formatter(move |v, _| {
+                        let abs = v.value.abs();
+                        if abs < 0.5 {
+                            return String::new();
+                        }
+                        format_tokens(abs.round() as u64)
+                    })
+                    .y_grid_spacer(token_grid_spacer)
+                    .show_axes([false, true])
+                    .show_grid(true);
+                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    p = p
+                        .include_x(vmin)
+                        .include_x(vmax)
+                        .auto_bounds(egui::Vec2b::new(false, true));
+                }
+                let plot_resp = p.show(ui, |pui| {
                     if *show_bars {
-                        let fresh = BarChart::new(bars_to_egui_hl(&cd.in_tok_fresh_bars, &hovered_sessions)).name("fresh");
-                        let read = BarChart::new(bars_to_egui_hl(&cd.in_tok_cache_read_bars, &hovered_sessions)).name("cached");
-                        let create = BarChart::new(bars_to_egui_hl(&cd.in_tok_cache_create_bars, &hovered_sessions)).name("create");
+                        let fresh = BarChart::new(bars_to_egui_hl(
+                            &cd.in_tok_fresh_bars,
+                            &hovered_sessions,
+                        ))
+                        .name("fresh");
+                        let read = BarChart::new(bars_to_egui_hl(
+                            &cd.in_tok_cache_read_bars,
+                            &hovered_sessions,
+                        ))
+                        .name("cached");
+                        let create = BarChart::new(bars_to_egui_hl(
+                            &cd.in_tok_cache_create_bars,
+                            &hovered_sessions,
+                        ))
+                        .name("create");
                         let read = read.stack_on(&[&fresh]);
                         let create = create.stack_on(&[&fresh, &read]);
                         pui.bar_chart(fresh);
                         pui.bar_chart(read);
                         pui.bar_chart(create);
-                        pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.out_tok_bars, &hovered_sessions)).name("out"));
+                        pui.bar_chart(
+                            BarChart::new(bars_to_egui_hl(&cd.out_tok_bars, &hovered_sessions))
+                                .name("out"),
+                        );
                     }
                     // Overlay: total token lines (input solid, output dashed) scaled into bar space
                     for (si, (color, in_pts, out_pts)) in cd.total_tok_lines.iter().enumerate() {
@@ -1612,20 +2462,39 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                         } else {
                             (0.12, 1.0)
                         };
-                        let scaled_in: Vec<[f64; 2]> = in_pts.iter().map(|[x, y]| [*x, y * tok_scale]).collect();
-                        let scaled_out: Vec<[f64; 2]> = out_pts.iter().map(|[x, y]| [*x, -y * tok_scale]).collect();
-                        pui.line(egui_plot::Line::new(scaled_in)
-                            .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
-                        pui.line(egui_plot::Line::new(scaled_out)
-                            .color(scene_to_egui(*color).gamma_multiply(alpha * 0.7)).width(w * 0.6)
-                            .style(egui_plot::LineStyle::Dashed { length: 6.0 }));
+                        let scaled_in: Vec<[f64; 2]> =
+                            in_pts.iter().map(|[x, y]| [*x, y * tok_scale]).collect();
+                        let scaled_out: Vec<[f64; 2]> =
+                            out_pts.iter().map(|[x, y]| [*x, -y * tok_scale]).collect();
+                        pui.line(
+                            egui_plot::Line::new(scaled_in)
+                                .color(scene_to_egui(*color).gamma_multiply(alpha))
+                                .width(w),
+                        );
+                        pui.line(
+                            egui_plot::Line::new(scaled_out)
+                                .color(scene_to_egui(*color).gamma_multiply(alpha * 0.7))
+                                .width(w * 0.6)
+                                .style(egui_plot::LineStyle::Dashed { length: 6.0 }),
+                        );
                     }
                     update_hover_src(pui, HoverSource::Tokens);
                 });
-            if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
-            try_pin(&plot_resp.response);
+                if is_time {
+                    handle_chart_nav(
+                        ui.ctx(),
+                        &plot_resp.response,
+                        plot_resp.transform.bounds(),
+                        nav_view,
+                        full_min,
+                        full_max,
+                        autofit,
+                    );
+                }
+                try_pin(&plot_resp.response);
+            });
         });
-    }); }
+    }
 
     // --- usage / budget chart (mutually exclusive, share the same slot) ---
     // Clear session hover tooltip when pointer is over this panel
@@ -1636,297 +2505,538 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     }
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(usage_rect), |ui| {
         panel_frame().show(ui, |ui| {
-          if *show_budget {
-            // --- budget chart: cumulative cost within billing period vs limit ---
-            let period_start_x = billing.period_start_x();
-            let period_cost_pts: Vec<[f64; 2]> = cd.budget_cost_pts.iter()
-                .filter(|p| p[0] >= period_start_x)
-                .copied()
-                .collect();
-            let period_spent = period_cost_pts.last().map(|p| p[1]).unwrap_or(0.0)
-                - period_cost_pts.first().map(|p| p[1]).unwrap_or(0.0);
-            let pct = if billing.limit_usd > 0.0 { (period_spent / billing.limit_usd * 100.0).min(999.0) } else { 0.0 };
-            let pct_color = if pct > 90.0 { egui::Color32::from_rgb(220, 60, 60) }
-                else if pct > 70.0 { egui::Color32::from_rgb(220, 160, 60) }
-                else { Palette::TEXT_BRIGHT };
-
-            let label = format!("{} / {} ({:.0}%)", format_cost(period_spent), format_cost(billing.limit_usd), pct);
-            draw_chart_label(ui, "budget", &label, "");
-
-            // Clickable config row: [day] [limit] controls
-            let config_h = 14.0;
-            let (config_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), config_h), egui::Sense::hover());
-            let painter = ui.painter();
-            let font = egui::FontId::monospace(9.0);
-            let cy = config_rect.center().y;
-
-            // Reset day control: < day >
-            let day_label = format!("reset day {}", billing.reset_day);
-            let day_rect = egui::Rect::from_min_size(config_rect.min, egui::vec2(90.0, config_h));
-            painter.text(day_rect.center(), egui::Align2::CENTER_CENTER, &day_label, font.clone(), Palette::TEXT_DIM);
-            let dec_rect = egui::Rect::from_min_size(egui::pos2(day_rect.left(), cy - 6.0), egui::vec2(12.0, 12.0));
-            let inc_rect = egui::Rect::from_min_size(egui::pos2(day_rect.right() - 12.0, cy - 6.0), egui::vec2(12.0, 12.0));
-            if ui.interact(dec_rect, egui::Id::new("budget_day_dec"), egui::Sense::click()).clicked() {
-                billing.reset_day = if billing.reset_day <= 1 { 28 } else { billing.reset_day - 1 };
-                billing.save();
-            }
-            if ui.interact(inc_rect, egui::Id::new("budget_day_inc"), egui::Sense::click()).clicked() {
-                billing.reset_day = if billing.reset_day >= 28 { 1 } else { billing.reset_day + 1 };
-                billing.save();
-            }
-            painter.text(dec_rect.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
-            painter.text(inc_rect.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
-
-            // (painter ref ends here -- mutable ui calls below need exclusive access)
-
-            // Limit input row
-            let input_h = 20.0;
-            let (lim_row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), input_h), egui::Sense::hover());
-            let lim_cy = lim_row.center().y;
-            let lim_input_rect = egui::Rect::from_min_size(egui::pos2(lim_row.left() + 40.0, lim_row.top() + 1.0), egui::vec2(80.0, input_h - 2.0));
-            let mut lim_buf = billing.limit_input_buf.clone();
-            let lim_te = egui::TextEdit::singleline(&mut lim_buf)
-                .font(font.clone())
-                .desired_width(70.0)
-                .text_color(Palette::TEXT_BRIGHT);
-            let lim_te_resp = ui.put(lim_input_rect, lim_te);
-            billing.limit_input_buf = lim_buf.clone();
-            if lim_te_resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
-                let clean = lim_buf.trim().trim_start_matches('$');
-                if let Ok(val) = clean.parse::<f64>() {
-                    billing.limit_usd = val.max(1.0);
-                    billing.save();
-                }
-            }
-            ui.painter().text(egui::pos2(lim_row.left() + 2.0, lim_cy), egui::Align2::LEFT_CENTER,
-                "limit", font.clone(), Palette::TEXT_DIM);
-
-            // Web-reported total row
-            let web_h = 20.0;
-            let (web_row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), web_h), egui::Sense::hover());
-            let web_cy = web_row.center().y;
-            let input_rect = egui::Rect::from_min_size(egui::pos2(web_row.left() + 40.0, web_row.top() + 1.0), egui::vec2(80.0, web_h - 2.0));
-            let mut buf = billing.web_input_buf.clone();
-            let te = egui::TextEdit::singleline(&mut buf)
-                .font(font.clone())
-                .desired_width(60.0)
-                .text_color(egui::Color32::from_rgb(180, 140, 220));
-            let te_resp = ui.put(input_rect, te);
-            billing.web_input_buf = buf.clone();
-            if te_resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
-                let clean = buf.trim().trim_start_matches('$');
-                if let Ok(val) = clean.parse::<f64>() {
-                    let now_epoch = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                    billing.web_reported = Some((val, now_epoch));
-                    billing.save();
-                }
-            }
-            // Clear button interaction (must happen before re-borrowing painter)
-            let x_rect = egui::Rect::from_min_size(egui::pos2(web_row.right() - 16.0, web_cy - 6.0), egui::vec2(12.0, 12.0));
-            let clear_clicked = if billing.web_reported.is_some() {
-                ui.interact(x_rect, egui::Id::new("budget_web_clear"), egui::Sense::click()).clicked()
-            } else { false };
-            if clear_clicked { billing.web_reported = None; billing.web_input_buf.clear(); billing.save(); }
-            // Now paint text (re-borrow painter)
-            let painter = ui.painter();
-            let web_color = egui::Color32::from_rgb(180, 140, 220);
-            painter.text(egui::pos2(web_row.left() + 2.0, web_cy), egui::Align2::LEFT_CENTER, "web $", font.clone(), web_color);
-            let info_x = web_row.left() + 118.0;
-            if let Some((val, ts)) = billing.web_reported {
-                let ago_min = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as f64 - ts as f64) / 60.0;
-                let ago = if ago_min < 1.0 { "just now".into() }
-                    else if ago_min < 60.0 { format!("{:.0}m ago", ago_min) }
-                    else if ago_min < 24.0 * 60.0 { format!("{:.1}h ago", ago_min / 60.0) }
-                    else { format!("{:.1}d ago", ago_min / (24.0 * 60.0)) };
-                painter.text(egui::pos2(info_x, web_cy), egui::Align2::LEFT_CENTER,
-                    &format!("{} as of {}", format_cost(val), ago), font.clone(), web_color);
-                painter.text(x_rect.center(), egui::Align2::CENTER_CENTER, "x", font.clone(), Palette::TEXT_DIM);
-            } else {
-                painter.text(egui::pos2(info_x, web_cy), egui::Align2::LEFT_CENTER,
-                    "enter total from web, press enter", font.clone(), Palette::TEXT_DIM);
-            }
-
-            // The chart: cumulative cost within period, zeroed at period start
-            if !period_cost_pts.is_empty() {
-                let base_cost = period_cost_pts.first().map(|p| p[1]).unwrap_or(0.0);
-                let zeroed: Vec<[f64; 2]> = period_cost_pts.iter()
-                    .map(|[x, y]| [*x, y - base_cost])
+            if *show_budget {
+                // --- budget chart: cumulative cost within billing period vs limit ---
+                let period_start_x = billing.period_start_x();
+                let period_cost_pts: Vec<[f64; 2]> = cd
+                    .budget_cost_pts
+                    .iter()
+                    .filter(|p| p[0] >= period_start_x)
+                    .copied()
                     .collect();
-
-                let budget_y_fmt = move |v: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
-                    if v.value < 0.001 { String::new() } else { format_cost(v.value) }
+                let period_spent = period_cost_pts.last().map(|p| p[1]).unwrap_or(0.0)
+                    - period_cost_pts.first().map(|p| p[1]).unwrap_or(0.0);
+                let pct = if billing.limit_usd > 0.0 {
+                    (period_spent / billing.limit_usd * 100.0).min(999.0)
+                } else {
+                    0.0
+                };
+                let pct_color = if pct > 90.0 {
+                    egui::Color32::from_rgb(220, 60, 60)
+                } else if pct > 70.0 {
+                    egui::Color32::from_rgb(220, 160, 60)
+                } else {
+                    Palette::TEXT_BRIGHT
                 };
 
-                let mut p = Plot::new("budget_period")
-                    .show_axes([true, true])
-                    .show_grid(true)
-                    .allow_zoom(false)
-                    .allow_drag(false)
-                    .allow_scroll(false)
-                    .show_background(false)
-                    .set_margin_fraction(egui::Vec2::ZERO)
-                    .auto_bounds(egui::Vec2b::new(true, true))
-                    .include_y(0.0)
-                    .include_y(billing.limit_usd * 1.05)
-                    .y_axis_formatter(budget_y_fmt)
-                    .x_axis_formatter(time_x_fmt);
-                // In time mode, share viewport with other charts; otherwise auto-fit to billing period
-                if is_time {
-                    p = p.link_cursor(cursor_id, true, false);
-                    if let Some((vmin, vmax)) = *nav_view {
-                        p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
+                let label = format!(
+                    "{} / {} ({:.0}%)",
+                    format_cost(period_spent),
+                    format_cost(billing.limit_usd),
+                    pct
+                );
+                draw_chart_label(ui, "budget", &label, "");
+
+                // Clickable config row: [day] [limit] controls
+                let config_h = 14.0;
+                let (config_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), config_h),
+                    egui::Sense::hover(),
+                );
+                let painter = ui.painter();
+                let font = egui::FontId::monospace(9.0);
+                let cy = config_rect.center().y;
+
+                // Reset day control: < day >
+                let day_label = format!("reset day {}", billing.reset_day);
+                let day_rect =
+                    egui::Rect::from_min_size(config_rect.min, egui::vec2(90.0, config_h));
+                painter.text(
+                    day_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &day_label,
+                    font.clone(),
+                    Palette::TEXT_DIM,
+                );
+                let dec_rect = egui::Rect::from_min_size(
+                    egui::pos2(day_rect.left(), cy - 6.0),
+                    egui::vec2(12.0, 12.0),
+                );
+                let inc_rect = egui::Rect::from_min_size(
+                    egui::pos2(day_rect.right() - 12.0, cy - 6.0),
+                    egui::vec2(12.0, 12.0),
+                );
+                if ui
+                    .interact(
+                        dec_rect,
+                        egui::Id::new("budget_day_dec"),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+                {
+                    billing.reset_day = if billing.reset_day <= 1 {
+                        28
+                    } else {
+                        billing.reset_day - 1
+                    };
+                    billing.save();
+                }
+                if ui
+                    .interact(
+                        inc_rect,
+                        egui::Id::new("budget_day_inc"),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+                {
+                    billing.reset_day = if billing.reset_day >= 28 {
+                        1
+                    } else {
+                        billing.reset_day + 1
+                    };
+                    billing.save();
+                }
+                painter.text(
+                    dec_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "<",
+                    font.clone(),
+                    Palette::TEXT_BRIGHT,
+                );
+                painter.text(
+                    inc_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    ">",
+                    font.clone(),
+                    Palette::TEXT_BRIGHT,
+                );
+
+                // (painter ref ends here -- mutable ui calls below need exclusive access)
+
+                // Limit input row
+                let input_h = 20.0;
+                let (lim_row, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), input_h),
+                    egui::Sense::hover(),
+                );
+                let lim_cy = lim_row.center().y;
+                let lim_input_rect = egui::Rect::from_min_size(
+                    egui::pos2(lim_row.left() + 40.0, lim_row.top() + 1.0),
+                    egui::vec2(80.0, input_h - 2.0),
+                );
+                let mut lim_buf = billing.limit_input_buf.clone();
+                let lim_te = egui::TextEdit::singleline(&mut lim_buf)
+                    .font(font.clone())
+                    .desired_width(70.0)
+                    .text_color(Palette::TEXT_BRIGHT);
+                let lim_te_resp = ui.put(lim_input_rect, lim_te);
+                billing.limit_input_buf = lim_buf.clone();
+                if lim_te_resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let clean = lim_buf.trim().trim_start_matches('$');
+                    if let Ok(val) = clean.parse::<f64>() {
+                        billing.limit_usd = val.max(1.0);
+                        billing.save();
                     }
                 }
-                // If web reported total > CLI total, include it in Y range
-                if let Some((web_val, _)) = billing.web_reported {
-                    p = p.include_y(web_val * 1.05);
+                ui.painter().text(
+                    egui::pos2(lim_row.left() + 2.0, lim_cy),
+                    egui::Align2::LEFT_CENTER,
+                    "limit",
+                    font.clone(),
+                    Palette::TEXT_DIM,
+                );
+
+                // Web-reported total row
+                let web_h = 20.0;
+                let (web_row, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), web_h),
+                    egui::Sense::hover(),
+                );
+                let web_cy = web_row.center().y;
+                let input_rect = egui::Rect::from_min_size(
+                    egui::pos2(web_row.left() + 40.0, web_row.top() + 1.0),
+                    egui::vec2(80.0, web_h - 2.0),
+                );
+                let mut buf = billing.web_input_buf.clone();
+                let te = egui::TextEdit::singleline(&mut buf)
+                    .font(font.clone())
+                    .desired_width(60.0)
+                    .text_color(egui::Color32::from_rgb(180, 140, 220));
+                let te_resp = ui.put(input_rect, te);
+                billing.web_input_buf = buf.clone();
+                if te_resp.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let clean = buf.trim().trim_start_matches('$');
+                    if let Ok(val) = clean.parse::<f64>() {
+                        let now_epoch = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        billing.web_reported = Some((val, now_epoch));
+                        billing.save();
+                    }
                 }
-                let web_reported_for_chart = billing.web_reported;
-                let period_start_for_chart = period_start_x;
-                let plot_resp = p.show(ui, |pui| {
-                    let pts = step_pts(&zeroed); // budget always uses time-based x
-                    pui.line(egui_plot::Line::new(pts)
-                        .color(pct_color).width(2.0).fill(0.0).name("CLI spent"));
-                    // Budget limit line
-                    pui.hline(egui_plot::HLine::new(billing.limit_usd)
-                        .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 120))
-                        .width(1.0));
-                    // Period start marker
-                    pui.vline(VLine::new(period_start_for_chart)
-                        .color(egui::Color32::from_rgba_unmultiplied(100, 180, 100, 60))
-                        .width(0.5));
-                    // Web-reported marker: horizontal line at reported value + point marker at report time
-                    if let Some((web_val, web_ts)) = web_reported_for_chart {
-                        let web_x = web_ts as f64 / 60.0;
-                        let web_color = egui::Color32::from_rgb(180, 140, 220); // purple
-                        // Horizontal line at web-reported value
-                        pui.hline(egui_plot::HLine::new(web_val)
-                            .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 80))
-                            .width(1.0));
-                        // Point marker at the time it was reported
-                        pui.points(egui_plot::Points::new(vec![[web_x, web_val]])
-                            .color(web_color).radius(4.0).name("web reported"));
-                        // Vertical line at report time
-                        pui.vline(VLine::new(web_x)
-                            .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 40))
-                            .width(0.5));
-                        // If CLI cost at that time is lower, find the CLI value at web_x and show the gap
-                        let cli_at_web_x = zeroed.iter()
-                            .filter(|p| p[0] <= web_x)
-                            .last()
-                            .map(|p| p[1])
-                            .unwrap_or(0.0);
-                        if web_val > cli_at_web_x + 0.01 {
-                            // Gap shading: a small rectangle between CLI line and web line at report time
-                            let gap_pts = vec![
-                                [web_x - 0.5, cli_at_web_x],
-                                [web_x + 0.5, cli_at_web_x],
-                                [web_x + 0.5, web_val],
-                                [web_x - 0.5, web_val],
-                            ];
-                            pui.polygon(egui_plot::Polygon::new(gap_pts)
-                                .fill_color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 30))
-                                .name(format!("non-CLI: ~{}", format_cost(web_val - cli_at_web_x))));
+                // Clear button interaction (must happen before re-borrowing painter)
+                let x_rect = egui::Rect::from_min_size(
+                    egui::pos2(web_row.right() - 16.0, web_cy - 6.0),
+                    egui::vec2(12.0, 12.0),
+                );
+                let clear_clicked = if billing.web_reported.is_some() {
+                    ui.interact(
+                        x_rect,
+                        egui::Id::new("budget_web_clear"),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+                } else {
+                    false
+                };
+                if clear_clicked {
+                    billing.web_reported = None;
+                    billing.web_input_buf.clear();
+                    billing.save();
+                }
+                // Now paint text (re-borrow painter)
+                let painter = ui.painter();
+                let web_color = egui::Color32::from_rgb(180, 140, 220);
+                painter.text(
+                    egui::pos2(web_row.left() + 2.0, web_cy),
+                    egui::Align2::LEFT_CENTER,
+                    "web $",
+                    font.clone(),
+                    web_color,
+                );
+                let info_x = web_row.left() + 118.0;
+                if let Some((val, ts)) = billing.web_reported {
+                    let ago_min = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as f64
+                        - ts as f64)
+                        / 60.0;
+                    let ago = if ago_min < 1.0 {
+                        "just now".into()
+                    } else if ago_min < 60.0 {
+                        format!("{:.0}m ago", ago_min)
+                    } else if ago_min < 24.0 * 60.0 {
+                        format!("{:.1}h ago", ago_min / 60.0)
+                    } else {
+                        format!("{:.1}d ago", ago_min / (24.0 * 60.0))
+                    };
+                    painter.text(
+                        egui::pos2(info_x, web_cy),
+                        egui::Align2::LEFT_CENTER,
+                        &format!("{} as of {}", format_cost(val), ago),
+                        font.clone(),
+                        web_color,
+                    );
+                    painter.text(
+                        x_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "x",
+                        font.clone(),
+                        Palette::TEXT_DIM,
+                    );
+                } else {
+                    painter.text(
+                        egui::pos2(info_x, web_cy),
+                        egui::Align2::LEFT_CENTER,
+                        "enter total from web, press enter",
+                        font.clone(),
+                        Palette::TEXT_DIM,
+                    );
+                }
+
+                // The chart: cumulative cost within period, zeroed at period start
+                if !period_cost_pts.is_empty() {
+                    let base_cost = period_cost_pts.first().map(|p| p[1]).unwrap_or(0.0);
+                    let zeroed: Vec<[f64; 2]> = period_cost_pts
+                        .iter()
+                        .map(|[x, y]| [*x, y - base_cost])
+                        .collect();
+
+                    let budget_y_fmt = move |v: egui_plot::GridMark,
+                                             _: &std::ops::RangeInclusive<f64>|
+                          -> String {
+                        if v.value < 0.001 {
+                            String::new()
+                        } else {
+                            format_cost(v.value)
+                        }
+                    };
+
+                    let mut p = Plot::new("budget_period")
+                        .show_axes([true, true])
+                        .show_grid(true)
+                        .allow_zoom(false)
+                        .allow_drag(false)
+                        .allow_scroll(false)
+                        .show_background(false)
+                        .set_margin_fraction(egui::Vec2::ZERO)
+                        .auto_bounds(egui::Vec2b::new(true, true))
+                        .include_y(0.0)
+                        .include_y(billing.limit_usd * 1.05)
+                        .y_axis_formatter(budget_y_fmt)
+                        .x_axis_formatter(time_x_fmt);
+                    // In time mode, share viewport with other charts; otherwise auto-fit to billing period
+                    if is_time {
+                        p = p.link_cursor(cursor_id, true, false);
+                        if let Some((vmin, vmax)) = *nav_view {
+                            p = p
+                                .include_x(vmin)
+                                .include_x(vmax)
+                                .auto_bounds(egui::Vec2b::new(false, true));
                         }
                     }
-                    update_hover_src(pui, HoverSource::Budget);
-                });
-                try_pin(&plot_resp.response);
-                if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
-            } else {
-                let inner = ui.available_rect_before_wrap();
-                let msg = "no data in billing period";
-                ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER,
-                    msg, egui::FontId::monospace(9.0), Palette::TEXT_DIM);
-            }
-          } else {
-            // --- usage chart: 5h + 7d utilization over time ---
-            let usage_now_label = usage.latest.as_ref().map(|l|
-                format!("5h {}%  7d {}%", l.five_hour as u32, l.seven_day as u32)
-            ).unwrap_or_default();
-            draw_chart_label(ui, "usage %", &usage_now_label, "");
-
-            if usage.snapshots.len() >= 2 {
-                let five_h_pts: Vec<[f64; 2]> = usage.snapshots.iter()
-                    .map(|s| [s.ts as f64 / 60.0, s.five_hour])
-                    .collect();
-                let seven_d_pts: Vec<[f64; 2]> = usage.snapshots.iter()
-                    .map(|s| [s.ts as f64 / 60.0, s.seven_day])
-                    .collect();
-
-                let usage_time_fmt = move |v: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| -> String {
-                    let ago_min = now_min - v.value;
-                    if ago_min < 0.5 { "now".into() }
-                    else if ago_min < 60.0 { format!("{}m", ago_min.round() as i64) }
-                    else if ago_min < 24.0 * 60.0 { format!("{:.0}h", ago_min / 60.0) }
-                    else { format!("{:.0}d", ago_min / (24.0 * 60.0)) }
-                };
-
-                // Clone snapshots for the label formatter closure
-                let snap_for_tip = usage.snapshots.clone();
-                let tip_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
-                    let hx = point.x;
-                    let nearest = snap_for_tip.iter().min_by(|a, b| {
-                        let ax = a.ts as f64 / 60.0;
-                        let bx = b.ts as f64 / 60.0;
-                        (ax - hx).abs().partial_cmp(&(bx - hx).abs()).unwrap()
-                    });
-                    if let Some(s) = nearest {
-                        let ago_min = now_min - (s.ts as f64 / 60.0);
-                        let ago = if ago_min < 1.0 { "now".into() }
-                            else if ago_min < 60.0 { format!("{}m ago", ago_min.round() as i64) }
-                            else if ago_min < 24.0 * 60.0 { format!("{:.1}h ago", ago_min / 60.0) }
-                            else { format!("{:.1}d ago", ago_min / (24.0 * 60.0)) };
-                        let mut tip = format!("{}\n5h: {:.0}%\n7d: {:.0}%", ago, s.five_hour, s.seven_day);
-                        if let Some(opus) = s.seven_day_opus { tip += &format!("\nopus 7d: {:.0}%", opus); }
-                        if let Some(sonnet) = s.seven_day_sonnet { tip += &format!("\nsonnet 7d: {:.0}%", sonnet); }
-                        tip
-                    } else {
-                        String::new()
+                    // If web reported total > CLI total, include it in Y range
+                    if let Some((web_val, _)) = billing.web_reported {
+                        p = p.include_y(web_val * 1.05);
                     }
-                };
-
-                let mut p = Plot::new("usage_pct")
-                    .show_axes([true, true])
-                    .show_grid(true)
-                    .allow_zoom(false)
-                    .allow_drag(false)
-                    .allow_scroll(false)
-                    .show_background(false)
-                    .set_margin_fraction(egui::Vec2::ZERO)
-                    .auto_bounds(egui::Vec2b::new(true, true))
-                    .include_y(0.0)
-                    .include_y(100.0)
-                    .y_axis_formatter(|v, _| {
-                        if v.value < 0.5 { String::new() } else { format!("{}%", v.value as u32) }
-                    })
-                    .x_axis_formatter(usage_time_fmt)
-                    .label_formatter(tip_fmt);
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                    p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-                }
-                let plot_resp = p.show(ui, |pui| {
-                        pui.line(egui_plot::Line::new(five_h_pts)
-                            .color(egui::Color32::from_rgb(220, 160, 60)).width(1.5).name("5h"));
-                        pui.line(egui_plot::Line::new(seven_d_pts)
-                            .color(egui::Color32::from_rgb(100, 160, 220)).width(1.5).name("7d"));
-                        pui.hline(egui_plot::HLine::new(100.0)
-                            .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 80))
-                            .width(0.5));
+                    let web_reported_for_chart = billing.web_reported;
+                    let period_start_for_chart = period_start_x;
+                    let plot_resp = p.show(ui, |pui| {
+                        let pts = step_pts(&zeroed); // budget always uses time-based x
+                        pui.line(
+                            egui_plot::Line::new(pts)
+                                .color(pct_color)
+                                .width(2.0)
+                                .fill(0.0)
+                                .name("CLI spent"),
+                        );
+                        // Budget limit line
+                        pui.hline(
+                            egui_plot::HLine::new(billing.limit_usd)
+                                .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 120))
+                                .width(1.0),
+                        );
+                        // Period start marker
+                        pui.vline(
+                            VLine::new(period_start_for_chart)
+                                .color(egui::Color32::from_rgba_unmultiplied(100, 180, 100, 60))
+                                .width(0.5),
+                        );
+                        // Web-reported marker: horizontal line at reported value + point marker at report time
+                        if let Some((web_val, web_ts)) = web_reported_for_chart {
+                            let web_x = web_ts as f64 / 60.0;
+                            let web_color = egui::Color32::from_rgb(180, 140, 220); // purple
+                                                                                    // Horizontal line at web-reported value
+                            pui.hline(
+                                egui_plot::HLine::new(web_val)
+                                    .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 80))
+                                    .width(1.0),
+                            );
+                            // Point marker at the time it was reported
+                            pui.points(
+                                egui_plot::Points::new(vec![[web_x, web_val]])
+                                    .color(web_color)
+                                    .radius(4.0)
+                                    .name("web reported"),
+                            );
+                            // Vertical line at report time
+                            pui.vline(
+                                VLine::new(web_x)
+                                    .color(egui::Color32::from_rgba_unmultiplied(180, 140, 220, 40))
+                                    .width(0.5),
+                            );
+                            // If CLI cost at that time is lower, find the CLI value at web_x and show the gap
+                            let cli_at_web_x = zeroed
+                                .iter()
+                                .filter(|p| p[0] <= web_x)
+                                .last()
+                                .map(|p| p[1])
+                                .unwrap_or(0.0);
+                            if web_val > cli_at_web_x + 0.01 {
+                                // Gap shading: a small rectangle between CLI line and web line at report time
+                                let gap_pts = vec![
+                                    [web_x - 0.5, cli_at_web_x],
+                                    [web_x + 0.5, cli_at_web_x],
+                                    [web_x + 0.5, web_val],
+                                    [web_x - 0.5, web_val],
+                                ];
+                                pui.polygon(
+                                    egui_plot::Polygon::new(gap_pts)
+                                        .fill_color(egui::Color32::from_rgba_unmultiplied(
+                                            180, 140, 220, 30,
+                                        ))
+                                        .name(format!(
+                                            "non-CLI: ~{}",
+                                            format_cost(web_val - cli_at_web_x)
+                                        )),
+                                );
+                            }
+                        }
+                        update_hover_src(pui, HoverSource::Budget);
                     });
-                if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
-            } else if let Some(e) = &usage.error {
-                let inner = ui.available_rect_before_wrap();
-                ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER,
-                    e, egui::FontId::monospace(9.0), Palette::TEXT_DIM);
+                    try_pin(&plot_resp.response);
+                    if is_time {
+                        handle_chart_nav(
+                            ui.ctx(),
+                            &plot_resp.response,
+                            plot_resp.transform.bounds(),
+                            nav_view,
+                            full_min,
+                            full_max,
+                            autofit,
+                        );
+                    }
+                } else {
+                    let inner = ui.available_rect_before_wrap();
+                    let msg = "no data in billing period";
+                    ui.painter().text(
+                        inner.center(),
+                        egui::Align2::CENTER_CENTER,
+                        msg,
+                        egui::FontId::monospace(9.0),
+                        Palette::TEXT_DIM,
+                    );
+                }
             } else {
-                let inner = ui.available_rect_before_wrap();
-                ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER,
-                    "polling...", egui::FontId::monospace(9.0), Palette::TEXT_DIM);
+                // --- usage chart: 5h + 7d utilization over time ---
+                let usage_now_label = usage
+                    .latest
+                    .as_ref()
+                    .map(|l| format!("5h {}%  7d {}%", l.five_hour as u32, l.seven_day as u32))
+                    .unwrap_or_default();
+                draw_chart_label(ui, "usage %", &usage_now_label, "");
+
+                if usage.snapshots.len() >= 2 {
+                    let five_h_pts: Vec<[f64; 2]> = usage
+                        .snapshots
+                        .iter()
+                        .map(|s| [s.ts as f64 / 60.0, s.five_hour])
+                        .collect();
+                    let seven_d_pts: Vec<[f64; 2]> = usage
+                        .snapshots
+                        .iter()
+                        .map(|s| [s.ts as f64 / 60.0, s.seven_day])
+                        .collect();
+
+                    let usage_time_fmt = move |v: egui_plot::GridMark,
+                                               _: &std::ops::RangeInclusive<f64>|
+                          -> String {
+                        let ago_min = now_min - v.value;
+                        if ago_min < 0.5 {
+                            "now".into()
+                        } else if ago_min < 60.0 {
+                            format!("{}m", ago_min.round() as i64)
+                        } else if ago_min < 24.0 * 60.0 {
+                            format!("{:.0}h", ago_min / 60.0)
+                        } else {
+                            format!("{:.0}d", ago_min / (24.0 * 60.0))
+                        }
+                    };
+
+                    // Clone snapshots for the label formatter closure
+                    let snap_for_tip = usage.snapshots.clone();
+                    let tip_fmt = move |_name: &str, point: &egui_plot::PlotPoint| -> String {
+                        let hx = point.x;
+                        let nearest = snap_for_tip.iter().min_by(|a, b| {
+                            let ax = a.ts as f64 / 60.0;
+                            let bx = b.ts as f64 / 60.0;
+                            (ax - hx).abs().partial_cmp(&(bx - hx).abs()).unwrap()
+                        });
+                        if let Some(s) = nearest {
+                            let ago_min = now_min - (s.ts as f64 / 60.0);
+                            let ago = if ago_min < 1.0 {
+                                "now".into()
+                            } else if ago_min < 60.0 {
+                                format!("{}m ago", ago_min.round() as i64)
+                            } else if ago_min < 24.0 * 60.0 {
+                                format!("{:.1}h ago", ago_min / 60.0)
+                            } else {
+                                format!("{:.1}d ago", ago_min / (24.0 * 60.0))
+                            };
+                            let mut tip = format!(
+                                "{}\n5h: {:.0}%\n7d: {:.0}%",
+                                ago, s.five_hour, s.seven_day
+                            );
+                            if let Some(opus) = s.seven_day_opus {
+                                tip += &format!("\nopus 7d: {:.0}%", opus);
+                            }
+                            if let Some(sonnet) = s.seven_day_sonnet {
+                                tip += &format!("\nsonnet 7d: {:.0}%", sonnet);
+                            }
+                            tip
+                        } else {
+                            String::new()
+                        }
+                    };
+
+                    let mut p = Plot::new("usage_pct")
+                        .show_axes([true, true])
+                        .show_grid(true)
+                        .allow_zoom(false)
+                        .allow_drag(false)
+                        .allow_scroll(false)
+                        .show_background(false)
+                        .set_margin_fraction(egui::Vec2::ZERO)
+                        .auto_bounds(egui::Vec2b::new(true, true))
+                        .include_y(0.0)
+                        .include_y(100.0)
+                        .y_axis_formatter(|v, _| {
+                            if v.value < 0.5 {
+                                String::new()
+                            } else {
+                                format!("{}%", v.value as u32)
+                            }
+                        })
+                        .x_axis_formatter(usage_time_fmt)
+                        .label_formatter(tip_fmt);
+                    if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                        p = p
+                            .include_x(vmin)
+                            .include_x(vmax)
+                            .auto_bounds(egui::Vec2b::new(false, true));
+                    }
+                    let plot_resp = p.show(ui, |pui| {
+                        pui.line(
+                            egui_plot::Line::new(five_h_pts)
+                                .color(egui::Color32::from_rgb(220, 160, 60))
+                                .width(1.5)
+                                .name("5h"),
+                        );
+                        pui.line(
+                            egui_plot::Line::new(seven_d_pts)
+                                .color(egui::Color32::from_rgb(100, 160, 220))
+                                .width(1.5)
+                                .name("7d"),
+                        );
+                        pui.hline(
+                            egui_plot::HLine::new(100.0)
+                                .color(egui::Color32::from_rgba_unmultiplied(200, 60, 60, 80))
+                                .width(0.5),
+                        );
+                    });
+                    if is_time {
+                        handle_chart_nav(
+                            ui.ctx(),
+                            &plot_resp.response,
+                            plot_resp.transform.bounds(),
+                            nav_view,
+                            full_min,
+                            full_max,
+                            autofit,
+                        );
+                    }
+                } else if let Some(e) = &usage.error {
+                    let inner = ui.available_rect_before_wrap();
+                    ui.painter().text(
+                        inner.center(),
+                        egui::Align2::CENTER_CENTER,
+                        e,
+                        egui::FontId::monospace(9.0),
+                        Palette::TEXT_DIM,
+                    );
+                } else {
+                    let inner = ui.available_rect_before_wrap();
+                    ui.painter().text(
+                        inner.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "polling...",
+                        egui::FontId::monospace(9.0),
+                        Palette::TEXT_DIM,
+                    );
+                }
             }
-          }
         });
     });
 
@@ -1938,9 +3048,13 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     }
     // --- skill / agent / reads / tool breakdown (scrollable, via scene tree) ---
     let panel_hl_id = egui::Id::new("panel_highlight");
-    ui.ctx().data_mut(|d| d.insert_temp(panel_hl_id, PanelHighlight::default()));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(panel_hl_id, PanelHighlight::default()));
     let panel_nodes = scene::build_tool_panel(
-        &cd.skill_list, &cd.agent_list, &cd.read_list, &cd.tool_list,
+        &cd.skill_list,
+        &cd.agent_list,
+        &cd.read_list,
+        &cd.tool_list,
         &panel_hl.key,
     );
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tool_rect), |ui| {
@@ -1949,203 +3063,340 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             let hovered_key = render_egui::render(ui, &panel_nodes);
             if !hovered_key.is_empty() {
-                ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<PanelHighlight>(panel_hl_id)
-                    .key = hovered_key);
+                ui.ctx().data_mut(|d| {
+                    d.get_temp_mut_or_default::<PanelHighlight>(panel_hl_id).key = hovered_key
+                });
             }
         });
     });
 
     // --- Row 3: per-turn energy (Wh) + per-turn water (mL), each with cumulative overlay ---
-    let total_wh: f64 = cd.total_energy_lines.iter()
-        .filter_map(|(_, pts)| pts.last().map(|p| p[1])).sum();
-    let total_water_ml: f64 = cd.total_water_lines.iter()
-        .filter_map(|(_, pts)| pts.last().map(|p| p[1])).sum();
+    let total_wh: f64 = cd
+        .total_energy_lines
+        .iter()
+        .filter_map(|(_, pts)| pts.last().map(|p| p[1]))
+        .sum();
+    let total_water_ml: f64 = cd
+        .total_water_lines
+        .iter()
+        .filter_map(|(_, pts)| pts.last().map(|p| p[1]))
+        .sum();
 
     // Silly unit equivalences
-    let wh_silly = if total_wh > 12.0 { format!("{:.1} phone charges", total_wh / 12.0) }
-        else if total_wh > 0.01 { format!("{:.1} LED-bulb hrs", total_wh / 10.0) }
-        else { String::new() };
+    let wh_silly = if total_wh > 12.0 {
+        format!("{:.1} phone charges", total_wh / 12.0)
+    } else if total_wh > 0.01 {
+        format!("{:.1} LED-bulb hrs", total_wh / 10.0)
+    } else {
+        String::new()
+    };
     // 1 sip of water ~30 mL, 1 gulp ~60 mL, 1 cup = 237 mL
-    let water_silly = if total_water_ml > 237.0 { format!("{:.1} cups", total_water_ml / 237.0) }
-        else if total_water_ml > 30.0 { format!("{:.0} sips", total_water_ml / 30.0) }
-        else if total_water_ml > 0.01 { format!("{:.1} drops", total_water_ml / 0.05) }
-        else { String::new() };
+    let water_silly = if total_water_ml > 237.0 {
+        format!("{:.1} cups", total_water_ml / 237.0)
+    } else if total_water_ml > 30.0 {
+        format!("{:.0} sips", total_water_ml / 30.0)
+    } else if total_water_ml > 0.01 {
+        format!("{:.1} drops", total_water_ml / 0.05)
+    } else {
+        String::new()
+    };
 
-    if chart_vis.energy { ui.allocate_new_ui(egui::UiBuilder::new().max_rect(energy_wh_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            let wh_label = if total_wh > 0.001 { format!("{:.2} Wh total", total_wh) } else { String::new() };
-            draw_chart_label(ui, "energy / turn", &wh_label, &wh_silly);
-            let energy_scale = if cd.total_energy_max > 0.0 { cd.energy_wh_max / cd.total_energy_max } else { 1.0 };
-            let mut p = base_plot("energy_wh")
-                .link_cursor(cursor_id, true, false)
-                .include_y(0.0)
-                .include_y(cd.energy_wh_max)
-                .y_axis_formatter(move |v, _| {
-                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
-                })
-                .show_axes([false, true])
-                .show_grid(true);
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-            }
-            let plot_resp = p.show(ui, |pui| {
-                if *show_bars { pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.energy_wh_bars, &hovered_sessions)).name("Wh")); }
-                for (si, (color, pts)) in cd.total_energy_lines.iter().enumerate() {
-                    let (alpha, w) = if hovered_sessions.is_empty() {
-                        (line_alpha_default, line_width_default)
-                    } else if hovered_sessions.get(si).copied().unwrap_or(false) {
-                        (1.0, 2.5)
-                    } else {
-                        (0.12, 1.0)
-                    };
-                    let scaled: Vec<[f64; 2]> = pts.iter().map(|[x, y]| [*x, y * energy_scale]).collect();
-                    pui.line(egui_plot::Line::new(scaled)
-                        .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
+    if chart_vis.energy {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(energy_wh_rect), |ui| {
+            panel_frame().show(ui, |ui| {
+                let wh_label = if total_wh > 0.001 {
+                    format!("{:.2} Wh total", total_wh)
+                } else {
+                    String::new()
+                };
+                draw_chart_label(ui, "energy / turn", &wh_label, &wh_silly);
+                let energy_scale = if cd.total_energy_max > 0.0 {
+                    cd.energy_wh_max / cd.total_energy_max
+                } else {
+                    1.0
+                };
+                let mut p = base_plot("energy_wh")
+                    .link_cursor(cursor_id, true, false)
+                    .include_y(0.0)
+                    .include_y(cd.energy_wh_max)
+                    .y_axis_formatter(move |v, _| {
+                        if v.value < 1e-9 {
+                            String::new()
+                        } else {
+                            format!("{:.2}", v.value)
+                        }
+                    })
+                    .show_axes([false, true])
+                    .show_grid(true);
+                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    p = p
+                        .include_x(vmin)
+                        .include_x(vmax)
+                        .auto_bounds(egui::Vec2b::new(false, true));
                 }
-                update_hover_src(pui, HoverSource::Energy);
+                let plot_resp = p.show(ui, |pui| {
+                    if *show_bars {
+                        pui.bar_chart(
+                            BarChart::new(bars_to_egui_hl(&cd.energy_wh_bars, &hovered_sessions))
+                                .name("Wh"),
+                        );
+                    }
+                    for (si, (color, pts)) in cd.total_energy_lines.iter().enumerate() {
+                        let (alpha, w) = if hovered_sessions.is_empty() {
+                            (line_alpha_default, line_width_default)
+                        } else if hovered_sessions.get(si).copied().unwrap_or(false) {
+                            (1.0, 2.5)
+                        } else {
+                            (0.12, 1.0)
+                        };
+                        let scaled: Vec<[f64; 2]> =
+                            pts.iter().map(|[x, y]| [*x, y * energy_scale]).collect();
+                        pui.line(
+                            egui_plot::Line::new(scaled)
+                                .color(scene_to_egui(*color).gamma_multiply(alpha))
+                                .width(w),
+                        );
+                    }
+                    update_hover_src(pui, HoverSource::Energy);
+                });
+                if is_time {
+                    handle_chart_nav(
+                        ui.ctx(),
+                        &plot_resp.response,
+                        plot_resp.transform.bounds(),
+                        nav_view,
+                        full_min,
+                        full_max,
+                        autofit,
+                    );
+                }
+                try_pin(&plot_resp.response);
             });
-            if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
-            try_pin(&plot_resp.response);
         });
-    }); }
+    }
 
-    if chart_vis.water { ui.allocate_new_ui(egui::UiBuilder::new().max_rect(water_ml_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            let water_label = if total_water_ml > 0.001 { format!("{:.1} mL total", total_water_ml) } else { String::new() };
-            draw_chart_label(ui, "water / turn", &water_label, &water_silly);
-            let water_scale = if cd.total_water_max > 0.0 { cd.water_ml_max / cd.total_water_max } else { 1.0 };
-            let mut p = base_plot("water_ml")
-                .link_cursor(cursor_id, true, false)
-                .include_y(0.0)
-                .include_y(cd.water_ml_max)
-                .y_axis_formatter(move |v, _| {
-                    if v.value < 1e-9 { String::new() } else { format!("{:.2}", v.value) }
-                })
-                .show_axes([false, true])
-                .show_grid(true);
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-            }
-            let plot_resp = p.show(ui, |pui| {
-                if *show_bars { pui.bar_chart(BarChart::new(bars_to_egui_hl(&cd.water_ml_bars, &hovered_sessions)).name("mL")); }
-                for (si, (color, pts)) in cd.total_water_lines.iter().enumerate() {
-                    let (alpha, w) = if hovered_sessions.is_empty() {
-                        (line_alpha_default, line_width_default)
-                    } else if hovered_sessions.get(si).copied().unwrap_or(false) {
-                        (1.0, 2.5)
-                    } else {
-                        (0.12, 1.0)
-                    };
-                    let scaled: Vec<[f64; 2]> = pts.iter().map(|[x, y]| [*x, y * water_scale]).collect();
-                    pui.line(egui_plot::Line::new(scaled)
-                        .color(scene_to_egui(*color).gamma_multiply(alpha)).width(w));
+    if chart_vis.water {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(water_ml_rect), |ui| {
+            panel_frame().show(ui, |ui| {
+                let water_label = if total_water_ml > 0.001 {
+                    format!("{:.1} mL total", total_water_ml)
+                } else {
+                    String::new()
+                };
+                draw_chart_label(ui, "water / turn", &water_label, &water_silly);
+                let water_scale = if cd.total_water_max > 0.0 {
+                    cd.water_ml_max / cd.total_water_max
+                } else {
+                    1.0
+                };
+                let mut p = base_plot("water_ml")
+                    .link_cursor(cursor_id, true, false)
+                    .include_y(0.0)
+                    .include_y(cd.water_ml_max)
+                    .y_axis_formatter(move |v, _| {
+                        if v.value < 1e-9 {
+                            String::new()
+                        } else {
+                            format!("{:.2}", v.value)
+                        }
+                    })
+                    .show_axes([false, true])
+                    .show_grid(true);
+                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    p = p
+                        .include_x(vmin)
+                        .include_x(vmax)
+                        .auto_bounds(egui::Vec2b::new(false, true));
                 }
-                update_hover_src(pui, HoverSource::Water);
+                let plot_resp = p.show(ui, |pui| {
+                    if *show_bars {
+                        pui.bar_chart(
+                            BarChart::new(bars_to_egui_hl(&cd.water_ml_bars, &hovered_sessions))
+                                .name("mL"),
+                        );
+                    }
+                    for (si, (color, pts)) in cd.total_water_lines.iter().enumerate() {
+                        let (alpha, w) = if hovered_sessions.is_empty() {
+                            (line_alpha_default, line_width_default)
+                        } else if hovered_sessions.get(si).copied().unwrap_or(false) {
+                            (1.0, 2.5)
+                        } else {
+                            (0.12, 1.0)
+                        };
+                        let scaled: Vec<[f64; 2]> =
+                            pts.iter().map(|[x, y]| [*x, y * water_scale]).collect();
+                        pui.line(
+                            egui_plot::Line::new(scaled)
+                                .color(scene_to_egui(*color).gamma_multiply(alpha))
+                                .width(w),
+                        );
+                    }
+                    update_hover_src(pui, HoverSource::Water);
+                });
+                if is_time {
+                    handle_chart_nav(
+                        ui.ctx(),
+                        &plot_resp.response,
+                        plot_resp.transform.bounds(),
+                        nav_view,
+                        full_min,
+                        full_max,
+                        autofit,
+                    );
+                }
+                try_pin(&plot_resp.response);
             });
-            if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
-            try_pin(&plot_resp.response);
         });
-    }); }
+    }
 
     // --- bottom row: unified totals (cost + tokens + energy + water, all normalized) ---
-    if chart_vis.totals { ui.allocate_new_ui(egui::UiBuilder::new().max_rect(totals_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            // Current values for labels
-            let cur_cost = cd.combined_cost_pts.last().map(|p| p[1]).unwrap_or(0.0);
-            let cur_tok = cd.total_tok_max;
-            let cur_wh = total_wh;
-            let cur_water = total_water_ml;
-            let label = format!(
-                "{}  {}tok  {:.1}Wh  {:.0}mL",
-                format_cost(cur_cost), format_tokens(cur_tok as u64), cur_wh, cur_water
-            );
-            draw_chart_label(ui, "totals", &label, "");
+    if chart_vis.totals {
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(totals_rect), |ui| {
+            panel_frame().show(ui, |ui| {
+                // Current values for labels
+                let cur_cost = cd.combined_cost_pts.last().map(|p| p[1]).unwrap_or(0.0);
+                let cur_tok = cd.total_tok_max;
+                let cur_wh = total_wh;
+                let cur_water = total_water_ml;
+                let label = format!(
+                    "{}  {}tok  {:.1}Wh  {:.0}mL",
+                    format_cost(cur_cost),
+                    format_tokens(cur_tok as u64),
+                    cur_wh,
+                    cur_water
+                );
+                draw_chart_label(ui, "totals", &label, "");
 
-            // Normalize all series to [0..1] range, then plot in [0..1] Y space
-            let mut p = base_plot("totals_combined")
-                .link_cursor(cursor_id, true, false)
-                .include_y(0.0)
-                .include_y(1.05)
-                .y_axis_formatter(move |v, _| {
-                    // Left Y shows cost scale
-                    if v.value < 1e-9 { String::new() }
-                    else { format_cost(v.value * cur_cost) }
-                })
-                .show_axes([is_time, true])
-                .show_grid(true);
-            if is_time { p = p.x_axis_formatter(time_x_fmt); }
-            if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
-                p = p.include_x(vmin).include_x(vmax).auto_bounds(egui::Vec2b::new(false, true));
-            }
-            let cost_color = egui::Color32::from_rgb(220, 180, 60);   // gold
-            let tok_color = egui::Color32::from_rgb(100, 160, 220);   // blue
-            let energy_color = egui::Color32::from_rgb(120, 200, 80); // green
-            let water_color = egui::Color32::from_rgb(80, 180, 220);  // cyan
+                // Normalize all series to [0..1] range, then plot in [0..1] Y space
+                let mut p = base_plot("totals_combined")
+                    .link_cursor(cursor_id, true, false)
+                    .include_y(0.0)
+                    .include_y(1.05)
+                    .y_axis_formatter(move |v, _| {
+                        // Left Y shows cost scale
+                        if v.value < 1e-9 {
+                            String::new()
+                        } else {
+                            format_cost(v.value * cur_cost)
+                        }
+                    })
+                    .show_axes([is_time, true])
+                    .show_grid(true);
+                if is_time {
+                    p = p.x_axis_formatter(time_x_fmt);
+                }
+                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    p = p
+                        .include_x(vmin)
+                        .include_x(vmax)
+                        .auto_bounds(egui::Vec2b::new(false, true));
+                }
+                let cost_color = egui::Color32::from_rgb(220, 180, 60); // gold
+                let tok_color = egui::Color32::from_rgb(100, 160, 220); // blue
+                let energy_color = egui::Color32::from_rgb(120, 200, 80); // green
+                let water_color = egui::Color32::from_rgb(80, 180, 220); // cyan
 
-            let plot_resp = p.show(ui, |pui| {
-                // Cost line (normalized)
-                if cd.combined_cost_max > 0.0 {
-                    let norm: Vec<[f64; 2]> = cd.combined_cost_pts.iter()
-                        .map(|[x, y]| [*x, y / cd.combined_cost_max]).collect();
-                    pui.line(egui_plot::Line::new(norm).color(cost_color).width(2.0).name("cost"));
-                }
-                // Total tokens line (input, normalized) -- per session
-                if cd.total_tok_max > 0.0 {
-                    for (si, (_, in_pts, _)) in cd.total_tok_lines.iter().enumerate() {
-                        let (alpha, w) = if hovered_sessions.is_empty() {
-                            (totals_alpha_default, totals_width_default)
-                        } else if hovered_sessions.get(si).copied().unwrap_or(false) {
-                            (1.0, 2.5)
-                        } else {
-                            (0.12, 1.0)
-                        };
-                        let norm: Vec<[f64; 2]> = in_pts.iter()
-                            .map(|[x, y]| [*x, y / cd.total_tok_max]).collect();
-                        let norm = norm;
-                        pui.line(egui_plot::Line::new(norm)
-                            .color(tok_color.gamma_multiply(alpha)).width(w).name("tokens"));
+                let plot_resp = p.show(ui, |pui| {
+                    // Cost line (normalized)
+                    if cd.combined_cost_max > 0.0 {
+                        let norm: Vec<[f64; 2]> = cd
+                            .combined_cost_pts
+                            .iter()
+                            .map(|[x, y]| [*x, y / cd.combined_cost_max])
+                            .collect();
+                        pui.line(
+                            egui_plot::Line::new(norm)
+                                .color(cost_color)
+                                .width(2.0)
+                                .name("cost"),
+                        );
                     }
-                }
-                // Total energy line (normalized) -- per session
-                if cd.total_energy_max > 0.0 {
-                    for (si, (_, pts)) in cd.total_energy_lines.iter().enumerate() {
-                        let (alpha, w) = if hovered_sessions.is_empty() {
-                            (totals_alpha_default, totals_width_default)
-                        } else if hovered_sessions.get(si).copied().unwrap_or(false) {
-                            (1.0, 2.5)
-                        } else {
-                            (0.12, 1.0)
-                        };
-                        let norm: Vec<[f64; 2]> = pts.iter()
-                            .map(|[x, y]| [*x, y / cd.total_energy_max]).collect();
-                        let norm = norm;
-                        pui.line(egui_plot::Line::new(norm)
-                            .color(energy_color.gamma_multiply(alpha)).width(w).name("energy"));
+                    // Total tokens line (input, normalized) -- per session
+                    if cd.total_tok_max > 0.0 {
+                        for (si, (_, in_pts, _)) in cd.total_tok_lines.iter().enumerate() {
+                            let (alpha, w) = if hovered_sessions.is_empty() {
+                                (totals_alpha_default, totals_width_default)
+                            } else if hovered_sessions.get(si).copied().unwrap_or(false) {
+                                (1.0, 2.5)
+                            } else {
+                                (0.12, 1.0)
+                            };
+                            let norm: Vec<[f64; 2]> = in_pts
+                                .iter()
+                                .map(|[x, y]| [*x, y / cd.total_tok_max])
+                                .collect();
+                            let norm = norm;
+                            pui.line(
+                                egui_plot::Line::new(norm)
+                                    .color(tok_color.gamma_multiply(alpha))
+                                    .width(w)
+                                    .name("tokens"),
+                            );
+                        }
                     }
-                }
-                // Total water line (normalized) -- per session
-                if cd.total_water_max > 0.0 {
-                    for (si, (_, pts)) in cd.total_water_lines.iter().enumerate() {
-                        let (alpha, w) = if hovered_sessions.is_empty() {
-                            (totals_alpha_default, totals_width_default)
-                        } else if hovered_sessions.get(si).copied().unwrap_or(false) {
-                            (1.0, 2.5)
-                        } else {
-                            (0.12, 1.0)
-                        };
-                        let norm: Vec<[f64; 2]> = pts.iter()
-                            .map(|[x, y]| [*x, y / cd.total_water_max]).collect();
-                        let norm = norm;
-                        pui.line(egui_plot::Line::new(norm)
-                            .color(water_color.gamma_multiply(alpha)).width(w).name("water"));
+                    // Total energy line (normalized) -- per session
+                    if cd.total_energy_max > 0.0 {
+                        for (si, (_, pts)) in cd.total_energy_lines.iter().enumerate() {
+                            let (alpha, w) = if hovered_sessions.is_empty() {
+                                (totals_alpha_default, totals_width_default)
+                            } else if hovered_sessions.get(si).copied().unwrap_or(false) {
+                                (1.0, 2.5)
+                            } else {
+                                (0.12, 1.0)
+                            };
+                            let norm: Vec<[f64; 2]> = pts
+                                .iter()
+                                .map(|[x, y]| [*x, y / cd.total_energy_max])
+                                .collect();
+                            let norm = norm;
+                            pui.line(
+                                egui_plot::Line::new(norm)
+                                    .color(energy_color.gamma_multiply(alpha))
+                                    .width(w)
+                                    .name("energy"),
+                            );
+                        }
                     }
+                    // Total water line (normalized) -- per session
+                    if cd.total_water_max > 0.0 {
+                        for (si, (_, pts)) in cd.total_water_lines.iter().enumerate() {
+                            let (alpha, w) = if hovered_sessions.is_empty() {
+                                (totals_alpha_default, totals_width_default)
+                            } else if hovered_sessions.get(si).copied().unwrap_or(false) {
+                                (1.0, 2.5)
+                            } else {
+                                (0.12, 1.0)
+                            };
+                            let norm: Vec<[f64; 2]> = pts
+                                .iter()
+                                .map(|[x, y]| [*x, y / cd.total_water_max])
+                                .collect();
+                            let norm = norm;
+                            pui.line(
+                                egui_plot::Line::new(norm)
+                                    .color(water_color.gamma_multiply(alpha))
+                                    .width(w)
+                                    .name("water"),
+                            );
+                        }
+                    }
+                    update_hover_src(pui, HoverSource::WeeklyCost);
+                });
+                if is_time {
+                    handle_chart_nav(
+                        ui.ctx(),
+                        &plot_resp.response,
+                        plot_resp.transform.bounds(),
+                        nav_view,
+                        full_min,
+                        full_max,
+                        autofit,
+                    );
                 }
-                update_hover_src(pui, HoverSource::WeeklyCost);
+                try_pin(&plot_resp.response);
             });
-            if is_time { handle_chart_nav(ui.ctx(), &plot_resp.response, plot_resp.transform.bounds(), nav_view, full_min, full_max, autofit); }
-            try_pin(&plot_resp.response);
         });
-    }); }
+    }
 
     // --- floating hover tooltip (all sessions, context-aware) ---
     // When pinned, use the frozen hover state and cursor position from pin time.
@@ -2157,7 +3408,11 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
     if let Some(hs) = hover_state {
         let hx = hs.x;
         let is_pinned = pinned_x.is_some();
-        let cursor_opt = if is_pinned { pinned_cursor_pos } else { ui.ctx().input(|i| i.pointer.hover_pos()) };
+        let cursor_opt = if is_pinned {
+            pinned_cursor_pos
+        } else {
+            ui.ctx().input(|i| i.pointer.hover_pos())
+        };
         if let Some(cursor) = cursor_opt {
             // (session_name, session_color, detail_text, optional breakdown fracs, sort_key)
             let mut entries: Vec<(String, egui::Color32, String, Option<[f32; 3]>, f64)> = vec![];
@@ -2166,14 +3421,18 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             // Budget always uses time-based x, even in non-time mode
             let use_ts_x = matches!(hs.source, HoverSource::Budget) && !is_time;
             for (name, sess_color, turns) in &cd.session_turns {
-                if turns.is_empty() { continue; }
+                if turns.is_empty() {
+                    continue;
+                }
                 // Skip sessions where hover x is outside the session's data range (with small margin)
                 let tx = |t: &TurnInfo| if use_ts_x { t.ts_x } else { t.x };
                 let first_x = tx(turns.first().unwrap());
                 let last_x = tx(turns.last().unwrap());
                 let span = (last_x - first_x).max(1.0);
                 let margin = span * 0.05; // 5% margin at edges
-                if hx < first_x - margin || hx > last_x + margin { continue; }
+                if hx < first_x - margin || hx > last_x + margin {
+                    continue;
+                }
 
                 let nearest = turns.iter().enumerate().min_by(|(_, a), (_, b)| {
                     (tx(a) - hx).abs().partial_cmp(&(tx(b) - hx).abs()).unwrap()
@@ -2193,15 +3452,26 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                     } else {
                         0.0
                     };
-                    context_footer = Some((t.context_tokens, t.context_limit, burn_rate, t.is_reset));
+                    context_footer =
+                        Some((t.context_tokens, t.context_limit, burn_rate, t.is_reset));
 
                     let (detail, breakdown) = match hs.source {
                         HoverSource::Cost => {
                             let total_in = t.in_cost;
-                            let frac = |v: f64| if total_in > 0.0 { (v / total_in) as f32 } else { 0.0 };
+                            let frac = |v: f64| {
+                                if total_in > 0.0 {
+                                    (v / total_in) as f32
+                                } else {
+                                    0.0
+                                }
+                            };
                             let pct = |v: f64| (frac(v) * 100.0).round() as u32;
                             let thinking_tag = if t.has_thinking { " [thinking]" } else { "" };
-                            let fracs = [frac(t.fresh_input_cost), frac(t.cache_read_cost), frac(t.cache_create_cost)];
+                            let fracs = [
+                                frac(t.fresh_input_cost),
+                                frac(t.cache_read_cost),
+                                frac(t.cache_create_cost),
+                            ];
                             (format!(
                                 "  t{} [{}]{} ctx {} (fresh {}% read {}% create {}%)  gen {}  (+{})",
                                 idx + 1, t.model_short, thinking_tag,
@@ -2212,51 +3482,100 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
                             ), Some(fracs))
                         }
                         HoverSource::Tokens => {
-                            let total_in = (t.in_tok + t.cache_read_tok + t.cache_create_tok) as f64;
-                            let frac = |v: u64| if total_in > 0.0 { (v as f64 / total_in) as f32 } else { 0.0 };
-                            let fracs = [frac(t.in_tok), frac(t.cache_read_tok), frac(t.cache_create_tok)];
-                            (format!(
-                                "  t{} [{}] ctx {} (fresh {} read {} create {})  out {}",
-                                idx + 1, t.model_short,
-                                format_tokens(total_in as u64),
-                                format_tokens(t.in_tok), format_tokens(t.cache_read_tok), format_tokens(t.cache_create_tok),
-                                format_tokens(t.out_tok),
-                            ), Some(fracs))
+                            let total_in =
+                                (t.in_tok + t.cache_read_tok + t.cache_create_tok) as f64;
+                            let frac = |v: u64| {
+                                if total_in > 0.0 {
+                                    (v as f64 / total_in) as f32
+                                } else {
+                                    0.0
+                                }
+                            };
+                            let fracs = [
+                                frac(t.in_tok),
+                                frac(t.cache_read_tok),
+                                frac(t.cache_create_tok),
+                            ];
+                            (
+                                format!(
+                                    "  t{} [{}] ctx {} (fresh {} read {} create {})  out {}",
+                                    idx + 1,
+                                    t.model_short,
+                                    format_tokens(total_in as u64),
+                                    format_tokens(t.in_tok),
+                                    format_tokens(t.cache_read_tok),
+                                    format_tokens(t.cache_create_tok),
+                                    format_tokens(t.out_tok),
+                                ),
+                                Some(fracs),
+                            )
                         }
-                        HoverSource::TotalCost => (format!(
-                            "  t{} total {}  (+{})",
-                            idx + 1, format_cost(t.total_cost), format_cost(t.cost_change),
-                        ), None),
-                        HoverSource::TotalTokens => (format!(
-                            "  t{} total in {}  out {}",
-                            idx + 1, format_tokens(t.total_in_tok), format_tokens(t.total_out_tok),
-                        ), None),
-                        HoverSource::WeeklyCost | HoverSource::WeeklyRate => (format!(
-                            "  t{} [{}] +{}  total {}",
-                            idx + 1, t.model_short, format_cost(t.cost_change), format_cost(t.total_cost),
-                        ), None),
+                        HoverSource::TotalCost => (
+                            format!(
+                                "  t{} total {}  (+{})",
+                                idx + 1,
+                                format_cost(t.total_cost),
+                                format_cost(t.cost_change),
+                            ),
+                            None,
+                        ),
+                        HoverSource::TotalTokens => (
+                            format!(
+                                "  t{} total in {}  out {}",
+                                idx + 1,
+                                format_tokens(t.total_in_tok),
+                                format_tokens(t.total_out_tok),
+                            ),
+                            None,
+                        ),
+                        HoverSource::WeeklyCost | HoverSource::WeeklyRate => (
+                            format!(
+                                "  t{} [{}] +{}  total {}",
+                                idx + 1,
+                                t.model_short,
+                                format_cost(t.cost_change),
+                                format_cost(t.total_cost),
+                            ),
+                            None,
+                        ),
                         HoverSource::Energy => {
                             let wh = t.energy.facility_kwh.mid * 1000.0;
-                            (format!(
-                                "  t{} [{}] {:.2} Wh  ({:.2}..{:.2})",
-                                idx + 1, t.model_short, wh,
-                                t.energy.facility_kwh.low * 1000.0,
-                                t.energy.facility_kwh.high * 1000.0,
-                            ), None)
+                            (
+                                format!(
+                                    "  t{} [{}] {:.2} Wh  ({:.2}..{:.2})",
+                                    idx + 1,
+                                    t.model_short,
+                                    wh,
+                                    t.energy.facility_kwh.low * 1000.0,
+                                    t.energy.facility_kwh.high * 1000.0,
+                                ),
+                                None,
+                            )
                         }
                         HoverSource::Water => {
                             let wml = t.energy.water_total_ml.mid;
-                            (format!(
-                                "  t{} [{}] {:.2} mL  ({:.2}..{:.2})",
-                                idx + 1, t.model_short, wml,
-                                t.energy.water_total_ml.low,
-                                t.energy.water_total_ml.high,
-                            ), None)
+                            (
+                                format!(
+                                    "  t{} [{}] {:.2} mL  ({:.2}..{:.2})",
+                                    idx + 1,
+                                    t.model_short,
+                                    wml,
+                                    t.energy.water_total_ml.low,
+                                    t.energy.water_total_ml.high,
+                                ),
+                                None,
+                            )
                         }
-                        HoverSource::Budget => (format!(
-                            "  t{} [{}] +{}  total {}",
-                            idx + 1, t.model_short, format_cost(t.cost_change), format_cost(t.total_cost),
-                        ), None),
+                        HoverSource::Budget => (
+                            format!(
+                                "  t{} [{}] +{}  total {}",
+                                idx + 1,
+                                t.model_short,
+                                format_cost(t.cost_change),
+                                format_cost(t.total_cost),
+                            ),
+                            None,
+                        ),
                     };
                     let sc = scene_to_egui(*sess_color);
                     entries.push((name.clone(), sc, detail, breakdown, t.cost_change));
@@ -2273,7 +3592,9 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             entries.truncate(8);
 
             // Find nearby skill invocations
-            let mut nearby_skills: Vec<&str> = cd.skill_xs.iter()
+            let mut nearby_skills: Vec<&str> = cd
+                .skill_xs
+                .iter()
                 .filter(|(x, _)| {
                     let snap = if entries.len() > 1 { 1.5 } else { 0.5 };
                     (x - hx).abs() <= snap
@@ -2283,44 +3604,85 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
             nearby_skills.dedup();
 
             // For WeeklyCost/Budget, compute cumulative combined cost at hovered x
-            let running_total_header: Option<String> = if matches!(hs.source, HoverSource::WeeklyCost) {
-                let pts = &cd.combined_cost_pts;
-                let idx = pts.partition_point(|p| p[0] <= hx);
-                let total = if idx > 0 { pts[idx - 1][1] } else if !pts.is_empty() { pts[0][1] } else { 0.0 };
-                Some(format!("total {}", format_cost(total)))
-            } else if matches!(hs.source, HoverSource::Budget) {
-                let period_start_x = billing.period_start_x();
-                let base_cost = cd.budget_cost_pts.iter()
-                    .find(|p| p[0] >= period_start_x).map(|p| p[1]).unwrap_or(0.0);
-                let idx = cd.budget_cost_pts.partition_point(|p| p[0] <= hx);
-                let raw = if idx > 0 { cd.budget_cost_pts[idx - 1][1] } else { 0.0 };
-                let spent = (raw - base_cost).max(0.0);
-                let remaining = (billing.limit_usd - spent).max(0.0);
-                let pct = if billing.limit_usd > 0.0 { spent / billing.limit_usd * 100.0 } else { 0.0 };
-                let elapsed_days = (hx - period_start_x) / (60.0 * 24.0);
-                let rate_line = if elapsed_days > 0.1 {
-                    let per_day = spent / elapsed_days;
-                    format!("  {}/day  proj {}/mo", format_cost(per_day), format_cost(per_day * 30.0))
-                } else { String::new() };
-                // Format date from hx
-                let secs = (hx * 60.0) as libc::time_t;
-                let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-                unsafe { libc::localtime_r(&secs, &mut tm); }
-                let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                let month = months.get(tm.tm_mon as usize).copied().unwrap_or("?");
-                Some(format!(
-                    "{} {} {:02}:{:02}  spent {} ({:.0}%)  remaining {}{}",
-                    month, tm.tm_mday, tm.tm_hour, tm.tm_min,
-                    format_cost(spent), pct, format_cost(remaining), rate_line,
-                ))
-            } else { None };
+            let running_total_header: Option<String> =
+                if matches!(hs.source, HoverSource::WeeklyCost) {
+                    let pts = &cd.combined_cost_pts;
+                    let idx = pts.partition_point(|p| p[0] <= hx);
+                    let total = if idx > 0 {
+                        pts[idx - 1][1]
+                    } else if !pts.is_empty() {
+                        pts[0][1]
+                    } else {
+                        0.0
+                    };
+                    Some(format!("total {}", format_cost(total)))
+                } else if matches!(hs.source, HoverSource::Budget) {
+                    let period_start_x = billing.period_start_x();
+                    let base_cost = cd
+                        .budget_cost_pts
+                        .iter()
+                        .find(|p| p[0] >= period_start_x)
+                        .map(|p| p[1])
+                        .unwrap_or(0.0);
+                    let idx = cd.budget_cost_pts.partition_point(|p| p[0] <= hx);
+                    let raw = if idx > 0 {
+                        cd.budget_cost_pts[idx - 1][1]
+                    } else {
+                        0.0
+                    };
+                    let spent = (raw - base_cost).max(0.0);
+                    let remaining = (billing.limit_usd - spent).max(0.0);
+                    let pct = if billing.limit_usd > 0.0 {
+                        spent / billing.limit_usd * 100.0
+                    } else {
+                        0.0
+                    };
+                    let elapsed_days = (hx - period_start_x) / (60.0 * 24.0);
+                    let rate_line = if elapsed_days > 0.1 {
+                        let per_day = spent / elapsed_days;
+                        format!(
+                            "  {}/day  proj {}/mo",
+                            format_cost(per_day),
+                            format_cost(per_day * 30.0)
+                        )
+                    } else {
+                        String::new()
+                    };
+                    // Format date from hx
+                    let secs = (hx * 60.0) as libc::time_t;
+                    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+                    unsafe {
+                        libc::localtime_r(&secs, &mut tm);
+                    }
+                    let months = [
+                        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+                        "Nov", "Dec",
+                    ];
+                    let month = months.get(tm.tm_mon as usize).copied().unwrap_or("?");
+                    Some(format!(
+                        "{} {} {:02}:{:02}  spent {} ({:.0}%)  remaining {}{}",
+                        month,
+                        tm.tm_mday,
+                        tm.tm_hour,
+                        tm.tm_min,
+                        format_cost(spent),
+                        pct,
+                        format_cost(remaining),
+                        rate_line,
+                    ))
+                } else {
+                    None
+                };
 
             if !entries.is_empty() {
                 let win_rect = ui.ctx().screen_rect();
                 let tip_w = 420.0_f32;
-                let row_count = entries.len() + if running_total_header.is_some() { 1 } else { 0 }
-                    + nearby_skills.len() + if context_footer.is_some() { 1 } else { 0 }
-                    + if omitted > 0 { 1 } else { 0 } + 1; // +1 for header
+                let row_count = entries.len()
+                    + if running_total_header.is_some() { 1 } else { 0 }
+                    + nearby_skills.len()
+                    + if context_footer.is_some() { 1 } else { 0 }
+                    + if omitted > 0 { 1 } else { 0 }
+                    + 1; // +1 for header
                 let tip_h = row_count as f32 * 16.0 + 20.0;
                 let offset = 14.0;
                 let x_offset = if cursor.x + tip_w + offset > win_rect.right() {
@@ -2363,220 +3725,616 @@ fn draw_big(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, usage: &usage::Us
 
                                 if let Some(hdr) = &running_total_header {
                                     ui.add(egui::Label::new(
-                                        egui::RichText::new(hdr).monospace().size(11.0).color(Palette::INPUT_TINT)
+                                        egui::RichText::new(hdr)
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(Palette::INPUT_TINT),
                                     ));
                                 }
 
                                 // Column colors matching bar segments
-                                let c_input = egui::Color32::from_rgb(60, 120, 200);    // fresh input (blue) — matches fresh$ bars
+                                let c_input = egui::Color32::from_rgb(60, 120, 200); // fresh input (blue) — matches fresh$ bars
                                 let c_cache_read = egui::Color32::from_rgb(80, 180, 100); // cache read (green) — matches read$ bars
                                 let c_cache_create = egui::Color32::from_rgb(220, 160, 60); // cache create (gold) — matches create$ bars
-                                let c_output = egui::Color32::from_rgb(220, 160, 60);   // output (gold)
-                                let c_think = egui::Color32::from_rgb(180, 80, 200);    // output thinking (purple)
+                                let c_output = egui::Color32::from_rgb(220, 160, 60); // output (gold)
+                                let c_think = egui::Color32::from_rgb(180, 80, 200); // output thinking (purple)
                                 let c_total = Palette::TEXT_BRIGHT;
                                 let c_meta = Palette::TEXT_DIM;
-                                let c_pct = egui::Color32::from_rgba_unmultiplied(180, 180, 180, 100);
+                                let c_pct =
+                                    egui::Color32::from_rgba_unmultiplied(180, 180, 180, 100);
                                 let mono = egui::FontId::monospace(11.0);
                                 let mono_sm = egui::FontId::monospace(9.0);
 
                                 // Right-aligned colored cell helper
-                                let cell = |ui: &mut egui::Ui, text: &str, color: egui::Color32, f: &egui::FontId| {
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.add(egui::Label::new(egui::RichText::new(text).font(f.clone()).color(color)));
-                                    });
-                                };
+                                let cell =
+                                    |ui: &mut egui::Ui,
+                                     text: &str,
+                                     color: egui::Color32,
+                                     f: &egui::FontId| {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(egui::Label::new(
+                                                    egui::RichText::new(text)
+                                                        .font(f.clone())
+                                                        .color(color),
+                                                ));
+                                            },
+                                        );
+                                    };
+                                // Header cell with dotted underline and tooltip
+                                let header_cell =
+                                    |ui: &mut egui::Ui,
+                                     text: &str,
+                                     color: egui::Color32,
+                                     f: &egui::FontId,
+                                     tooltip: &str| {
+                                        // Draw text
+                                        let galley = ui.painter().layout_no_wrap(
+                                            text.to_string(),
+                                            f.clone(),
+                                            color,
+                                        );
+                                        let size = galley.size();
+                                        let (rect, resp) =
+                                            ui.allocate_exact_size(size, egui::Sense::hover());
+                                        ui.painter().galley(rect.min, galley, color);
+
+                                        // Draw dotted underline
+                                        let y = rect.bottom() + 1.0;
+                                        let mut x = rect.left();
+                                        while x < rect.right() {
+                                            let seg_end = (x + 2.0).min(rect.right());
+                                            ui.painter().line_segment(
+                                                [egui::pos2(x, y), egui::pos2(seg_end, y)],
+                                                egui::Stroke::new(1.0, color.gamma_multiply(0.5)),
+                                            );
+                                            x += 4.0;
+                                        }
+
+                                        // Show tooltip on hover
+                                        if resp.hovered() {
+                                            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                                egui::Area::new(egui::Id::new((
+                                                    "header_tooltip",
+                                                    text,
+                                                )))
+                                                .order(egui::Order::Tooltip)
+                                                .fixed_pos(egui::pos2(pos.x, pos.y + 20.0))
+                                                .show(ui.ctx(), |ui| {
+                                                    egui::Frame::none()
+                                                        .fill(egui::Color32::from_rgb(30, 28, 20))
+                                                        .stroke(egui::Stroke::new(
+                                                            0.5,
+                                                            egui::Color32::from_rgb(100, 95, 80),
+                                                        ))
+                                                        .rounding(3.0)
+                                                        .inner_margin(egui::Margin::same(4.0))
+                                                        .show(ui, |ui| {
+                                                            ui.label(tooltip);
+                                                        });
+                                                });
+                                            }
+                                        }
+                                    };
                                 // Left-aligned colored cell helper
-                                let lcell = |ui: &mut egui::Ui, text: &str, color: egui::Color32, f: &egui::FontId| {
-                                    ui.add(egui::Label::new(egui::RichText::new(text).font(f.clone()).color(color)));
-                                };
+                                let lcell =
+                                    |ui: &mut egui::Ui,
+                                     text: &str,
+                                     color: egui::Color32,
+                                     f: &egui::FontId| {
+                                        ui.add(egui::Label::new(
+                                            egui::RichText::new(text).font(f.clone()).color(color),
+                                        ));
+                                    };
 
                                 let fmt_pct = |v: f64, total: f64| -> String {
-                                    if total < 1e-9 { return String::new(); }
+                                    if total < 1e-9 {
+                                        return String::new();
+                                    }
                                     let p = v / total * 100.0;
-                                    if p < 0.1 { String::new() } else { format!("{:.0}%", p) }
+                                    if p < 0.1 {
+                                        String::new()
+                                    } else {
+                                        format!("{:.0}%", p)
+                                    }
                                 };
 
                                 // Pre-resolve all turns so we can iterate twice (header + grid)
-                                let resolved: Vec<_> = entries.iter().filter_map(|(name, sess_color, _, _, _)| {
-                                    let nearest = cd.session_turns.iter()
-                                        .find(|(n, _, _)| n == name)
-                                        .and_then(|(_, _, turns)| {
-                                            turns.iter().enumerate().min_by(|(_, a), (_, b)| {
-                                                let ax = if use_ts_x { a.ts_x } else { a.x };
-                                                let bx = if use_ts_x { b.ts_x } else { b.x };
-                                                (ax - hx).abs().partial_cmp(&(bx - hx).abs()).unwrap()
-                                            })
-                                        });
-                                    nearest.map(|(idx, t)| (name.as_str(), sess_color, idx, t))
-                                }).collect();
+                                let resolved: Vec<_> = entries
+                                    .iter()
+                                    .filter_map(|(name, sess_color, _, _, _)| {
+                                        let nearest = cd
+                                            .session_turns
+                                            .iter()
+                                            .find(|(n, _, _)| n == name)
+                                            .and_then(|(_, _, turns)| {
+                                                turns.iter().enumerate().min_by(|(_, a), (_, b)| {
+                                                    let ax = if use_ts_x { a.ts_x } else { a.x };
+                                                    let bx = if use_ts_x { b.ts_x } else { b.x };
+                                                    (ax - hx)
+                                                        .abs()
+                                                        .partial_cmp(&(bx - hx).abs())
+                                                        .unwrap()
+                                                })
+                                            });
+                                        nearest.map(|(idx, t)| (name.as_str(), sess_color, idx, t))
+                                    })
+                                    .collect();
 
                                 ui.spacing_mut().item_spacing = egui::vec2(10.0, 1.0);
                                 egui::Grid::new("tooltip_grid")
                                     .min_col_width(0.0)
                                     .spacing(egui::vec2(10.0, 1.0))
                                     .show(ui, |ui| {
-                                    // Header row
-                                    lcell(ui, "session", hdr_col, &mono);
-                                    lcell(ui, "turn", hdr_col, &mono);
-                                    lcell(ui, "model", hdr_col, &mono);
-                                    match hs.source {
-                                        HoverSource::Cost => {
-                                            cell(ui, "input", c_input, &mono);
-                                            cell(ui, "in(read)", c_cache_read, &mono);
-                                            cell(ui, "in(write)", c_cache_create, &mono);
-                                            cell(ui, "output", c_output, &mono);
-                                            cell(ui, "out(think)", c_think, &mono);
-                                            cell(ui, "turn", c_total, &mono);
-                                            cell(ui, "cumul", c_meta, &mono);
-                                        }
-                                        HoverSource::Tokens => {
-                                            cell(ui, "input", c_input, &mono);
-                                            cell(ui, "in(read)", c_cache_read, &mono);
-                                            cell(ui, "in(write)", c_cache_create, &mono);
-                                            cell(ui, "output", c_output, &mono);
-                                            cell(ui, "out(think)", c_think, &mono);
-                                            cell(ui, "cumul", c_meta, &mono);
-                                        }
-                                        HoverSource::Energy => {
-                                            cell(ui, "Wh", egui::Color32::from_rgb(120, 200, 80), &mono);
-                                        }
-                                        HoverSource::Water => {
-                                            cell(ui, "mL", egui::Color32::from_rgb(80, 180, 220), &mono);
-                                        }
-                                        _ => {
-                                            cell(ui, "cost", c_input, &mono);
-                                            cell(ui, "+delta", c_total, &mono);
-                                            cell(ui, "total", hdr_col, &mono);
-                                        }
-                                    }
-                                    ui.end_row();
-
-                                    // Data rows: value row + percent row per session
-                                    for (name, sess_color, idx, t) in &resolved {
-                                        let short_name = if name.len() > 16 { &name[..16] } else { name };
-                                        let think_mark = if t.has_thinking { "*" } else { "" };
-
-                                        // Value row
-                                        lcell(ui, short_name, **sess_color, &mono);
-                                        cell(ui, &format!("t{}", idx + 1), c_meta, &mono);
-                                        lcell(ui, &format!("{}{}", t.model_short, think_mark), c_meta, &mono);
+                                        // Header row
+                                        lcell(ui, "session", hdr_col, &mono);
+                                        lcell(ui, "turn", hdr_col, &mono);
+                                        lcell(ui, "model", hdr_col, &mono);
                                         match hs.source {
                                             HoverSource::Cost => {
-                                                let (out_reg, out_think) = if t.has_thinking {
-                                                    (0.0, t.out_cost)
-                                                } else {
-                                                    (t.out_cost, 0.0)
-                                                };
-                                                cell(ui, &format_cost(t.fresh_input_cost), c_input, &mono);
-                                                cell(ui, &format_cost(t.cache_read_cost), c_cache_read, &mono);
-                                                cell(ui, &format_cost(t.cache_create_cost), c_cache_create, &mono);
-                                                cell(ui, &format_cost(out_reg), c_output, &mono);
-                                                cell(ui, &format_cost(out_think), c_think, &mono);
-                                                cell(ui, &format_cost(t.cost_change), c_total, &mono);
-                                                cell(ui, &format_cost(t.total_cost), c_meta, &mono);
+                                                header_cell(
+                                                    ui,
+                                                    "in",
+                                                    c_input,
+                                                    &mono,
+                                                    "Fresh input tokens (non-cached)",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "in(read)",
+                                                    c_cache_read,
+                                                    &mono,
+                                                    "Cached input tokens (read from cache)",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "in(write)",
+                                                    c_cache_create,
+                                                    &mono,
+                                                    "Tokens written to prompt cache",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "out",
+                                                    c_output,
+                                                    &mono,
+                                                    "Output tokens (non-thinking)",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "out(think)",
+                                                    c_think,
+                                                    &mono,
+                                                    "Thinking/reasoning tokens",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "turn",
+                                                    c_total,
+                                                    &mono,
+                                                    "Cost change this turn",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "cumul",
+                                                    c_meta,
+                                                    &mono,
+                                                    "Cumulative session total",
+                                                );
                                             }
                                             HoverSource::Tokens => {
-                                                let (out_reg, out_think) = if t.has_thinking {
-                                                    (0, t.out_tok)
-                                                } else {
-                                                    (t.out_tok, 0)
-                                                };
-                                                cell(ui, &format_tokens(t.in_tok), c_input, &mono);
-                                                cell(ui, &format_tokens(t.cache_read_tok), c_cache_read, &mono);
-                                                cell(ui, &format_tokens(t.cache_create_tok), c_cache_create, &mono);
-                                                cell(ui, &format_tokens(out_reg), c_output, &mono);
-                                                cell(ui, &format_tokens(out_think), c_think, &mono);
-                                                let cumul_tok = t.total_in_tok + t.total_out_tok;
-                                                cell(ui, &format_tokens(cumul_tok), c_meta, &mono);
+                                                header_cell(
+                                                    ui,
+                                                    "in",
+                                                    c_input,
+                                                    &mono,
+                                                    "Fresh input tokens",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "in(read)",
+                                                    c_cache_read,
+                                                    &mono,
+                                                    "Cached input tokens",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "in(write)",
+                                                    c_cache_create,
+                                                    &mono,
+                                                    "Tokens written to cache",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "out",
+                                                    c_output,
+                                                    &mono,
+                                                    "Output tokens",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "out(think)",
+                                                    c_think,
+                                                    &mono,
+                                                    "Thinking tokens",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "cumul",
+                                                    c_meta,
+                                                    &mono,
+                                                    "Cumulative tokens",
+                                                );
                                             }
                                             HoverSource::Energy => {
-                                                let wh = t.energy.facility_kwh.mid * 1000.0;
-                                                cell(ui, &format!("{:.2} Wh", wh), egui::Color32::from_rgb(120, 200, 80), &mono);
+                                                header_cell(
+                                                    ui,
+                                                    "Wh",
+                                                    egui::Color32::from_rgb(120, 200, 80),
+                                                    &mono,
+                                                    "Facility energy (Wh)",
+                                                );
                                             }
                                             HoverSource::Water => {
-                                                let wml = t.energy.water_total_ml.mid;
-                                                cell(ui, &format!("{:.1} mL", wml), egui::Color32::from_rgb(80, 180, 220), &mono);
+                                                header_cell(
+                                                    ui,
+                                                    "mL",
+                                                    egui::Color32::from_rgb(80, 180, 220),
+                                                    &mono,
+                                                    "Total water (mL)",
+                                                );
                                             }
                                             _ => {
-                                                cell(ui, &format_cost(t.in_cost + t.out_cost), c_input, &mono);
-                                                cell(ui, &format!("+{}", format_cost(t.cost_change)), c_total, &mono);
-                                                cell(ui, &format_cost(t.total_cost), c_meta, &mono);
+                                                header_cell(
+                                                    ui,
+                                                    "cost",
+                                                    c_input,
+                                                    &mono,
+                                                    "Turn cost",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "+delta",
+                                                    c_total,
+                                                    &mono,
+                                                    "Cost change",
+                                                );
+                                                header_cell(
+                                                    ui,
+                                                    "total",
+                                                    hdr_col,
+                                                    &mono,
+                                                    "Cumulative total",
+                                                );
                                             }
                                         }
                                         ui.end_row();
 
-                                        // Percent row (smaller font, dimmer)
-                                        ui.label(""); // session
-                                        ui.label(""); // turn
-                                        ui.label(""); // model
-                                        match hs.source {
-                                            HoverSource::Cost => {
-                                                let turn_total = t.cost_change.max(1e-9);
-                                                let (out_reg, out_think) = if t.has_thinking {
-                                                    (0.0, t.out_cost)
-                                                } else {
-                                                    (t.out_cost, 0.0)
-                                                };
-                                                cell(ui, &fmt_pct(t.fresh_input_cost, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(t.cache_read_cost, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(t.cache_create_cost, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_reg, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_think, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(t.cost_change, t.total_cost), c_pct, &mono_sm);
-                                                ui.label(""); // cumul has no %
+                                        // Data rows: value row + percent row per session
+                                        for (name, sess_color, idx, t) in &resolved {
+                                            let short_name =
+                                                if name.len() > 16 { &name[..16] } else { name };
+                                            let think_mark = if t.has_thinking { "*" } else { "" };
+
+                                            // Value row
+                                            lcell(ui, short_name, **sess_color, &mono);
+                                            cell(ui, &format!("t{}", idx + 1), c_meta, &mono);
+                                            lcell(
+                                                ui,
+                                                &format!("{}{}", t.model_short, think_mark),
+                                                c_meta,
+                                                &mono,
+                                            );
+                                            match hs.source {
+                                                HoverSource::Cost => {
+                                                    let (out_reg, out_think) = if t.has_thinking {
+                                                        (0.0, t.out_cost)
+                                                    } else {
+                                                        (t.out_cost, 0.0)
+                                                    };
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(t.fresh_input_cost),
+                                                        c_input,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(t.cache_read_cost),
+                                                        c_cache_read,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(t.cache_create_cost),
+                                                        c_cache_create,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(out_reg),
+                                                        c_output,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(out_think),
+                                                        c_think,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(t.cost_change),
+                                                        c_total,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(t.total_cost),
+                                                        c_meta,
+                                                        &mono,
+                                                    );
+                                                }
+                                                HoverSource::Tokens => {
+                                                    let (out_reg, out_think) = if t.has_thinking {
+                                                        (0, t.out_tok)
+                                                    } else {
+                                                        (t.out_tok, 0)
+                                                    };
+                                                    cell(
+                                                        ui,
+                                                        &format_tokens(t.in_tok),
+                                                        c_input,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_tokens(t.cache_read_tok),
+                                                        c_cache_read,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_tokens(t.cache_create_tok),
+                                                        c_cache_create,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_tokens(out_reg),
+                                                        c_output,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_tokens(out_think),
+                                                        c_think,
+                                                        &mono,
+                                                    );
+                                                    let cumul_tok =
+                                                        t.total_in_tok + t.total_out_tok;
+                                                    cell(
+                                                        ui,
+                                                        &format_tokens(cumul_tok),
+                                                        c_meta,
+                                                        &mono,
+                                                    );
+                                                }
+                                                HoverSource::Energy => {
+                                                    let wh = t.energy.facility_kwh.mid * 1000.0;
+                                                    cell(
+                                                        ui,
+                                                        &format!("{:.2} Wh", wh),
+                                                        egui::Color32::from_rgb(120, 200, 80),
+                                                        &mono,
+                                                    );
+                                                }
+                                                HoverSource::Water => {
+                                                    let wml = t.energy.water_total_ml.mid;
+                                                    cell(
+                                                        ui,
+                                                        &format!("{:.1} mL", wml),
+                                                        egui::Color32::from_rgb(80, 180, 220),
+                                                        &mono,
+                                                    );
+                                                }
+                                                _ => {
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(t.in_cost + t.out_cost),
+                                                        c_input,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format!("+{}", format_cost(t.cost_change)),
+                                                        c_total,
+                                                        &mono,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &format_cost(t.total_cost),
+                                                        c_meta,
+                                                        &mono,
+                                                    );
+                                                }
                                             }
-                                            HoverSource::Tokens => {
-                                                let turn_total = (t.in_tok + t.cache_read_tok + t.cache_create_tok + t.out_tok) as f64;
-                                                let (out_reg, out_think) = if t.has_thinking {
-                                                    (0.0, t.out_tok as f64)
-                                                } else {
-                                                    (t.out_tok as f64, 0.0)
-                                                };
-                                                let cumul_tok = (t.total_in_tok + t.total_out_tok) as f64;
-                                                cell(ui, &fmt_pct(t.in_tok as f64, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(t.cache_read_tok as f64, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(t.cache_create_tok as f64, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_reg, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(out_think, turn_total), c_pct, &mono_sm);
-                                                cell(ui, &fmt_pct(turn_total, cumul_tok), c_pct, &mono_sm);
+                                            ui.end_row();
+
+                                            // Percent row (smaller font, dimmer)
+                                            ui.label(""); // session
+                                            ui.label(""); // turn
+                                            ui.label(""); // model
+                                            match hs.source {
+                                                HoverSource::Cost => {
+                                                    let turn_total = t.cost_change.max(1e-9);
+                                                    let (out_reg, out_think) = if t.has_thinking {
+                                                        (0.0, t.out_cost)
+                                                    } else {
+                                                        (t.out_cost, 0.0)
+                                                    };
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(t.fresh_input_cost, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(t.cache_read_cost, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(t.cache_create_cost, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(out_reg, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(out_think, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(t.cost_change, t.total_cost),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    ui.label(""); // cumul has no %
+                                                }
+                                                HoverSource::Tokens => {
+                                                    let turn_total = (t.in_tok
+                                                        + t.cache_read_tok
+                                                        + t.cache_create_tok
+                                                        + t.out_tok)
+                                                        as f64;
+                                                    let (out_reg, out_think) = if t.has_thinking {
+                                                        (0.0, t.out_tok as f64)
+                                                    } else {
+                                                        (t.out_tok as f64, 0.0)
+                                                    };
+                                                    let cumul_tok =
+                                                        (t.total_in_tok + t.total_out_tok) as f64;
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(t.in_tok as f64, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(
+                                                            t.cache_read_tok as f64,
+                                                            turn_total,
+                                                        ),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(
+                                                            t.cache_create_tok as f64,
+                                                            turn_total,
+                                                        ),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(out_reg, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(out_think, turn_total),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                    cell(
+                                                        ui,
+                                                        &fmt_pct(turn_total, cumul_tok),
+                                                        c_pct,
+                                                        &mono_sm,
+                                                    );
+                                                }
+                                                _ => {}
                                             }
-                                            _ => {}
+                                            ui.end_row();
                                         }
-                                        ui.end_row();
-                                    }
-                                });
+                                    });
                                 if omitted > 0 {
                                     ui.add(egui::Label::new(
-                                        egui::RichText::new(format!("+{} more", omitted)).font(font.clone()).color(Palette::TEXT_DIM)
+                                        egui::RichText::new(format!("+{} more", omitted))
+                                            .font(font.clone())
+                                            .color(Palette::TEXT_DIM),
                                     ));
                                 }
                                 for sk in &nearby_skills {
                                     let short = sk.rsplit(':').next().unwrap_or(sk);
                                     ui.add(egui::Label::new(
-                                        egui::RichText::new(format!("skill: {}", short)).font(font.clone()).color(Palette::SKILL_MARKER)
+                                        egui::RichText::new(format!("skill: {}", short))
+                                            .font(font.clone())
+                                            .color(Palette::SKILL_MARKER),
                                     ));
                                 }
-                                if let Some((ctx_tok, ctx_limit, burn_rate, is_reset)) = context_footer {
-                                    let pct = if ctx_limit > 0 { (ctx_tok as f64 / ctx_limit as f64 * 100.0).round() as u32 } else { 0 };
+                                if let Some((ctx_tok, ctx_limit, burn_rate, is_reset)) =
+                                    context_footer
+                                {
+                                    let pct = if ctx_limit > 0 {
+                                        (ctx_tok as f64 / ctx_limit as f64 * 100.0).round() as u32
+                                    } else {
+                                        0
+                                    };
                                     let remaining = ctx_limit.saturating_sub(ctx_tok);
                                     let countdown = if burn_rate > 0.0 {
-                                        format!("  ~{} turns til compact", (remaining as f64 / burn_rate).round() as u64)
-                                    } else { String::new() };
+                                        format!(
+                                            "  ~{} turns til compact",
+                                            (remaining as f64 / burn_rate).round() as u64
+                                        )
+                                    } else {
+                                        String::new()
+                                    };
                                     let reset_tag = if is_reset { " [RESET]" } else { "" };
-                                    let ctx_line = format!("ctx {}% {}/{}  rem {}{}{}",
-                                        pct, format_tokens(ctx_tok), format_tokens(ctx_limit),
-                                        format_tokens(remaining), countdown, reset_tag);
-                                    let ctx_color = if pct >= 80 { egui::Color32::from_rgb(220, 80, 60) }
-                                        else if pct >= 60 { egui::Color32::from_rgb(220, 180, 60) }
-                                        else { Palette::TEXT_DIM };
+                                    let ctx_line = format!(
+                                        "ctx {}% {}/{}  rem {}{}{}",
+                                        pct,
+                                        format_tokens(ctx_tok),
+                                        format_tokens(ctx_limit),
+                                        format_tokens(remaining),
+                                        countdown,
+                                        reset_tag
+                                    );
+                                    let ctx_color = if pct >= 80 {
+                                        egui::Color32::from_rgb(220, 80, 60)
+                                    } else if pct >= 60 {
+                                        egui::Color32::from_rgb(220, 180, 60)
+                                    } else {
+                                        Palette::TEXT_DIM
+                                    };
                                     ui.add(egui::Label::new(
-                                        egui::RichText::new(ctx_line).font(font.clone()).color(ctx_color)
+                                        egui::RichText::new(ctx_line)
+                                            .font(font.clone())
+                                            .color(ctx_color),
                                     ));
                                 }
                                 if is_pinned {
                                     ui.add(egui::Label::new(
-                                        egui::RichText::new("pinned (Esc to clear)").font(font).color(
-                                            egui::Color32::from_rgba_unmultiplied(180, 160, 100, 140))
+                                        egui::RichText::new("pinned (Esc to clear)")
+                                            .font(font)
+                                            .color(egui::Color32::from_rgba_unmultiplied(
+                                                180, 160, 100, 140,
+                                            )),
                                     ));
                                 }
                             });
@@ -2592,9 +4350,27 @@ fn draw_chart_label(ui: &mut egui::Ui, title: &str, top_label: &str, bot_label: 
     // Inset from edges to avoid colliding with y-axis tick labels
     let y_inset = 12.0; // clear top/bottom axis ticks
     let x_inset = 4.0;
-    p.text(egui::pos2(rect.left() + x_inset, rect.top() + y_inset), egui::Align2::LEFT_TOP, title, egui::FontId::monospace(10.0), Palette::TEXT_DIM);
-    p.text(egui::pos2(rect.right() - x_inset, rect.top() + y_inset), egui::Align2::RIGHT_TOP, top_label, egui::FontId::monospace(9.0), Palette::INPUT_TINT);
-    p.text(egui::pos2(rect.right() - x_inset, rect.bottom() - y_inset), egui::Align2::RIGHT_BOTTOM, bot_label, egui::FontId::monospace(9.0), Palette::OUTPUT_TINT);
+    p.text(
+        egui::pos2(rect.left() + x_inset, rect.top() + y_inset),
+        egui::Align2::LEFT_TOP,
+        title,
+        egui::FontId::monospace(10.0),
+        Palette::TEXT_DIM,
+    );
+    p.text(
+        egui::pos2(rect.right() - x_inset, rect.top() + y_inset),
+        egui::Align2::RIGHT_TOP,
+        top_label,
+        egui::FontId::monospace(9.0),
+        Palette::INPUT_TINT,
+    );
+    p.text(
+        egui::pos2(rect.right() - x_inset, rect.bottom() - y_inset),
+        egui::Align2::RIGHT_BOTTOM,
+        bot_label,
+        egui::FontId::monospace(9.0),
+        Palette::OUTPUT_TINT,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2610,15 +4386,22 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
     let x0 = area.left() + pad;
     let y0 = area.top() + pad;
 
-    let cost_w   = w * 0.38;
-    let token_w  = w * 0.17;
-    let tool_w   = w * 0.20;
+    let cost_w = w * 0.38;
+    let token_w = w * 0.17;
+    let tool_w = w * 0.20;
     let legend_w = w - cost_w - token_w - tool_w - gap * 3.0;
 
-    let cost_rect   = egui::Rect::from_min_size(egui::pos2(x0, y0), egui::vec2(cost_w, h));
-    let token_rect  = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, y0), egui::vec2(token_w, h));
-    let tool_rect   = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + token_w + gap * 2.0, y0), egui::vec2(tool_w, h));
-    let legend_rect = egui::Rect::from_min_size(egui::pos2(x0 + cost_w + token_w + tool_w + gap * 3.0, y0), egui::vec2(legend_w, h));
+    let cost_rect = egui::Rect::from_min_size(egui::pos2(x0, y0), egui::vec2(cost_w, h));
+    let token_rect =
+        egui::Rect::from_min_size(egui::pos2(x0 + cost_w + gap, y0), egui::vec2(token_w, h));
+    let tool_rect = egui::Rect::from_min_size(
+        egui::pos2(x0 + cost_w + token_w + gap * 2.0, y0),
+        egui::vec2(tool_w, h),
+    );
+    let legend_rect = egui::Rect::from_min_size(
+        egui::pos2(x0 + cost_w + token_w + tool_w + gap * 3.0, y0),
+        egui::vec2(legend_w, h),
+    );
 
     let strip_frame = egui::Frame::none()
         .fill(Palette::BG)
@@ -2633,14 +4416,30 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
                 .include_y(cd.per_turn_in_cost_max * 1.1)
                 .include_y(-cd.per_turn_out_cost_max * 1.1)
                 .show(ui, |pui| {
-                    let fresh = BarChart::new(bars_to_egui(&cd.in_cost_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh$");
-                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("read$").stack_on(&[&fresh]);
-                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create$").stack_on(&[&fresh, &read]);
+                    let fresh = BarChart::new(bars_to_egui(&cd.in_cost_fresh_bars))
+                        .color(egui::Color32::from_rgb(60, 120, 200))
+                        .name("fresh$");
+                    let read = BarChart::new(bars_to_egui(&cd.in_cost_cache_read_bars))
+                        .color(egui::Color32::from_rgb(80, 180, 100))
+                        .name("read$")
+                        .stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_cost_cache_create_bars))
+                        .color(egui::Color32::from_rgb(220, 160, 60))
+                        .name("create$")
+                        .stack_on(&[&fresh, &read]);
                     pui.bar_chart(fresh);
                     pui.bar_chart(read);
                     pui.bar_chart(create);
                     pui.bar_chart(BarChart::new(bars_to_egui(&cd.out_cost_bars)).name("out$"));
-                    render_egui::render_markers(pui, &scene::build_markers(&cd.agent_xs, &cd.skill_xs, &cd.compaction_xs, &panel_hl.key));
+                    render_egui::render_markers(
+                        pui,
+                        &scene::build_markers(
+                            &cd.agent_xs,
+                            &cd.skill_xs,
+                            &cd.compaction_xs,
+                            &panel_hl.key,
+                        ),
+                    );
                 });
         });
     });
@@ -2652,9 +4451,17 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
                 .include_y(cd.in_max * 1.1)
                 .include_y(-cd.out_max * 1.1)
                 .show(ui, |pui| {
-                    let fresh = BarChart::new(bars_to_egui(&cd.in_tok_fresh_bars)).color(egui::Color32::from_rgb(60, 120, 200)).name("fresh");
-                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars)).color(egui::Color32::from_rgb(80, 180, 100)).name("cached").stack_on(&[&fresh]);
-                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars)).color(egui::Color32::from_rgb(220, 160, 60)).name("create").stack_on(&[&fresh, &read]);
+                    let fresh = BarChart::new(bars_to_egui(&cd.in_tok_fresh_bars))
+                        .color(egui::Color32::from_rgb(60, 120, 200))
+                        .name("fresh");
+                    let read = BarChart::new(bars_to_egui(&cd.in_tok_cache_read_bars))
+                        .color(egui::Color32::from_rgb(80, 180, 100))
+                        .name("cached")
+                        .stack_on(&[&fresh]);
+                    let create = BarChart::new(bars_to_egui(&cd.in_tok_cache_create_bars))
+                        .color(egui::Color32::from_rgb(220, 160, 60))
+                        .name("create")
+                        .stack_on(&[&fresh, &read]);
                     pui.bar_chart(fresh);
                     pui.bar_chart(read);
                     pui.bar_chart(create);
@@ -2680,29 +4487,78 @@ fn draw_strip(ui: &mut egui::Ui, data: &HudData, cd: &ChartData, panel_hl: &Pane
 
             for (si, session) in data.sessions.iter().enumerate() {
                 let row_y = inner.top() + si as f32 * row_h;
-                painter.circle_filled(egui::pos2(inner.left() + 4.0, row_y + row_h * 0.5), 2.5, scene_to_egui(session_color(si)));
-                painter.text(egui::pos2(inner.left() + 10.0, row_y + row_h * 0.3), egui::Align2::LEFT_CENTER, &session.cwd, font.clone(), Palette::TEXT);
-                let stats = format!("{} (in:{} out:{}){}", format_cost(session.total_cost_usd),
-                    format_cost(session.total_input_cost), format_cost(session.total_output_cost),
-                    if session.agent_count > 0 { format!(" {}agt", session.agent_count) } else { String::new() });
-                painter.text(egui::pos2(inner.left() + 10.0, row_y + row_h * 0.75), egui::Align2::LEFT_CENTER, &stats,
-                    egui::FontId::monospace((row_h * 0.4).min(7.5)), Palette::TEXT_DIM);
+                painter.circle_filled(
+                    egui::pos2(inner.left() + 4.0, row_y + row_h * 0.5),
+                    2.5,
+                    scene_to_egui(session_color(si)),
+                );
+                painter.text(
+                    egui::pos2(inner.left() + 10.0, row_y + row_h * 0.3),
+                    egui::Align2::LEFT_CENTER,
+                    &session.cwd,
+                    font.clone(),
+                    Palette::TEXT,
+                );
+                let stats = format!(
+                    "{} (in:{} out:{}){}",
+                    format_cost(session.total_cost_usd),
+                    format_cost(session.total_input_cost),
+                    format_cost(session.total_output_cost),
+                    if session.agent_count > 0 {
+                        format!(" {}agt", session.agent_count)
+                    } else {
+                        String::new()
+                    }
+                );
+                painter.text(
+                    egui::pos2(inner.left() + 10.0, row_y + row_h * 0.75),
+                    egui::Align2::LEFT_CENTER,
+                    &stats,
+                    egui::FontId::monospace((row_h * 0.4).min(7.5)),
+                    Palette::TEXT_DIM,
+                );
             }
 
             if data.sessions.iter().any(|s| s.agent_count > 0) {
-                painter.line_segment([egui::pos2(inner.right() - 30.0, inner.bottom() - 4.0), egui::pos2(inner.right() - 30.0, inner.bottom() - 8.0)], egui::Stroke::new(1.5, Palette::AGENT_MARKER));
-                painter.text(egui::pos2(inner.right() - 27.0, inner.bottom() - 6.0), egui::Align2::LEFT_CENTER, "agt", egui::FontId::monospace(6.0), Palette::AGENT_MARKER);
+                painter.line_segment(
+                    [
+                        egui::pos2(inner.right() - 30.0, inner.bottom() - 4.0),
+                        egui::pos2(inner.right() - 30.0, inner.bottom() - 8.0),
+                    ],
+                    egui::Stroke::new(1.5, Palette::AGENT_MARKER),
+                );
+                painter.text(
+                    egui::pos2(inner.right() - 27.0, inner.bottom() - 6.0),
+                    egui::Align2::LEFT_CENTER,
+                    "agt",
+                    egui::FontId::monospace(6.0),
+                    Palette::AGENT_MARKER,
+                );
             }
             if data.sessions.iter().any(|s| !s.skill_counts.is_empty()) {
-                painter.line_segment([egui::pos2(inner.right() - 60.0, inner.bottom() - 4.0), egui::pos2(inner.right() - 60.0, inner.bottom() - 8.0)], egui::Stroke::new(1.5, Palette::SKILL_MARKER));
-                painter.text(egui::pos2(inner.right() - 57.0, inner.bottom() - 6.0), egui::Align2::LEFT_CENTER, "skill", egui::FontId::monospace(6.0), Palette::SKILL_MARKER);
+                painter.line_segment(
+                    [
+                        egui::pos2(inner.right() - 60.0, inner.bottom() - 4.0),
+                        egui::pos2(inner.right() - 60.0, inner.bottom() - 8.0),
+                    ],
+                    egui::Stroke::new(1.5, Palette::SKILL_MARKER),
+                );
+                painter.text(
+                    egui::pos2(inner.right() - 57.0, inner.bottom() - 6.0),
+                    egui::Align2::LEFT_CENTER,
+                    "skill",
+                    egui::FontId::monospace(6.0),
+                    Palette::SKILL_MARKER,
+                );
             }
         });
     });
 }
 
 fn draw_tool_strip(painter: &egui::Painter, area: egui::Rect, tool_list: &[(String, u32)]) {
-    if tool_list.is_empty() { return; }
+    if tool_list.is_empty() {
+        return;
+    }
     let max_count = tool_list[0].1.max(1) as f32;
     let n = tool_list.len();
     let row_h = (area.height() / n as f32).min(14.0);
@@ -2713,12 +4569,31 @@ fn draw_tool_strip(painter: &egui::Painter, area: egui::Rect, tool_list: &[(Stri
     for (i, (name, count)) in tool_list.iter().enumerate() {
         let y = area.top() + i as f32 * row_h;
         let cy = y + row_h * 0.5;
-        painter.text(egui::pos2(area.left(), cy), egui::Align2::LEFT_CENTER, name, font.clone(), Palette::TEXT_DIM);
+        painter.text(
+            egui::pos2(area.left(), cy),
+            egui::Align2::LEFT_CENTER,
+            name,
+            font.clone(),
+            Palette::TEXT_DIM,
+        );
         let bar_w = (*count as f32 / max_count) * bar_max_w;
         if bar_w > 0.5 {
-            painter.rect_filled(egui::Rect::from_min_size(egui::pos2(area.left() + name_w, y + row_h * 0.25), egui::vec2(bar_w, row_h * 0.5)), 1.0, Palette::TOOL_BAR);
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(area.left() + name_w, y + row_h * 0.25),
+                    egui::vec2(bar_w, row_h * 0.5),
+                ),
+                1.0,
+                Palette::TOOL_BAR,
+            );
         }
-        painter.text(egui::pos2(area.left() + name_w + bar_max_w + 2.0, cy), egui::Align2::LEFT_CENTER, &count.to_string(), font.clone(), Palette::TEXT_DIM);
+        painter.text(
+            egui::pos2(area.left() + name_w + bar_max_w + 2.0, cy),
+            egui::Align2::LEFT_CENTER,
+            &count.to_string(),
+            font.clone(),
+            Palette::TEXT_DIM,
+        );
     }
 }
 
@@ -2784,14 +4659,23 @@ impl EguiOverlay for Hud {
             }
         }
 
-        let bg = if big_mode { egui::Color32::from_rgb(14, 12, 9) } else { Palette::BG };
+        let bg = if big_mode {
+            egui::Color32::from_rgb(14, 12, 9)
+        } else {
+            Palette::BG
+        };
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(bg))
             .show(egui_context, |ui| {
                 if data.sessions.is_empty() {
                     let area = ui.available_rect_before_wrap();
-                    ui.painter().text(area.center(), egui::Align2::CENTER_CENTER, "no active sessions",
-                        egui::FontId::monospace(if big_mode { 16.0 } else { area.height() * 0.3 }), Palette::TEXT_DIM);
+                    ui.painter().text(
+                        area.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "no active sessions",
+                        egui::FontId::monospace(if big_mode { 16.0 } else { area.height() * 0.3 }),
+                        Palette::TEXT_DIM,
+                    );
                     egui_context.request_repaint();
                     return;
                 }
@@ -2804,16 +4688,18 @@ impl EguiOverlay for Hud {
                 // Compute effective hidden set from active filter + mode
                 let mut effective_hidden: HashSet<String> = match self.filter_mode {
                     FilterMode::Exclude => filter_set.clone(),
-                    FilterMode::Include => {
-                        data.sessions.iter()
-                            .map(|s| s.session_id.clone())
-                            .filter(|id| !filter_set.contains(id))
-                            .collect()
-                    }
+                    FilterMode::Include => data
+                        .sessions
+                        .iter()
+                        .map(|s| s.session_id.clone())
+                        .filter(|id| !filter_set.contains(id))
+                        .collect(),
                 };
                 if self.show_active_only {
                     for s in &data.sessions {
-                        if !s.is_active { effective_hidden.insert(s.session_id.clone()); }
+                        if !s.is_active {
+                            effective_hidden.insert(s.session_id.clone());
+                        }
                     }
                 }
 
@@ -2824,19 +4710,54 @@ impl EguiOverlay for Hud {
                 });
                 if !cache_hit {
                     let cd = build_chart_data(&data, &effective_hidden, self.time_axis);
-                    self.cached_chart = Some((data_gen, effective_hidden.clone(), self.time_axis, cd));
+                    self.cached_chart =
+                        Some((data_gen, effective_hidden.clone(), self.time_axis, cd));
                 }
                 let cd = &self.cached_chart.as_ref().unwrap().3;
                 let usage = self.usage_data.lock().unwrap().clone();
 
                 if big_mode {
                     if let Some(sid) = self.small_mode_session.clone() {
-                        draw_small(ui, &data, &cd, &usage, &sid, filter_set, &mut self.filter_mode, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.small_mode_session);
+                        draw_small(
+                            ui,
+                            &data,
+                            &cd,
+                            &usage,
+                            &sid,
+                            filter_set,
+                            &mut self.filter_mode,
+                            &mut self.time_axis,
+                            &mut self.autofit,
+                            &mut self.nav_view,
+                            &mut self.small_mode_session,
+                        );
                     } else {
-                        draw_big(ui, &data, &cd, &usage, filter_set, &mut self.filter_mode, &mut self.show_active_only, &mut self.show_bars, &effective_hidden, &mut self.time_axis, &mut self.autofit, &mut self.nav_view, &mut self.expanded_groups, &mut self.expanded_sessions, &mut self.small_mode_session, &mut self.chart_vis, &mut self.show_budget, &mut self.billing);
+                        draw_big(
+                            ui,
+                            &data,
+                            &cd,
+                            &usage,
+                            filter_set,
+                            &mut self.filter_mode,
+                            &mut self.show_active_only,
+                            &mut self.show_bars,
+                            &effective_hidden,
+                            &mut self.time_axis,
+                            &mut self.autofit,
+                            &mut self.nav_view,
+                            &mut self.expanded_groups,
+                            &mut self.expanded_sessions,
+                            &mut self.small_mode_session,
+                            &mut self.chart_vis,
+                            &mut self.show_budget,
+                            &mut self.billing,
+                        );
                     }
                 } else {
-                    let strip_hl: PanelHighlight = ui.ctx().data(|d| d.get_temp(egui::Id::new("panel_highlight")).unwrap_or_default());
+                    let strip_hl: PanelHighlight = ui.ctx().data(|d| {
+                        d.get_temp(egui::Id::new("panel_highlight"))
+                            .unwrap_or_default()
+                    });
                     draw_strip(ui, &data, &cd, &strip_hl);
                 }
             });
@@ -2846,8 +4767,8 @@ impl EguiOverlay for Hud {
 }
 
 fn start_overlay(user_data: Hud) {
-    use egui_overlay::egui_window_glfw_passthrough::{GlfwConfig, glfw};
     use egui_overlay::egui_render_wgpu::{WgpuBackend, WgpuConfig};
+    use egui_overlay::egui_window_glfw_passthrough::{glfw, GlfwConfig};
     use egui_overlay::OverlayApp;
 
     let big_mode = user_data.big_mode;
@@ -2890,7 +4811,10 @@ fn start_overlay(user_data: Hud) {
     let latest_size = [latest_size.0 as _, latest_size.1 as _];
 
     let mut wgpu_config = WgpuConfig::default();
-    wgpu_config.device_descriptor.required_limits.max_texture_dimension_2d = 8192;
+    wgpu_config
+        .device_descriptor
+        .required_limits
+        .max_texture_dimension_2d = 8192;
 
     let default_gfx_backend = WgpuBackend::new(
         wgpu_config,
@@ -2903,7 +4827,8 @@ fn start_overlay(user_data: Hud) {
         egui_context: Default::default(),
         default_gfx_backend,
         glfw_backend,
-    }.enter_event_loop();
+    }
+    .enter_event_loop();
 }
 
 fn hide_dock_icon() {

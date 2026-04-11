@@ -1,9 +1,8 @@
+use egui_extras::{Size, StripBuilder};
 /// Legend panel: scrollable list of session rows grouped by cwd, with
 /// eye/swatch/name/stats/detail-button/timeline columns laid out via
 /// egui_extras::StripBuilder instead of manual pixel math.
-
 use std::collections::HashSet;
-use egui_extras::{StripBuilder, Size};
 
 use crate::agent_harnesses::claude_code::{HudData, SessionData, SubagentData};
 use crate::scene;
@@ -31,11 +30,17 @@ fn panel_frame() -> egui::Frame {
 }
 
 fn format_duration_secs(first: u64, last: u64) -> String {
-    if first == 0 || last == 0 || last < first { return String::new(); }
+    if first == 0 || last == 0 || last < first {
+        return String::new();
+    }
     let secs = last - first;
-    if secs < 60 { format!("{}s", secs) }
-    else if secs < 3600 { format!("{}m", secs / 60) }
-    else { format!("{:.1}h", secs as f64 / 3600.0) }
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{:.1}h", secs as f64 / 3600.0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -53,10 +58,18 @@ pub(crate) struct LegendStats {
 
 impl LegendStats {
     fn avg_tokens_per_session(&self) -> u64 {
-        if self.session_count > 0 { self.total_tokens / self.session_count as u64 } else { 0 }
+        if self.session_count > 0 {
+            self.total_tokens / self.session_count as u64
+        } else {
+            0
+        }
     }
     fn avg_cost_per_session(&self) -> f64 {
-        if self.session_count > 0 { self.cost / self.session_count as f64 } else { 0.0 }
+        if self.session_count > 0 {
+            self.cost / self.session_count as f64
+        } else {
+            0.0
+        }
     }
 }
 
@@ -71,14 +84,61 @@ pub(crate) struct LegendHighlight {
 }
 
 // ---------------------------------------------------------------------------
+// Context structs for reducing function cardinality
+// ---------------------------------------------------------------------------
+
+/// Theme colors for session cells
+#[derive(Clone, Copy)]
+struct SessionCellTheme {
+    name_col: egui::Color32,
+    dim_col: egui::Color32,
+}
+
+/// Subagent toggle state
+struct SubagentToggle<'a> {
+    session: &'a SessionData,
+    is_expanded: bool,
+    id: egui::Id,
+}
+
+/// Complete context for rendering a session name/stats cell
+struct SessionCellCtx<'a> {
+    ui: &'a mut egui::Ui,
+    name: &'a str,
+    stats: &'a LegendStats,
+    model: &'a str,
+    harness: &'a str,
+    theme: SessionCellTheme,
+    is_active: bool,
+    row_h: f32,
+    subagent_toggle: Option<SubagentToggle<'a>>,
+}
+
+// ---------------------------------------------------------------------------
 // Flat row model
 // ---------------------------------------------------------------------------
 
 enum LegendEntry {
-    FlatSession { si: usize, gi: usize },
-    GroupHeader { gi: usize, cwd: String, member_session_indices: Vec<usize> },
-    GroupMember { si: usize, gi: usize },
-    Subagent { si: usize, gi: usize, ai: usize, is_last: bool, indent: f32 },
+    FlatSession {
+        si: usize,
+        gi: usize,
+    },
+    GroupHeader {
+        gi: usize,
+        cwd: String,
+        member_session_indices: Vec<usize>,
+    },
+    GroupMember {
+        si: usize,
+        gi: usize,
+    },
+    Subagent {
+        si: usize,
+        gi: usize,
+        ai: usize,
+        is_last: bool,
+        indent: f32,
+    },
 }
 
 fn flatten_legend_entries(
@@ -97,7 +157,11 @@ fn flatten_legend_entries(
                     let sub_count = data.sessions[*si].subagents.len();
                     for ai in 0..sub_count {
                         entries.push(LegendEntry::Subagent {
-                            si: *si, gi, ai, is_last: ai == sub_count - 1, indent: 20.0,
+                            si: *si,
+                            gi,
+                            ai,
+                            is_last: ai == sub_count - 1,
+                            indent: 20.0,
                         });
                     }
                 }
@@ -105,7 +169,9 @@ fn flatten_legend_entries(
         } else {
             let member_sis: Vec<usize> = members.iter().map(|(si, _)| *si).collect();
             entries.push(LegendEntry::GroupHeader {
-                gi, cwd: cwd.clone(), member_session_indices: member_sis,
+                gi,
+                cwd: cwd.clone(),
+                member_session_indices: member_sis,
             });
             if expanded_groups.contains(cwd) {
                 for (si, _) in members {
@@ -114,7 +180,11 @@ fn flatten_legend_entries(
                         let sub_count = data.sessions[*si].subagents.len();
                         for ai in 0..sub_count {
                             entries.push(LegendEntry::Subagent {
-                                si: *si, gi, ai, is_last: ai == sub_count - 1, indent: 36.0,
+                                si: *si,
+                                gi,
+                                ai,
+                                is_last: ai == sub_count - 1,
+                                indent: 36.0,
                             });
                         }
                     }
@@ -134,7 +204,6 @@ pub(crate) struct LegendActions {
     pub group_toggle: Option<(String, Vec<String>)>,
     pub toggle_expand: Option<String>,
     pub toggle_session_agents: Vec<String>,
-    pub enter_small_mode: Option<String>,
 }
 
 impl LegendActions {
@@ -144,7 +213,6 @@ impl LegendActions {
             group_toggle: None,
             toggle_expand: None,
             toggle_session_agents: vec![],
-            enter_small_mode: None,
         }
     }
 
@@ -153,7 +221,6 @@ impl LegendActions {
         filter_set: &mut HashSet<String>,
         expanded_groups: &mut HashSet<String>,
         expanded_sessions: &mut HashSet<String>,
-        small_mode_session: &mut Option<String>,
     ) {
         if let Some(cwd) = self.toggle_expand {
             if expanded_groups.contains(&cwd) {
@@ -172,9 +239,13 @@ impl LegendActions {
         if let Some((_cwd, member_ids)) = self.group_toggle {
             let any_in = member_ids.iter().any(|id| filter_set.contains(id));
             if any_in {
-                for id in &member_ids { filter_set.remove(id); }
+                for id in &member_ids {
+                    filter_set.remove(id);
+                }
             } else {
-                for id in member_ids { filter_set.insert(id); }
+                for id in member_ids {
+                    filter_set.insert(id);
+                }
             }
         }
         for id in self.toggle_ids {
@@ -183,9 +254,6 @@ impl LegendActions {
             } else {
                 filter_set.insert(id);
             }
-        }
-        if let Some(session_id) = self.enter_small_mode {
-            *small_mode_session = Some(session_id);
         }
     }
 }
@@ -214,44 +282,66 @@ fn cell_eye(ui: &mut egui::Ui, id: egui::Id, state: EyeState) -> bool {
             let r = 4.0;
             if in_filter {
                 ui.painter().circle_filled(
-                    egui::pos2(cx, cy), r,
+                    egui::pos2(cx, cy),
+                    r,
                     egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180),
                 );
             } else {
                 ui.painter().circle_stroke(
-                    egui::pos2(cx, cy), r,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(120, 110, 95, 120)),
+                    egui::pos2(cx, cy),
+                    r,
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(120, 110, 95, 120),
+                    ),
                 );
             }
         }
-        EyeState::Group { all_hidden, none_hidden } => {
+        EyeState::Group {
+            all_hidden,
+            none_hidden,
+        } => {
             let r = 4.5;
             if all_hidden {
                 ui.painter().circle_stroke(
-                    egui::pos2(cx, cy), r,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(180, 170, 150, 120)),
+                    egui::pos2(cx, cy),
+                    r,
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(180, 170, 150, 120),
+                    ),
                 );
             } else if none_hidden {
                 ui.painter().circle_filled(
-                    egui::pos2(cx, cy), r,
+                    egui::pos2(cx, cy),
+                    r,
                     egui::Color32::from_rgba_unmultiplied(200, 190, 170, 180),
                 );
             } else {
                 // Mixed: outline + smaller filled inner
                 ui.painter().circle_stroke(
-                    egui::pos2(cx, cy), r,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(200, 190, 170, 150)),
+                    egui::pos2(cx, cy),
+                    r,
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(200, 190, 170, 150),
+                    ),
                 );
                 ui.painter().circle_filled(
-                    egui::pos2(cx, cy), r * 0.5,
+                    egui::pos2(cx, cy),
+                    r * 0.5,
                     egui::Color32::from_rgba_unmultiplied(200, 190, 170, 150),
                 );
             }
             // Hover ring
             if resp.hovered() {
                 ui.painter().circle_stroke(
-                    egui::pos2(cx, cy), r + 2.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40)),
+                    egui::pos2(cx, cy),
+                    r + 2.0,
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40),
+                    ),
                 );
             }
         }
@@ -260,7 +350,13 @@ fn cell_eye(ui: &mut egui::Ui, id: egui::Id, state: EyeState) -> bool {
 }
 
 /// Color swatch bar + active dot.
-fn cell_swatch(ui: &mut egui::Ui, color: egui::Color32, is_active: bool, last_input: u64, row_h: f32) {
+fn cell_swatch(
+    ui: &mut egui::Ui,
+    color: egui::Color32,
+    is_active: bool,
+    last_input: u64,
+    row_h: f32,
+) {
     let rect = ui.max_rect();
     let bar_x = rect.left() + 1.0;
     let bar_top = rect.top() + (row_h * 0.1).max(2.0);
@@ -271,19 +367,22 @@ fn cell_swatch(ui: &mut egui::Ui, color: egui::Color32, is_active: bool, last_in
         let faded = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 35);
         ui.painter().rect_filled(
             egui::Rect::from_min_size(egui::pos2(bar_x, bar_top), egui::vec2(bar_w, bar_h)),
-            2.0, faded,
+            2.0,
+            faded,
         );
         let ctx_frac = (last_input as f32 / 200_000.0).clamp(0.02, 1.0);
         let swatch_h = (bar_h * ctx_frac).max(3.0);
         let swatch_top = bar_top + bar_h - swatch_h;
         ui.painter().rect_filled(
             egui::Rect::from_min_size(egui::pos2(bar_x, swatch_top), egui::vec2(bar_w, swatch_h)),
-            2.0, color,
+            2.0,
+            color,
         );
     } else {
         ui.painter().rect_filled(
             egui::Rect::from_min_size(egui::pos2(bar_x, bar_top), egui::vec2(bar_w, bar_h)),
-            2.0, color,
+            2.0,
+            color,
         );
     }
 
@@ -292,12 +391,14 @@ fn cell_swatch(ui: &mut egui::Ui, color: egui::Color32, is_active: bool, last_in
     let dot_y = bar_top + bar_h * 0.25;
     if is_active {
         ui.painter().circle_filled(
-            egui::pos2(dot_x, dot_y), 2.5,
+            egui::pos2(dot_x, dot_y),
+            2.5,
             egui::Color32::from_rgba_unmultiplied(80, 220, 120, 200),
         );
     } else {
         ui.painter().circle_filled(
-            egui::pos2(dot_x, dot_y), 2.0,
+            egui::pos2(dot_x, dot_y),
+            2.0,
             egui::Color32::from_rgba_unmultiplied(80, 75, 65, 100),
         );
     }
@@ -305,18 +406,19 @@ fn cell_swatch(ui: &mut egui::Ui, color: egui::Color32, is_active: bool, last_in
 
 /// Name line + stats line, with optional subagent toggle.
 /// Returns Some(session_id) if the subagent toggle was clicked.
-fn cell_name_stats(
-    ui: &mut egui::Ui,
-    name: &str,
-    stats: &LegendStats,
-    model: &str,
-    name_col: egui::Color32,
-    dim_col: egui::Color32,
-    is_active: bool,
-    row_h: f32,
-    // Subagent toggle state: Some((session, is_expanded, agent_count, agent_cost_sum))
-    subagent_toggle: Option<(&SessionData, bool, egui::Id)>,
-) -> Option<String> {
+fn cell_name_stats(ctx: SessionCellCtx) -> Option<String> {
+    let SessionCellCtx {
+        ui,
+        name,
+        stats,
+        model,
+        harness,
+        theme: SessionCellTheme { name_col, dim_col },
+        is_active,
+        row_h,
+        subagent_toggle,
+    } = ctx;
+
     let rect = ui.max_rect();
     let cy = rect.center().y;
     let font_name = egui::FontId::monospace((row_h * 0.35).clamp(9.0, 13.0));
@@ -325,7 +427,10 @@ fn cell_name_stats(
     // Name (primary line)
     ui.painter().text(
         egui::pos2(rect.left(), cy - row_h * 0.12),
-        egui::Align2::LEFT_CENTER, name, font_name, name_col,
+        egui::Align2::LEFT_CENTER,
+        name,
+        font_name,
+        name_col,
     );
 
     // Stats (secondary line)
@@ -341,39 +446,92 @@ fn cell_name_stats(
             let avg_tok = scene::format_tokens(stats.avg_tokens_per_session());
             if is_active {
                 let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-                format!("{:>3.0}% ctx  {:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
-                    ctx_pct, scene::format_cost(stats.cost), scene::format_tokens(stats.total_tokens),
-                    avg_cost, avg_tok, ag_tag)
+                format!(
+                    "{:>3.0}% ctx  {:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
+                    ctx_pct,
+                    scene::format_cost(stats.cost),
+                    scene::format_tokens(stats.total_tokens),
+                    avg_cost,
+                    avg_tok,
+                    ag_tag
+                )
             } else {
-                format!("{:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
-                    scene::format_cost(stats.cost), scene::format_tokens(stats.total_tokens),
-                    avg_cost, avg_tok, ag_tag)
+                format!(
+                    "{:>8}  {:>6}  avg {}/sesh  {}/sesh{}",
+                    scene::format_cost(stats.cost),
+                    scene::format_tokens(stats.total_tokens),
+                    avg_cost,
+                    avg_tok,
+                    ag_tag
+                )
             }
         } else if is_active {
-            let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
+            let harness_tag = match harness {
+                "claude" => "[cc]",
+                "opencode" => "[oc]",
+                _ => "",
+            };
+            let model_tag = if model.is_empty() {
+                ""
+            } else {
+                scene::short_model_label(model)
+            };
             let ctx_pct = (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0);
-            format!("{:>3.0}% ctx  {:>8}  {:>6}  {}{}",
-                ctx_pct, scene::format_cost(stats.cost), scene::format_tokens(stats.total_tokens),
-                model_tag, ag_tag)
+            format!(
+                "{:>3.0}% ctx  {:>8}  {:>6}  {} {}{}",
+                ctx_pct,
+                scene::format_cost(stats.cost),
+                scene::format_tokens(stats.total_tokens),
+                harness_tag,
+                model_tag,
+                ag_tag
+            )
         } else {
-            let model_tag = if model.is_empty() { "" } else { scene::short_model_label(model) };
-            format!("{:>8}  {:>6}  {}{}",
-                scene::format_cost(stats.cost), scene::format_tokens(stats.total_tokens),
-                model_tag, ag_tag)
+            let harness_tag = match harness {
+                "claude" => "[cc]",
+                "opencode" => "[oc]",
+                _ => "",
+            };
+            let model_tag = if model.is_empty() {
+                ""
+            } else {
+                scene::short_model_label(model)
+            };
+            format!(
+                "{:>8}  {:>6}  {} {}{}",
+                scene::format_cost(stats.cost),
+                scene::format_tokens(stats.total_tokens),
+                harness_tag,
+                model_tag,
+                ag_tag
+            )
         };
         ui.painter().text(
-            egui::pos2(rect.left(), sy), egui::Align2::LEFT_CENTER,
-            &stat_str, font_stat, dim_col,
+            egui::pos2(rect.left(), sy),
+            egui::Align2::LEFT_CENTER,
+            &stat_str,
+            font_stat,
+            dim_col,
         );
     }
 
     // Subagent toggle (inline, right side of cell)
     let mut toggled_id = None;
-    if let Some((session, is_expanded, tog_id)) = subagent_toggle {
+    if let Some(SubagentToggle {
+        session,
+        is_expanded,
+        id: tog_id,
+    }) = subagent_toggle
+    {
         if !session.subagents.is_empty() {
             let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
             let agent_cost_sum: f64 = session.subagents.iter().map(|a| a.total_cost_usd).sum();
-            let tog_label = format!("{} {}ag {}", arrow, session.subagents.len(), scene::format_cost(agent_cost_sum));
+            let tog_label = format!(
+                "{} {}ag {}",
+                arrow,
+                session.subagents.len(),
+                scene::format_cost(agent_cost_sum)
+            );
 
             let tog_w = 110.0;
             let tog_rect = egui::Rect::from_min_size(
@@ -385,16 +543,25 @@ fn cell_name_stats(
                 toggled_id = Some(session.session_id.clone());
             }
             if tog_resp.hovered() {
-                ui.painter().rect_filled(tog_rect, 2.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+                ui.painter().rect_filled(
+                    tog_rect,
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+                );
             }
-            let tog_col = if is_expanded { TEXT_BRIGHT }
-                else if tog_resp.hovered() { egui::Color32::from_rgba_unmultiplied(200, 195, 180, 200) }
-                else { TEXT_DIM };
+            let tog_col = if is_expanded {
+                TEXT_BRIGHT
+            } else if tog_resp.hovered() {
+                egui::Color32::from_rgba_unmultiplied(200, 195, 180, 200)
+            } else {
+                TEXT_DIM
+            };
             ui.painter().text(
                 egui::pos2(tog_rect.left() + 2.0, tog_rect.center().y),
-                egui::Align2::LEFT_CENTER, &tog_label,
-                egui::FontId::monospace(10.0), tog_col,
+                egui::Align2::LEFT_CENTER,
+                &tog_label,
+                egui::FontId::monospace(10.0),
+                tog_col,
             );
         }
     }
@@ -406,18 +573,25 @@ fn cell_detail_button(ui: &mut egui::Ui, id: egui::Id) -> bool {
     let rect = ui.max_rect();
     let resp = ui.interact(rect, id, egui::Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20));
+        ui.painter().rect_filled(
+            rect,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
+        );
     }
     ui.painter().text(
         egui::pos2(rect.center().x, rect.center().y - 4.0),
-        egui::Align2::CENTER_CENTER, "\u{2192}",
-        egui::FontId::monospace(18.0), TEXT_DIM,
+        egui::Align2::CENTER_CENTER,
+        "\u{2192}",
+        egui::FontId::monospace(18.0),
+        TEXT_DIM,
     );
     ui.painter().text(
         egui::pos2(rect.center().x, rect.center().y + 10.0),
-        egui::Align2::CENTER_CENTER, "detail",
-        egui::FontId::monospace(7.0), TEXT_DIM,
+        egui::Align2::CENTER_CENTER,
+        "detail",
+        egui::FontId::monospace(7.0),
+        TEXT_DIM,
     );
     resp.clicked()
 }
@@ -441,8 +615,11 @@ fn cell_timeline(
     );
 
     // Timeline background
-    ui.painter().rect_filled(tl_rect, 2.0,
-        egui::Color32::from_rgba_unmultiplied(bg_color.r(), bg_color.g(), bg_color.b(), 18));
+    ui.painter().rect_filled(
+        tl_rect,
+        2.0,
+        egui::Color32::from_rgba_unmultiplied(bg_color.r(), bg_color.g(), bg_color.b(), 18),
+    );
 
     let n_sessions = sessions.len();
     let seg_h = (bar_h / n_sessions.max(1) as f32).max(2.0);
@@ -460,13 +637,18 @@ fn cell_timeline(
         let seg_bot = (seg_top + seg_h).min(tl_rect.bottom());
 
         if s.first_ts > 0 {
-            let x0f = ((s.first_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
-            let x1f = ((s.last_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
+            let x0f =
+                ((s.first_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
+            let x1f =
+                ((s.last_ts.saturating_sub(week_start_secs)) as f32 / week_span).clamp(0.0, 1.0);
             let px0 = tl_rect.left() + x0f * tl_rect.width();
-            let px1 = (tl_rect.left() + x1f * tl_rect.width()).max(px0 + 3.0).min(tl_rect.right());
+            let px1 = (tl_rect.left() + x1f * tl_rect.width())
+                .max(px0 + 3.0)
+                .min(tl_rect.right());
             ui.painter().rect_filled(
                 egui::Rect::from_min_max(egui::pos2(px0, seg_top), egui::pos2(px1, seg_bot)),
-                1.0, seg_col,
+                1.0,
+                seg_col,
             );
             if s.is_active {
                 ui.painter().rect_filled(
@@ -474,7 +656,8 @@ fn cell_timeline(
                         egui::pos2(px1 - 2.0, seg_top),
                         egui::pos2(px1, seg_bot),
                     ),
-                    0.0, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 160),
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(80, 220, 120, 160),
                 );
             }
         }
@@ -495,9 +678,9 @@ fn render_subagent_entry(
     let stat_col = egui::Color32::from_rgba_unmultiplied(140, 135, 120, 170);
 
     StripBuilder::new(ui)
-        .size(Size::exact(indent + 14.0))   // tree connector column
-        .size(Size::remainder())            // agent info
-        .size(Size::exact(timeline_w))      // spacer (no timeline for agents)
+        .size(Size::exact(indent + 14.0)) // tree connector column
+        .size(Size::remainder()) // agent info
+        .size(Size::exact(timeline_w)) // spacer (no timeline for agents)
         .horizontal(|mut strip| {
             // Tree connector
             strip.cell(|ui| {
@@ -506,12 +689,17 @@ fn render_subagent_entry(
                 let connector = if is_last { "\u{2514}" } else { "\u{251c}" };
                 ui.painter().text(
                     egui::pos2(tree_x, rect.center().y),
-                    egui::Align2::CENTER_CENTER, connector,
-                    egui::FontId::monospace(12.0), tree_col,
+                    egui::Align2::CENTER_CENTER,
+                    connector,
+                    egui::FontId::monospace(12.0),
+                    tree_col,
                 );
                 if !is_last {
                     ui.painter().line_segment(
-                        [egui::pos2(tree_x, rect.bottom()), egui::pos2(tree_x, rect.bottom() + 3.0)],
+                        [
+                            egui::pos2(tree_x, rect.bottom()),
+                            egui::pos2(tree_x, rect.bottom() + 3.0),
+                        ],
                         egui::Stroke::new(1.0, tree_col),
                     );
                 }
@@ -534,20 +722,29 @@ fn render_subagent_entry(
                 let agent_label = format!("{} {}", type_short, desc_trunc);
                 ui.painter().text(
                     egui::pos2(rect.left(), rect.center().y - row_h * 0.12),
-                    egui::Align2::LEFT_CENTER, &agent_label,
-                    egui::FontId::monospace(11.0), name_col,
+                    egui::Align2::LEFT_CENTER,
+                    &agent_label,
+                    egui::FontId::monospace(11.0),
+                    name_col,
                 );
 
                 let model_short = scene::short_model_label(&agent.model);
                 let duration = format_duration_secs(agent.first_ts, agent.last_ts);
                 let total_tok = scene::format_tokens(agent.total_input + agent.total_output);
-                let stat_str = format!("{}  {}  {} tok  {}  {}calls",
-                    model_short, scene::format_cost(agent.total_cost_usd),
-                    total_tok, duration, agent.api_call_count);
+                let stat_str = format!(
+                    "{}  {}  {} tok  {}  {}calls",
+                    model_short,
+                    scene::format_cost(agent.total_cost_usd),
+                    total_tok,
+                    duration,
+                    agent.api_call_count
+                );
                 ui.painter().text(
                     egui::pos2(rect.left(), rect.center().y + row_h * 0.18),
-                    egui::Align2::LEFT_CENTER, &stat_str,
-                    egui::FontId::monospace(9.0), stat_col,
+                    egui::Align2::LEFT_CENTER,
+                    &stat_str,
+                    egui::FontId::monospace(9.0),
+                    stat_col,
                 );
             });
 
@@ -572,7 +769,9 @@ fn draw_stats_strip(ui: &mut egui::Ui, data: &HudData, effective_hidden: &HashSe
     let mut earliest_ts = u64::MAX;
     let mut latest_ts = 0u64;
     for s in &data.sessions {
-        if effective_hidden.contains(&s.session_id) { continue; }
+        if effective_hidden.contains(&s.session_id) {
+            continue;
+        }
         agg_cost += s.total_cost_usd;
         agg_tokens += s.total_input + s.total_output;
         agg_session_count += 1;
@@ -584,24 +783,67 @@ fn draw_stats_strip(ui: &mut egui::Ui, data: &HudData, effective_hidden: &HashSe
         agg_agent_count += s.agent_count;
         if s.first_ts > 0 && s.last_ts > s.first_ts {
             agg_active_secs += s.last_ts - s.first_ts;
-            if s.first_ts < earliest_ts { earliest_ts = s.first_ts; }
-            if s.last_ts > latest_ts { latest_ts = s.last_ts; }
+            if s.first_ts < earliest_ts {
+                earliest_ts = s.first_ts;
+            }
+            if s.last_ts > latest_ts {
+                latest_ts = s.last_ts;
+            }
         }
     }
-    let avg_cost_sesh      = if agg_session_count > 0 { agg_cost / agg_session_count as f64 } else { 0.0 };
-    let proj_200k          = if agg_tokens > 0 { (agg_cost / agg_tokens as f64) * 200_000.0 } else { 0.0 };
-    let cptm               = if agg_tokens > 0 { agg_cost / agg_tokens as f64 * 1_000_000.0 } else { 0.0 };
-    let agent_pct          = if agg_cost > 0.0 { agg_agent_cost / agg_cost * 100.0 } else { 0.0 };
-    let avg_agent_cost     = if agg_agent_count > 0 { agg_agent_cost / agg_agent_count as f64 } else { 0.0 };
-    let avg_ag_sesh        = if agg_session_count > 0 { agg_agent_count as f64 / agg_session_count as f64 } else { 0.0 };
-    let avg_over_200k_cost = if agg_over_200k_count > 0 { agg_over_200k_cost / agg_over_200k_count as f64 } else { 0.0 };
-    let active_hours       = agg_active_secs as f64 / 3600.0;
-    let span_days          = if latest_ts > earliest_ts { (latest_ts - earliest_ts) as f64 / 86400.0 } else { 1.0 };
-    let cost_per_active_hr = if active_hours > 0.0 { agg_cost / active_hours } else { 0.0 };
+    let avg_cost_sesh = if agg_session_count > 0 {
+        agg_cost / agg_session_count as f64
+    } else {
+        0.0
+    };
+    let proj_200k = if agg_tokens > 0 {
+        (agg_cost / agg_tokens as f64) * 200_000.0
+    } else {
+        0.0
+    };
+    let cptm = if agg_tokens > 0 {
+        agg_cost / agg_tokens as f64 * 1_000_000.0
+    } else {
+        0.0
+    };
+    let agent_pct = if agg_cost > 0.0 {
+        agg_agent_cost / agg_cost * 100.0
+    } else {
+        0.0
+    };
+    let avg_agent_cost = if agg_agent_count > 0 {
+        agg_agent_cost / agg_agent_count as f64
+    } else {
+        0.0
+    };
+    let avg_ag_sesh = if agg_session_count > 0 {
+        agg_agent_count as f64 / agg_session_count as f64
+    } else {
+        0.0
+    };
+    let avg_over_200k_cost = if agg_over_200k_count > 0 {
+        agg_over_200k_cost / agg_over_200k_count as f64
+    } else {
+        0.0
+    };
+    let active_hours = agg_active_secs as f64 / 3600.0;
+    let span_days = if latest_ts > earliest_ts {
+        (latest_ts - earliest_ts) as f64 / 86400.0
+    } else {
+        1.0
+    };
+    let cost_per_active_hr = if active_hours > 0.0 {
+        agg_cost / active_hours
+    } else {
+        0.0
+    };
     let active_hrs_per_day = active_hours / span_days.max(1.0);
 
     let strip_h = 32.0;
-    let (strip_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), strip_h), egui::Sense::hover());
+    let (strip_rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), strip_h),
+        egui::Sense::hover(),
+    );
     let painter = ui.painter();
     let font = egui::FontId::monospace(9.0);
     let pad = 6.0;
@@ -615,14 +857,30 @@ fn draw_stats_strip(ui: &mut egui::Ui, data: &HudData, effective_hidden: &HashSe
     );
     let row2 = format!(
         "agents: {:.0}%   avg {}/agent   {:.1} ag/sesh",
-        agent_pct, scene::format_cost(avg_agent_cost), avg_ag_sesh,
+        agent_pct,
+        scene::format_cost(avg_agent_cost),
+        avg_ag_sesh,
     );
     let x = strip_rect.left() + pad;
-    painter.text(egui::pos2(x, strip_rect.top() + 10.0), egui::Align2::LEFT_CENTER, &row1, font.clone(), TEXT_DIM);
-    painter.text(egui::pos2(x, strip_rect.top() + 22.0), egui::Align2::LEFT_CENTER, &row2, font, TEXT_DIM);
+    painter.text(
+        egui::pos2(x, strip_rect.top() + 10.0),
+        egui::Align2::LEFT_CENTER,
+        &row1,
+        font.clone(),
+        TEXT_DIM,
+    );
+    painter.text(
+        egui::pos2(x, strip_rect.top() + 22.0),
+        egui::Align2::LEFT_CENTER,
+        &row2,
+        font,
+        TEXT_DIM,
+    );
     painter.line_segment(
-        [egui::pos2(strip_rect.left() + 4.0, strip_rect.bottom()),
-         egui::pos2(strip_rect.right() - 4.0, strip_rect.bottom())],
+        [
+            egui::pos2(strip_rect.left() + 4.0, strip_rect.bottom()),
+            egui::pos2(strip_rect.right() - 4.0, strip_rect.bottom()),
+        ],
         egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 80, 80, 60)),
     );
 }
@@ -649,7 +907,8 @@ pub(crate) fn draw_legend_panel(
     let eye_w = 20.0_f32;
 
     let legend_hl_id = egui::Id::new("legend_highlight");
-    ui.ctx().data_mut(|d| d.insert_temp(legend_hl_id, LegendHighlight::default()));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(legend_hl_id, LegendHighlight::default()));
 
     let mut actions = LegendActions::new();
 
@@ -681,35 +940,84 @@ pub(crate) fn draw_legend_panel(
                             match entry {
                                 LegendEntry::FlatSession { si, gi } => {
                                     render_session_row(
-                                        ui, data, *si, *gi, entry_idx,
-                                        filter_set, effective_hidden, expanded_sessions,
-                                        &mut actions, row_h, timeline_w, eye_w,
-                                        week_start_secs, week_span, legend_hl_id,
+                                        ui,
+                                        data,
+                                        *si,
+                                        *gi,
+                                        entry_idx,
+                                        filter_set,
+                                        effective_hidden,
+                                        expanded_sessions,
+                                        &mut actions,
+                                        row_h,
+                                        timeline_w,
+                                        eye_w,
+                                        week_start_secs,
+                                        week_span,
+                                        legend_hl_id,
                                         None, // no indent
                                     );
                                 }
-                                LegendEntry::GroupHeader { gi, cwd, member_session_indices } => {
+                                LegendEntry::GroupHeader {
+                                    gi,
+                                    cwd,
+                                    member_session_indices,
+                                } => {
                                     render_group_header_row(
-                                        ui, data, *gi, cwd, member_session_indices, entry_idx,
-                                        filter_set, effective_hidden, expanded_groups,
-                                        &mut actions, row_h, timeline_w, eye_w,
-                                        week_start_secs, week_span, legend_hl_id,
+                                        ui,
+                                        data,
+                                        *gi,
+                                        cwd,
+                                        member_session_indices,
+                                        entry_idx,
+                                        filter_set,
+                                        effective_hidden,
+                                        expanded_groups,
+                                        &mut actions,
+                                        row_h,
+                                        timeline_w,
+                                        eye_w,
+                                        week_start_secs,
+                                        week_span,
+                                        legend_hl_id,
                                     );
                                 }
                                 LegendEntry::GroupMember { si, gi } => {
                                     render_session_row(
-                                        ui, data, *si, *gi, entry_idx,
-                                        filter_set, effective_hidden, expanded_sessions,
-                                        &mut actions, row_h, timeline_w, eye_w,
-                                        week_start_secs, week_span, legend_hl_id,
+                                        ui,
+                                        data,
+                                        *si,
+                                        *gi,
+                                        entry_idx,
+                                        filter_set,
+                                        effective_hidden,
+                                        expanded_sessions,
+                                        &mut actions,
+                                        row_h,
+                                        timeline_w,
+                                        eye_w,
+                                        week_start_secs,
+                                        week_span,
+                                        legend_hl_id,
                                         Some(16.0), // indent for group members
                                     );
                                 }
-                                LegendEntry::Subagent { si, ai, is_last, indent, .. } => {
+                                LegendEntry::Subagent {
+                                    si,
+                                    ai,
+                                    is_last,
+                                    indent,
+                                    ..
+                                } => {
                                     let agent = &data.sessions[*si].subagents[*ai];
-                                    ui.painter().rect_filled(row_rect, 2.0,
-                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 3));
-                                    render_subagent_entry(ui, agent, *is_last, *indent, row_h, timeline_w);
+                                    ui.painter().rect_filled(
+                                        row_rect,
+                                        2.0,
+                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 3),
+                                    );
+                                    render_subagent_entry(
+                                        ui, agent, *is_last, *indent, row_h, timeline_w,
+                                    );
                                 }
                             }
                         });
@@ -756,39 +1064,69 @@ fn render_session_row(
     let in_filter = filter_set.contains(&s.session_id);
     let text_alpha = if is_hidden { 80u8 } else { 230u8 };
     let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
-    let dim_col = egui::Color32::from_rgba_unmultiplied(170, 160, 140, (text_alpha as u16 * 3 / 4) as u8);
+    let dim_col =
+        egui::Color32::from_rgba_unmultiplied(170, 160, 140, (text_alpha as u16 * 3 / 4) as u8);
 
     let row_rect = ui.max_rect();
 
     // Row-level interaction for click-to-toggle and hover highlight
-    let row_resp = ui.interact(row_rect, egui::Id::new(("legend_row", entry_idx)), egui::Sense::click());
+    let row_resp = ui.interact(
+        row_rect,
+        egui::Id::new(("legend_row", entry_idx)),
+        egui::Sense::click(),
+    );
     if row_resp.clicked() {
         actions.toggle_ids.push(s.session_id.clone());
     }
 
     // Row background
-    ui.painter().rect_filled(row_rect, 2.0,
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, if indent.is_some() { 3 } else { 4 }));
+    ui.painter().rect_filled(
+        row_rect,
+        2.0,
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, if indent.is_some() { 3 } else { 4 }),
+    );
     if row_resp.hovered() {
-        ui.painter().rect_filled(row_rect, 2.0,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, if indent.is_some() { 10 } else { 12 }));
+        ui.painter().rect_filled(
+            row_rect,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(
+                255,
+                255,
+                255,
+                if indent.is_some() { 10 } else { 12 },
+            ),
+        );
         if s.first_ts > 0 {
-            ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
-                .ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0)));
+            ui.ctx().data_mut(|d| {
+                d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id)
+                    .ranges
+                    .push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0))
+            });
         }
     }
 
     // Determine the label
     let label = if indent.is_some() {
         // Sub-row under group: show short session id
-        let sid_short = if s.session_id.len() > 8 { &s.session_id[..8] } else { &s.session_id };
-        if s.is_active { format!("  {} (active)", sid_short) }
-        else { format!("  {}", sid_short) }
+        let sid_short = if s.session_id.len() > 8 {
+            &s.session_id[..8]
+        } else {
+            &s.session_id
+        };
+        if s.is_active {
+            format!("  {} (active)", sid_short)
+        } else {
+            format!("  {}", sid_short)
+        }
     } else {
         s.project.clone()
     };
 
-    let actual_eye_w = if let Some(ind) = indent { eye_w + ind } else { eye_w };
+    let actual_eye_w = if let Some(ind) = indent {
+        eye_w + ind
+    } else {
+        eye_w
+    };
 
     // Horizontal strip: eye | swatch | name+stats | detail btn | timeline
     StripBuilder::new(ui)
@@ -800,7 +1138,11 @@ fn render_session_row(
         .horizontal(|mut strip| {
             // Eye
             strip.cell(|ui| {
-                if cell_eye(ui, egui::Id::new(("eye", entry_idx)), EyeState::Session { in_filter }) {
+                if cell_eye(
+                    ui,
+                    egui::Id::new(("eye", entry_idx)),
+                    EyeState::Session { in_filter },
+                ) {
                     actions.toggle_ids.push(s.session_id.clone());
                 }
             });
@@ -813,8 +1155,11 @@ fn render_session_row(
             // Name + stats + subagent toggle
             strip.cell(|ui| {
                 let tog = if !s.subagents.is_empty() {
-                    Some((s, expanded_sessions.contains(&s.session_id),
-                          egui::Id::new(("agent_toggle", gi, si))))
+                    Some((
+                        s,
+                        expanded_sessions.contains(&s.session_id),
+                        egui::Id::new(("agent_toggle", gi, si)),
+                    ))
                 } else {
                     None
                 };
@@ -826,26 +1171,42 @@ fn render_session_row(
                     api_call_count: s.api_call_count,
                     agent_cost: s.subagents.iter().map(|a| a.total_cost_usd).sum(),
                 };
-                if let Some(sid) = cell_name_stats(
-                    ui, &label, &stats, &s.model,
-                    name_col, dim_col, s.is_active, row_h, tog,
-                ) {
+                let subagent_toggle = tog.map(|(sess, exp, id)| SubagentToggle {
+                    session: sess,
+                    is_expanded: exp,
+                    id,
+                });
+                let ctx = SessionCellCtx {
+                    ui,
+                    name: &label,
+                    stats: &stats,
+                    model: &s.model,
+                    harness: &s.harness,
+                    theme: SessionCellTheme { name_col, dim_col },
+                    is_active: s.is_active,
+                    row_h,
+                    subagent_toggle,
+                };
+                if let Some(sid) = cell_name_stats(ctx) {
                     actions.toggle_session_agents.push(sid);
                 }
             });
 
             // Detail button
             strip.cell(|ui| {
-                if cell_detail_button(ui, egui::Id::new(("detail_btn", entry_idx))) {
-                    actions.enter_small_mode = Some(s.session_id.clone());
-                }
+                cell_detail_button(ui, egui::Id::new(("detail_btn", entry_idx)));
             });
 
             // Timeline
             strip.cell(|ui| {
                 cell_timeline(
-                    ui, &[(s, sess_col)], effective_hidden,
-                    week_start_secs, week_span, sess_col, row_h,
+                    ui,
+                    &[(s, sess_col)],
+                    effective_hidden,
+                    week_start_secs,
+                    week_span,
+                    sess_col,
+                    row_h,
                 );
             });
         });
@@ -876,6 +1237,7 @@ fn render_group_header_row(
     let mut active_count = 0u32;
     let mut all_hidden = true;
     let mut g_model = String::new();
+    let mut g_harness = String::new();
     let mut g_total_tokens = 0u64;
     let mut g_api_calls = 0u32;
     let mut g_agent_cost = 0.0f64;
@@ -891,36 +1253,57 @@ fn render_group_header_row(
             any_active = true;
             active_count += 1;
             g_model = s.model.clone();
+            g_harness = s.harness.clone();
             g_last_input = s.last_input_tokens;
             _g_active_cost += s.total_cost_usd;
         }
-        if !effective_hidden.contains(&s.session_id) { all_hidden = false; }
+        if !effective_hidden.contains(&s.session_id) {
+            all_hidden = false;
+        }
     }
     if !any_active {
         if let Some(si) = member_sis.first() {
             let s = &data.sessions[*si];
             g_last_input = s.last_input_tokens;
             g_model = s.model.clone();
+            g_harness = s.harness.clone();
         }
     }
 
     let group_col = scene_to_egui(scene::session_color(member_sis[0]));
     let is_expanded = expanded_groups.contains(cwd);
     let text_alpha = if all_hidden { 80u8 } else { 230u8 };
-    let bar_col = egui::Color32::from_rgba_unmultiplied(group_col.r(), group_col.g(), group_col.b(), text_alpha);
+    let bar_col = egui::Color32::from_rgba_unmultiplied(
+        group_col.r(),
+        group_col.g(),
+        group_col.b(),
+        text_alpha,
+    );
     let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
-    let dim_col = egui::Color32::from_rgba_unmultiplied(170, 160, 140, (text_alpha as u16 * 3 / 4) as u8);
-    let none_hidden = member_sis.iter().all(|si| !effective_hidden.contains(&data.sessions[*si].session_id));
+    let dim_col =
+        egui::Color32::from_rgba_unmultiplied(170, 160, 140, (text_alpha as u16 * 3 / 4) as u8);
+    let none_hidden = member_sis
+        .iter()
+        .all(|si| !effective_hidden.contains(&data.sessions[*si].session_id));
 
     let row_rect = ui.max_rect();
 
     // Row background
-    ui.painter().rect_filled(row_rect, 2.0,
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4));
+    ui.painter().rect_filled(
+        row_rect,
+        2.0,
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4),
+    );
 
     // Build session refs for timeline
-    let sess_refs: Vec<(&SessionData, egui::Color32)> = member_sis.iter()
-        .map(|si| (&data.sessions[*si], scene_to_egui(scene::session_color(*si))))
+    let sess_refs: Vec<(&SessionData, egui::Color32)> = member_sis
+        .iter()
+        .map(|si| {
+            (
+                &data.sessions[*si],
+                scene_to_egui(scene::session_color(*si)),
+            )
+        })
         .collect();
 
     let badge = if active_count > 0 {
@@ -941,7 +1324,8 @@ fn render_group_header_row(
     };
 
     // Pick detail target: active session, or first
-    let detail_target = member_sis.iter()
+    let _detail_target = member_sis
+        .iter()
         .find(|si| data.sessions[**si].is_active)
         .or(member_sis.first())
         .map(|si| data.sessions[*si].session_id.clone());
@@ -956,8 +1340,16 @@ fn render_group_header_row(
         .horizontal(|mut strip| {
             // Eye (toggles all members)
             strip.cell(|ui| {
-                if cell_eye(ui, egui::Id::new(("group_eye", gi)), EyeState::Group { all_hidden, none_hidden }) {
-                    let member_ids: Vec<String> = member_sis.iter()
+                if cell_eye(
+                    ui,
+                    egui::Id::new(("group_eye", gi)),
+                    EyeState::Group {
+                        all_hidden,
+                        none_hidden,
+                    },
+                ) {
+                    let member_ids: Vec<String> = member_sis
+                        .iter()
                         .map(|si| data.sessions[*si].session_id.clone())
                         .collect();
                     actions.group_toggle = Some((cwd.to_string(), member_ids));
@@ -972,43 +1364,60 @@ fn render_group_header_row(
             // Name + stats (click = expand/collapse)
             strip.cell(|ui| {
                 let rect = ui.max_rect();
-                let resp = ui.interact(rect, egui::Id::new(("group_expand", gi)), egui::Sense::click());
+                let resp = ui.interact(
+                    rect,
+                    egui::Id::new(("group_expand", gi)),
+                    egui::Sense::click(),
+                );
                 if resp.clicked() {
                     actions.toggle_expand = Some(cwd.to_string());
                 }
                 if resp.hovered() {
-                    ui.painter().rect_filled(row_rect, 2.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
+                    ui.painter().rect_filled(
+                        row_rect,
+                        2.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                    );
                     ui.ctx().data_mut(|d| {
                         let hl = d.get_temp_mut_or_default::<LegendHighlight>(legend_hl_id);
                         for si in member_sis {
                             let s = &data.sessions[*si];
                             if s.first_ts > 0 {
-                                hl.ranges.push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0));
+                                hl.ranges
+                                    .push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0));
                             }
                         }
                     });
                 }
-                cell_name_stats(
-                    ui, &header_name, &stats, &g_model,
-                    name_col, dim_col, any_active, row_h, None,
-                );
+                let ctx = SessionCellCtx {
+                    ui,
+                    name: &header_name,
+                    stats: &stats,
+                    model: &g_model,
+                    harness: &g_harness,
+                    theme: SessionCellTheme { name_col, dim_col },
+                    is_active: any_active,
+                    row_h,
+                    subagent_toggle: None,
+                };
+                cell_name_stats(ctx);
             });
 
             // Detail button
             strip.cell(|ui| {
-                if let Some(ref target_id) = detail_target {
-                    if cell_detail_button(ui, egui::Id::new(("detail_grp", gi))) {
-                        actions.enter_small_mode = Some(target_id.clone());
-                    }
-                }
+                cell_detail_button(ui, egui::Id::new(("detail_grp", gi)));
             });
 
             // Timeline
             strip.cell(|ui| {
                 cell_timeline(
-                    ui, &sess_refs, effective_hidden,
-                    week_start_secs, week_span, group_col, row_h,
+                    ui,
+                    &sess_refs,
+                    effective_hidden,
+                    week_start_secs,
+                    week_span,
+                    group_col,
+                    row_h,
                 );
             });
         });

@@ -1,7 +1,7 @@
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::path::PathBuf;
-use std::io::{BufRead, Write};
 
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 fn hud_dir() -> PathBuf {
     let home = if cfg!(windows) {
-        std::env::var("USERPROFILE").unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+        std::env::var("USERPROFILE")
+            .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
     } else {
         std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
     };
@@ -64,7 +65,9 @@ fn parse_simple_toml(text: &str) -> Config {
     let mut cfg = Config::default();
     for line in text.lines() {
         let line = line.trim();
-        if line.starts_with('#') || line.is_empty() { continue; }
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
         if let Some((key, val)) = line.split_once('=') {
             let key = key.trim();
             let val = val.trim().trim_matches('"').trim_matches('\'');
@@ -109,7 +112,9 @@ fn read_oauth_token(cfg: &Config) -> Option<String> {
     // 2b. Config: token file
     if let Some(path) = &cfg.oauth_token_file {
         let expanded = if path.starts_with('~') {
-            let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
             path.replacen('~', &home, 1)
         } else {
             path.clone()
@@ -135,13 +140,24 @@ fn read_oauth_token(cfg: &Config) -> Option<String> {
 #[cfg(target_os = "macos")]
 fn read_platform_token() -> Option<String> {
     let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let json_str = String::from_utf8(output.stdout).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(json_str.trim()).ok()?;
-    let tok = parsed.get("claudeAiOauth")?.get("accessToken")?.as_str()?.to_string();
+    let tok = parsed
+        .get("claudeAiOauth")?
+        .get("accessToken")?
+        .as_str()?
+        .to_string();
     tracing::info!("using OAuth token from macOS Keychain");
     Some(tok)
 }
@@ -173,8 +189,8 @@ fn read_platform_token() -> Option<String> {
 /// A single usage snapshot from the API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageSnapshot {
-    pub ts: u64, // unix seconds
-    pub five_hour: f64,   // utilization %
+    pub ts: u64,        // unix seconds
+    pub five_hour: f64, // utilization %
     pub seven_day: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seven_day_opus: Option<f64>,
@@ -212,15 +228,21 @@ struct UsageResponse {
 fn fetch_usage(token: &str) -> Result<UsageResponse, String> {
     let output = std::process::Command::new("curl")
         .args([
-            "-s", "-f",
-            "-H", &format!("Authorization: Bearer {}", token),
-            "-H", "anthropic-beta: oauth-2025-04-20",
+            "-s",
+            "-f",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "anthropic-beta: oauth-2025-04-20",
             "https://api.anthropic.com/api/oauth/usage",
         ])
         .output()
         .map_err(|e| format!("curl exec failed: {}", e))?;
     if !output.status.success() {
-        return Err(format!("curl failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        return Err(format!(
+            "curl failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     serde_json::from_slice::<UsageResponse>(&output.stdout)
         .map_err(|e| format!("parse failed: {}", e))
@@ -250,7 +272,11 @@ fn load_history() -> Vec<UsageSnapshot> {
 
 fn append_to_disk(snap: &UsageSnapshot) {
     let path = history_path();
-    let mut file = match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         Ok(f) => f,
         Err(e) => {
             tracing::warn!("failed to open usage history file: {}", e);
@@ -281,7 +307,8 @@ fn compact_history(snaps: &[UsageSnapshot]) {
 
 pub fn poll_loop(data: Arc<Mutex<UsageData>>, default_interval: Duration) {
     let cfg = load_config();
-    let interval = cfg.poll_interval_secs
+    let interval = cfg
+        .poll_interval_secs
         .map(|s| Duration::from_secs(s.max(10)))
         .unwrap_or(default_interval);
 
@@ -307,14 +334,25 @@ pub fn poll_loop(data: Arc<Mutex<UsageData>>, default_interval: Duration) {
     let mut poll_count = 0u64;
 
     loop {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         match fetch_usage(&token) {
             Ok(resp) => {
                 let snap = UsageSnapshot {
                     ts: now,
-                    five_hour: resp.five_hour.as_ref().and_then(|w| w.utilization).unwrap_or(0.0),
-                    seven_day: resp.seven_day.as_ref().and_then(|w| w.utilization).unwrap_or(0.0),
+                    five_hour: resp
+                        .five_hour
+                        .as_ref()
+                        .and_then(|w| w.utilization)
+                        .unwrap_or(0.0),
+                    seven_day: resp
+                        .seven_day
+                        .as_ref()
+                        .and_then(|w| w.utilization)
+                        .unwrap_or(0.0),
                     seven_day_opus: resp.seven_day_opus.as_ref().and_then(|w| w.utilization),
                     seven_day_sonnet: resp.seven_day_sonnet.as_ref().and_then(|w| w.utilization),
                 };

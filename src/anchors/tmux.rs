@@ -28,23 +28,28 @@ impl TmuxTarget {
 
 /// Parse output of `tmux list-panes -F '#{pane_id}:#{pane_top}:#{pane_left}:#{pane_width}:#{pane_height}:#{pane_tty}'`
 pub fn parse_pane_geometry(stdout: &str) -> Vec<PaneInfo> {
-    stdout.lines().filter_map(|line| {
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() < 5 { return None; }
-        let raw_id = parts[0].to_string();
-        let id_num = raw_id.trim_start_matches('%').parse().ok()?;
-        Some(PaneInfo {
-            pane_id: raw_id,
-            cell_rect: CellRect {
-                id: id_num,
-                top: parts[1].parse().ok()?,
-                left: parts[2].parse().ok()?,
-                width: parts[3].parse().ok()?,
-                height: parts[4].parse().ok()?,
-            },
-            tty: parts.get(5).map(|s| s.to_string()),
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() < 5 {
+                return None;
+            }
+            let raw_id = parts[0].to_string();
+            let id_num = raw_id.trim_start_matches('%').parse().ok()?;
+            Some(PaneInfo {
+                pane_id: raw_id,
+                cell_rect: CellRect {
+                    id: id_num,
+                    top: parts[1].parse().ok()?,
+                    left: parts[2].parse().ok()?,
+                    width: parts[3].parse().ok()?,
+                    height: parts[4].parse().ok()?,
+                },
+                tty: parts.get(5).map(|s| s.to_string()),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 pub struct PaneInfo {
@@ -56,11 +61,16 @@ pub struct PaneInfo {
 /// Query panes for a specific target.
 pub fn query_panes(target: &TmuxTarget) -> Option<Vec<PaneInfo>> {
     let mut cmd = std::process::Command::new("tmux");
-    cmd.args(["list-panes", "-F",
-        "#{pane_id}:#{pane_top}:#{pane_left}:#{pane_width}:#{pane_height}:#{pane_tty}"]);
+    cmd.args([
+        "list-panes",
+        "-F",
+        "#{pane_id}:#{pane_top}:#{pane_left}:#{pane_width}:#{pane_height}:#{pane_tty}",
+    ]);
 
     match target {
-        TmuxTarget::Session(session) => { cmd.args(["-t", session]); }
+        TmuxTarget::Session(session) => {
+            cmd.args(["-t", session]);
+        }
         TmuxTarget::PaneId(_) => {
             // list all panes across all sessions so we can find by global id
             cmd.arg("-a");
@@ -123,10 +133,21 @@ pub fn client_tty() -> Option<String> {
 pub fn is_pane_visible(target: &TmuxTarget) -> bool {
     let args = match target {
         TmuxTarget::Session(session) => {
-            vec!["list-panes", "-t", session, "-F", "#{window_active}:#{client_session}"]
+            vec![
+                "list-panes",
+                "-t",
+                session,
+                "-F",
+                "#{window_active}:#{client_session}",
+            ]
         }
         TmuxTarget::PaneId(_) => {
-            vec!["list-panes", "-a", "-F", "#{pane_id}:#{window_active}:#{session_name}"]
+            vec![
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_id}:#{window_active}:#{session_name}",
+            ]
         }
     };
 

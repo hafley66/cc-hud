@@ -1,2 +1,2 @@
-pub mod tmux;
 pub mod terminal;
+pub mod tmux;

@@ -1,6 +1,5 @@
 /// Synchronous egui executor for the scene tree.
 /// Walks `&[Node]` and emits egui painter/widget calls. No logic, just translation.
-
 use crate::scene::{self, Anchor, Color, Marker, Node};
 
 // ---- color conversion ----
@@ -69,14 +68,19 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
             }
         }
 
-        Node::BarRow { label, count, max, color: col, highlighted, hover_key: hk } => {
+        Node::BarRow {
+            label,
+            count,
+            max,
+            color: col,
+            highlighted,
+            hover_key: hk,
+        } => {
             let row_h = 16.0;
             let avail_w = ui.available_width();
 
-            let (rect, resp) = ui.allocate_exact_size(
-                egui::vec2(avail_w, row_h),
-                egui::Sense::hover(),
-            );
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(avail_w, row_h), egui::Sense::hover());
             let is_hovered = resp.hovered();
             if is_hovered {
                 if let Some(k) = hk {
@@ -86,7 +90,11 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
             let show_highlight = is_hovered || *highlighted;
 
             if show_highlight {
-                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12));
+                ui.painter().rect_filled(
+                    rect,
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
             }
 
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
@@ -99,8 +107,9 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.add(egui::Label::new(
                                 egui::RichText::new(label.as_str())
-                                    .monospace().size(10.5)
-                                    .color(if show_highlight { TEXT_BRIGHT } else { TEXT })
+                                    .monospace()
+                                    .size(10.5)
+                                    .color(if show_highlight { TEXT_BRIGHT } else { TEXT }),
                             ));
                         });
                     });
@@ -123,15 +132,20 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.add(egui::Label::new(
                                 egui::RichText::new(&count.to_string())
-                                    .monospace().size(10.0)
-                                    .color(TEXT_DIM)
+                                    .monospace()
+                                    .size(10.0)
+                                    .color(TEXT_DIM),
                             ));
                         });
                     });
                 });
         }
 
-        Node::ChartLabel { title, left_sub, right_sub } => {
+        Node::ChartLabel {
+            title,
+            left_sub,
+            right_sub,
+        } => {
             let avail = ui.available_rect_before_wrap();
             let painter = ui.painter();
             painter.text(
@@ -162,7 +176,12 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
             ui.add_space(12.0);
         }
 
-        Node::Text { anchor, text, font_size, color: col } => {
+        Node::Text {
+            anchor,
+            text,
+            font_size,
+            color: col,
+        } => {
             let avail = ui.available_rect_before_wrap();
             let align = match anchor {
                 Anchor::LeftCenter => egui::Align2::LEFT_CENTER,
@@ -179,21 +198,23 @@ fn render_node(ui: &mut egui::Ui, node: &Node, hovered_key: &mut String) {
             );
         }
 
-        Node::Rect { rounding, color: col } => {
+        Node::Rect {
+            rounding,
+            color: col,
+        } => {
             let rect = ui.available_rect_before_wrap();
             ui.painter().rect_filled(rect, *rounding, color(*col));
         }
 
         Node::Circle { radius, color: col } => {
             let rect = ui.available_rect_before_wrap();
-            ui.painter().circle_filled(rect.center(), *radius, color(*col));
+            ui.painter()
+                .circle_filled(rect.center(), *radius, color(*col));
         }
 
         Node::Line { a, b, stroke: s } => {
-            ui.painter().line_segment(
-                [egui::pos2(a.0, a.1), egui::pos2(b.0, b.1)],
-                stroke(s),
-            );
+            ui.painter()
+                .line_segment([egui::pos2(a.0, a.1), egui::pos2(b.0, b.1)], stroke(s));
         }
 
         Node::Tooltip { lines } => {

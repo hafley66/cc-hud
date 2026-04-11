@@ -43,11 +43,19 @@ pub struct TerminalInsets {
 impl TerminalInsets {
     /// iTerm2 default internal margins (logical points).
     pub fn iterm2_default() -> Self {
-        Self { left: 4, right: 4, top: 2 }
+        Self {
+            left: 4,
+            right: 4,
+            top: 2,
+        }
     }
 
     pub fn zero() -> Self {
-        Self { left: 0, right: 0, top: 0 }
+        Self {
+            left: 0,
+            right: 0,
+            top: 0,
+        }
     }
 }
 
@@ -104,19 +112,37 @@ mod tests {
     use super::*;
 
     fn metrics(cell_w: u32, cell_h: u32, scale: u32) -> CellMetrics {
-        CellMetrics { cell_w, cell_h, scale_factor: scale }
+        CellMetrics {
+            cell_w,
+            cell_h,
+            scale_factor: scale,
+        }
     }
 
     fn origin(x: i32, y: i32, titlebar: i32) -> WindowOrigin {
-        WindowOrigin { x, y, titlebar_h: titlebar }
+        WindowOrigin {
+            x,
+            y,
+            titlebar_h: titlebar,
+        }
     }
 
-    fn no_insets() -> TerminalInsets { TerminalInsets::zero() }
-    fn iterm_insets() -> TerminalInsets { TerminalInsets::iterm2_default() }
+    fn no_insets() -> TerminalInsets {
+        TerminalInsets::zero()
+    }
+    fn iterm_insets() -> TerminalInsets {
+        TerminalInsets::iterm2_default()
+    }
 
     #[test]
     fn iterm2_insets_extend_width() {
-        let cell = CellRect { id: 0, top: 0, left: 0, width: 154, height: 40 };
+        let cell = CellRect {
+            id: 0,
+            top: 0,
+            left: 0,
+            width: 154,
+            height: 40,
+        };
         let ins = iterm_insets(); // left=4, right=4
         let rect = compute_overlay_rect(&cell, &metrics(22, 50, 2), &origin(0, 0, 0), &ins, 3, 1);
         // cell grid = 154*11 = 1694, plus margins = 1694+4+4 = 1702
@@ -127,15 +153,49 @@ mod tests {
 
     #[test]
     fn no_insets_no_status_bar() {
-        let cell = CellRect { id: 0, top: 0, left: 0, width: 154, height: 40 };
-        let rect = compute_overlay_rect(&cell, &metrics(22, 50, 2), &origin(0, 0, 0), &no_insets(), 3, 0);
-        assert_eq!(rect, PixelRect { x: 0, y: 1000 - 75, w: 154 * 11, h: 75 });
+        let cell = CellRect {
+            id: 0,
+            top: 0,
+            left: 0,
+            width: 154,
+            height: 40,
+        };
+        let rect = compute_overlay_rect(
+            &cell,
+            &metrics(22, 50, 2),
+            &origin(0, 0, 0),
+            &no_insets(),
+            3,
+            0,
+        );
+        assert_eq!(
+            rect,
+            PixelRect {
+                x: 0,
+                y: 1000 - 75,
+                w: 154 * 11,
+                h: 75
+            }
+        );
     }
 
     #[test]
     fn with_titlebar_and_window_offset() {
-        let cell = CellRect { id: 0, top: 0, left: 0, width: 100, height: 40 };
-        let rect = compute_overlay_rect(&cell, &metrics(22, 50, 2), &origin(50, 62, 28), &no_insets(), 3, 1);
+        let cell = CellRect {
+            id: 0,
+            top: 0,
+            left: 0,
+            width: 100,
+            height: 40,
+        };
+        let rect = compute_overlay_rect(
+            &cell,
+            &metrics(22, 50, 2),
+            &origin(50, 62, 28),
+            &no_insets(),
+            3,
+            1,
+        );
         assert_eq!(rect.x, 50);
         assert_eq!(rect.y, 1040);
         assert_eq!(rect.h, 75);
@@ -143,24 +203,63 @@ mod tests {
 
     #[test]
     fn bottom_pane_in_horizontal_split() {
-        let cell = CellRect { id: 1, top: 20, left: 0, width: 100, height: 20 };
-        let rect = compute_overlay_rect(&cell, &metrics(22, 50, 2), &origin(0, 62, 0), &no_insets(), 3, 1);
-        assert_eq!(rect.y, 62 + 20*25 + 20*25 - 75 + 25);
+        let cell = CellRect {
+            id: 1,
+            top: 20,
+            left: 0,
+            width: 100,
+            height: 20,
+        };
+        let rect = compute_overlay_rect(
+            &cell,
+            &metrics(22, 50, 2),
+            &origin(0, 62, 0),
+            &no_insets(),
+            3,
+            1,
+        );
+        assert_eq!(rect.y, 62 + 20 * 25 + 20 * 25 - 75 + 25);
         assert_eq!(rect.w, 100 * 11);
     }
 
     #[test]
     fn right_pane_in_vertical_split() {
-        let cell = CellRect { id: 1, top: 0, left: 77, width: 77, height: 40 };
-        let rect = compute_overlay_rect(&cell, &metrics(22, 50, 2), &origin(0, 0, 0), &no_insets(), 3, 1);
+        let cell = CellRect {
+            id: 1,
+            top: 0,
+            left: 77,
+            width: 77,
+            height: 40,
+        };
+        let rect = compute_overlay_rect(
+            &cell,
+            &metrics(22, 50, 2),
+            &origin(0, 0, 0),
+            &no_insets(),
+            3,
+            1,
+        );
         assert_eq!(rect.x, 77 * 11);
         assert_eq!(rect.w, 77 * 11);
     }
 
     #[test]
     fn scale_factor_1x() {
-        let cell = CellRect { id: 0, top: 0, left: 0, width: 80, height: 24 };
-        let rect = compute_overlay_rect(&cell, &metrics(8, 16, 1), &origin(0, 0, 0), &no_insets(), 3, 0);
+        let cell = CellRect {
+            id: 0,
+            top: 0,
+            left: 0,
+            width: 80,
+            height: 24,
+        };
+        let rect = compute_overlay_rect(
+            &cell,
+            &metrics(8, 16, 1),
+            &origin(0, 0, 0),
+            &no_insets(),
+            3,
+            0,
+        );
         assert_eq!(rect.w, 80 * 8);
         assert_eq!(rect.h, 3 * 16);
     }

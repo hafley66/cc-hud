@@ -61,7 +61,11 @@ pub fn cell_metrics_from_tty(tty_path: &str) -> Option<CellMetrics> {
     // Heuristic: Retina displays yield cell_w > 14 for standard monospace fonts
     let scale = if cell_w > 14 { 2 } else { 1 };
 
-    Some(CellMetrics { cell_w, cell_h, scale_factor: scale })
+    Some(CellMetrics {
+        cell_w,
+        cell_h,
+        scale_factor: scale,
+    })
 }
 
 /// Get terminal emulator window origin via CGWindowListCopyWindowInfo.
@@ -70,10 +74,8 @@ pub fn cell_metrics_from_tty(tty_path: &str) -> Option<CellMetrics> {
 pub fn terminal_window_origin(terminal_pid: i32) -> Option<WindowOrigin> {
     use core_foundation::dictionary::CFDictionaryRef;
     use core_graphics::window::{
+        kCGNullWindowID, kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
         CGWindowListCopyWindowInfo,
-        kCGWindowListOptionOnScreenOnly,
-        kCGWindowListExcludeDesktopElements,
-        kCGNullWindowID,
     };
 
     let windows_ptr = unsafe {
@@ -82,7 +84,9 @@ pub fn terminal_window_origin(terminal_pid: i32) -> Option<WindowOrigin> {
             kCGNullWindowID,
         )
     };
-    if windows_ptr.is_null() { return None; }
+    if windows_ptr.is_null() {
+        return None;
+    }
 
     let count = unsafe { core_foundation::array::CFArrayGetCount(windows_ptr as _) };
 
@@ -99,10 +103,14 @@ pub fn terminal_window_origin(terminal_pid: i32) -> Option<WindowOrigin> {
             Some(p) => p,
             None => continue,
         };
-        if pid != terminal_pid { continue; }
+        if pid != terminal_pid {
+            continue;
+        }
 
         let layer = cf_dict_get_i32(dict_ref, "kCGWindowLayer").unwrap_or(-1);
-        if layer != 0 { continue; }
+        if layer != 0 {
+            continue;
+        }
 
         let bounds_ref = match cf_dict_get_raw(dict_ref, "kCGWindowBounds") {
             Some(b) => b,
@@ -112,7 +120,9 @@ pub fn terminal_window_origin(terminal_pid: i32) -> Option<WindowOrigin> {
         let y = cf_dict_f64(bounds_ref as CFDictionaryRef, "Y") as i32;
         let h = cf_dict_f64(bounds_ref as CFDictionaryRef, "Height") as i32;
 
-        if h < 100 { continue; }
+        if h < 100 {
+            continue;
+        }
 
         if h > best_h {
             // Fullscreen heuristic: y==0 means no menu bar, so no titlebar
@@ -134,7 +144,9 @@ fn cf_dict_get_i32(dict: core_foundation::dictionary::CFDictionaryRef, key: &str
     unsafe {
         let cf_key = CFString::new(key);
         let val = CFDictionaryGetValue(dict, cf_key.as_CFTypeRef() as *const _);
-        if val.is_null() { return None; }
+        if val.is_null() {
+            return None;
+        }
         let cf_num: CFNumber = TCFType::wrap_under_get_rule(val as CFNumberRef);
         cf_num.to_i32()
     }
@@ -152,7 +164,11 @@ fn cf_dict_get_raw(
     unsafe {
         let cf_key = CFString::new(key);
         let val = CFDictionaryGetValue(dict, cf_key.as_CFTypeRef() as *const _);
-        if val.is_null() { None } else { Some(val) }
+        if val.is_null() {
+            None
+        } else {
+            Some(val)
+        }
     }
 }
 
@@ -166,14 +182,21 @@ fn cf_dict_f64(dict: core_foundation::dictionary::CFDictionaryRef, key: &str) ->
     unsafe {
         let cf_key = CFString::new(key);
         let val = CFDictionaryGetValue(dict, cf_key.as_CFTypeRef() as *const _);
-        if val.is_null() { return 0.0; }
+        if val.is_null() {
+            return 0.0;
+        }
         let cf_num: CFNumber = TCFType::wrap_under_get_rule(val as CFNumberRef);
         cf_num.to_f64().unwrap_or(0.0)
     }
 }
 
 const KNOWN_TERMINALS: &[&str] = &[
-    "iTerm2", "Terminal", "wezterm-gui", "alacritty", "kitty", "WezTerm",
+    "iTerm2",
+    "Terminal",
+    "wezterm-gui",
+    "alacritty",
+    "kitty",
+    "WezTerm",
 ];
 
 /// Find the PID of the terminal emulator running this process.

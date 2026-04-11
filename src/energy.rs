@@ -412,14 +412,22 @@ impl Ranged {
 
     /// Scale all three bands by a constant factor.
     fn scale(self, factor: f64) -> Self {
-        Self { low: self.low * factor, mid: self.mid * factor, high: self.high * factor }
+        Self {
+            low: self.low * factor,
+            mid: self.mid * factor,
+            high: self.high * factor,
+        }
     }
 }
 
 impl std::ops::Add for Ranged {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self { low: self.low + rhs.low, mid: self.mid + rhs.mid, high: self.high + rhs.high }
+        Self {
+            low: self.low + rhs.low,
+            mid: self.mid + rhs.mid,
+            high: self.high + rhs.high,
+        }
     }
 }
 
@@ -509,8 +517,7 @@ pub fn estimate_direct(
     let fresh_input = tokens.input_tokens + tokens.cache_create_tokens;
     let cache_hits = tokens.cache_read_tokens;
 
-    let server_joules_mid =
-        tokens.output_tokens as f64 * j_out
+    let server_joules_mid = tokens.output_tokens as f64 * j_out
         + fresh_input as f64 * j_in
         + cache_hits as f64 * j_out * CACHE_HIT_ENERGY_FACTOR;
 
@@ -523,8 +530,10 @@ pub fn estimate_direct(
 
     // Local GPU equivalence (known hardware, no confidence range)
     let j_local = local_joules_per_token(&config.local_gpu);
-    let total_tokens = tokens.output_tokens + tokens.input_tokens
-        + tokens.cache_read_tokens + tokens.cache_create_tokens;
+    let total_tokens = tokens.output_tokens
+        + tokens.input_tokens
+        + tokens.cache_read_tokens
+        + tokens.cache_create_tokens;
     let local_gpu_seconds = (total_tokens as f64 * j_local) / config.local_gpu.system_watts;
     let local_kwh = total_tokens as f64 * j_local / 3_600_000.0;
     let local_cost_usd = local_kwh * config.electricity_rate;
@@ -534,7 +543,11 @@ pub fn estimate_direct(
     let solar_offset_seconds = if solar_kwh_per_sec > 0.0 {
         facility_kwh.scale(1.0 / solar_kwh_per_sec)
     } else {
-        Ranged { low: f64::INFINITY, mid: f64::INFINITY, high: f64::INFINITY }
+        Ranged {
+            low: f64::INFINITY,
+            mid: f64::INFINITY,
+            high: f64::INFINITY,
+        }
     };
 
     // Water: on-site (DC cooling) + off-site (power plant cooling), in milliliters.
@@ -571,7 +584,12 @@ pub fn estimate_direct(
 
 /// Compute energy estimates from token counts using ModelTier.
 /// Delegates to estimate_direct with tier-derived coefficients.
-pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config: &EnergyConfig) -> EnergyEstimate {
+pub fn estimate(
+    tokens: &TokenCounts,
+    tier: ModelTier,
+    api_cost_usd: f64,
+    config: &EnergyConfig,
+) -> EnergyEstimate {
     estimate_direct(
         tokens,
         output_joules_per_token(tier),
@@ -582,9 +600,20 @@ pub fn estimate(tokens: &TokenCounts, tier: ModelTier, api_cost_usd: f64, config
 }
 
 /// Compute energy estimates using model registry coefficients.
-pub fn estimate_for_model(tokens: &TokenCounts, model: &str, api_cost_usd: f64, config: &EnergyConfig) -> EnergyEstimate {
+pub fn estimate_for_model(
+    tokens: &TokenCounts,
+    model: &str,
+    api_cost_usd: f64,
+    config: &EnergyConfig,
+) -> EnergyEstimate {
     let energy = crate::model_registry::model_energy(model);
-    estimate_direct(tokens, energy.j_per_output_tok, energy.input_energy_factor, api_cost_usd, config)
+    estimate_direct(
+        tokens,
+        energy.j_per_output_tok,
+        energy.input_energy_factor,
+        api_cost_usd,
+        config,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -649,17 +678,33 @@ water_offsite_ml:     {:.4} [{:.4} .. {:.4}]
 water_total_ml:       {:.4} [{:.4} .. {:.4}]
 api_cost_usd:         {:.4}
 api_markup_ratio:     {:.2}",
-            e.server_joules.mid, e.server_joules.low, e.server_joules.high,
-            e.facility_joules.mid, e.facility_joules.low, e.facility_joules.high,
-            e.facility_kwh.mid, e.facility_kwh.low, e.facility_kwh.high,
-            e.carbon_grams.mid, e.carbon_grams.low, e.carbon_grams.high,
+            e.server_joules.mid,
+            e.server_joules.low,
+            e.server_joules.high,
+            e.facility_joules.mid,
+            e.facility_joules.low,
+            e.facility_joules.high,
+            e.facility_kwh.mid,
+            e.facility_kwh.low,
+            e.facility_kwh.high,
+            e.carbon_grams.mid,
+            e.carbon_grams.low,
+            e.carbon_grams.high,
             e.local_gpu_seconds,
             e.local_kwh,
             e.local_cost_usd,
-            e.solar_offset_seconds.mid, e.solar_offset_seconds.low, e.solar_offset_seconds.high,
-            e.water_onsite_ml.mid, e.water_onsite_ml.low, e.water_onsite_ml.high,
-            e.water_offsite_ml.mid, e.water_offsite_ml.low, e.water_offsite_ml.high,
-            e.water_total_ml.mid, e.water_total_ml.low, e.water_total_ml.high,
+            e.solar_offset_seconds.mid,
+            e.solar_offset_seconds.low,
+            e.solar_offset_seconds.high,
+            e.water_onsite_ml.mid,
+            e.water_onsite_ml.low,
+            e.water_onsite_ml.high,
+            e.water_offsite_ml.mid,
+            e.water_offsite_ml.low,
+            e.water_offsite_ml.high,
+            e.water_total_ml.mid,
+            e.water_total_ml.low,
+            e.water_total_ml.high,
             e.api_cost_usd,
             e.api_markup_ratio,
         )
@@ -678,10 +723,19 @@ api_markup_ratio:     {:.2}",
         let config = EnergyConfig::default();
         let e = estimate(&tokens, ModelTier::Opus, 75.0, &config);
 
-        assert!((e.server_joules.mid - 5_000_000.0).abs() < 0.01, "5 MJ for 1M Opus output tokens");
-        assert!((e.facility_joules.mid - 6_000_000.0).abs() < 0.01, "6 MJ with PUE 1.2");
+        assert!(
+            (e.server_joules.mid - 5_000_000.0).abs() < 0.01,
+            "5 MJ for 1M Opus output tokens"
+        );
+        assert!(
+            (e.facility_joules.mid - 6_000_000.0).abs() < 0.01,
+            "6 MJ with PUE 1.2"
+        );
         assert!((e.facility_kwh.mid - 1.6667).abs() < 0.001, "~1.667 kWh");
-        assert!((e.carbon_grams.mid - 583.33).abs() < 1.0, "~583 gCO2 at 350 gCO2/kWh");
+        assert!(
+            (e.carbon_grams.mid - 583.33).abs() < 1.0,
+            "~583 gCO2 at 350 gCO2/kWh"
+        );
 
         // Confidence band: low = mid/3, high = mid*3
         assert!((e.server_joules.low - 5_000_000.0 / 3.0).abs() < 1.0);
@@ -690,12 +744,21 @@ api_markup_ratio:     {:.2}",
         // Water: 1.667 kWh * WUE_AWS(0.15) * 1000 = 250.0 mL on-site
         //        1.667 kWh * US_AVG(1.50) * 1000 = 2500.0 mL off-site
         //        Total = 2750.0 mL
-        assert!((e.water_onsite_ml.mid - 250.0).abs() < 1.0,
-            "On-site water: {} mL, expected ~250", e.water_onsite_ml.mid);
-        assert!((e.water_offsite_ml.mid - 2500.0).abs() < 1.0,
-            "Off-site water: {} mL, expected ~2500", e.water_offsite_ml.mid);
-        assert!((e.water_total_ml.mid - 2750.0).abs() < 2.0,
-            "Total water: {} mL, expected ~2750", e.water_total_ml.mid);
+        assert!(
+            (e.water_onsite_ml.mid - 250.0).abs() < 1.0,
+            "On-site water: {} mL, expected ~250",
+            e.water_onsite_ml.mid
+        );
+        assert!(
+            (e.water_offsite_ml.mid - 2500.0).abs() < 1.0,
+            "Off-site water: {} mL, expected ~2500",
+            e.water_offsite_ml.mid
+        );
+        assert!(
+            (e.water_total_ml.mid - 2750.0).abs() < 2.0,
+            "Total water: {} mL, expected ~2750",
+            e.water_total_ml.mid
+        );
 
         assert_snapshot!("opus_1m_output", fmt_estimate(&e));
     }
@@ -709,7 +772,7 @@ api_markup_ratio:     {:.2}",
         // Simulate 30 GPT-3.5-class queries, each ~0.004 kWh facility energy.
         // Use industry-avg WUE to match their assumptions.
         let config = EnergyConfig {
-            wue: WueProfile::IndustryAvg,   // 1.8 L/kWh
+            wue: WueProfile::IndustryAvg,              // 1.8 L/kWh
             grid_water: GridWaterIntensity::UsAverage, // 1.5 L/kWh
             ..Default::default()
         };
@@ -723,43 +786,75 @@ api_markup_ratio:     {:.2}",
         let e = estimate(&tokens, ModelTier::Sonnet, 0.0, &config);
 
         // Verify facility energy is ~0.12 kWh (30 * 0.004)
-        assert!((e.facility_kwh.mid - 0.12).abs() < 0.001,
-            "Facility kWh: {}, expected ~0.12", e.facility_kwh.mid);
+        assert!(
+            (e.facility_kwh.mid - 0.12).abs() < 0.001,
+            "Facility kWh: {}, expected ~0.12",
+            e.facility_kwh.mid
+        );
 
         // Total water: 0.12 * (1.8 + 1.5) * 1000 = 396 mL
         // Li et al. range: 500 mL for 20-50 queries (10-25 mL each)
         // Our 30-query estimate of 396 mL = 13.2 mL/query, within their range.
-        assert!(e.water_total_ml.mid > 300.0 && e.water_total_ml.mid < 500.0,
-            "Total water {} mL should be 300-500 mL range matching Li et al.", e.water_total_ml.mid);
+        assert!(
+            e.water_total_ml.mid > 300.0 && e.water_total_ml.mid < 500.0,
+            "Total water {} mL should be 300-500 mL range matching Li et al.",
+            e.water_total_ml.mid
+        );
 
         let per_query = e.water_total_ml.mid / 30.0;
-        assert!(per_query > 10.0 && per_query < 25.0,
-            "Per-query water {} mL should be in Li et al. 10-25 mL range", per_query);
+        assert!(
+            per_query > 10.0 && per_query < 25.0,
+            "Per-query water {} mL should be in Li et al. 10-25 mL range",
+            per_query
+        );
 
-        assert_snapshot!("water_li_sanity", format!(
-            "total_water_ml: {:.1}\nper_query_ml: {:.1}\nonsite_ml: {:.1}\noffsite_ml: {:.1}",
-            e.water_total_ml.mid, per_query, e.water_onsite_ml.mid, e.water_offsite_ml.mid
-        ));
+        assert_snapshot!(
+            "water_li_sanity",
+            format!(
+                "total_water_ml: {:.1}\nper_query_ml: {:.1}\nonsite_ml: {:.1}\noffsite_ml: {:.1}",
+                e.water_total_ml.mid, per_query, e.water_onsite_ml.mid, e.water_offsite_ml.mid
+            )
+        );
     }
 
     /// Water scales linearly with WUE profile choice.
     #[test]
     fn water_wue_profiles() {
-        let tokens = TokenCounts { output_tokens: 100_000, ..Default::default() };
+        let tokens = TokenCounts {
+            output_tokens: 100_000,
+            ..Default::default()
+        };
 
-        let aws = estimate(&tokens, ModelTier::Sonnet, 0.0, &EnergyConfig {
-            wue: WueProfile::Aws, ..Default::default()
-        });
-        let industry = estimate(&tokens, ModelTier::Sonnet, 0.0, &EnergyConfig {
-            wue: WueProfile::IndustryAvg, ..Default::default()
-        });
+        let aws = estimate(
+            &tokens,
+            ModelTier::Sonnet,
+            0.0,
+            &EnergyConfig {
+                wue: WueProfile::Aws,
+                ..Default::default()
+            },
+        );
+        let industry = estimate(
+            &tokens,
+            ModelTier::Sonnet,
+            0.0,
+            &EnergyConfig {
+                wue: WueProfile::IndustryAvg,
+                ..Default::default()
+            },
+        );
 
         let ratio = industry.water_onsite_ml.mid / aws.water_onsite_ml.mid;
-        assert!((ratio - 12.0).abs() < 0.01, "Industry/AWS on-site ratio: {ratio}, expected 12x (1.8/0.15)");
+        assert!(
+            (ratio - 12.0).abs() < 0.01,
+            "Industry/AWS on-site ratio: {ratio}, expected 12x (1.8/0.15)"
+        );
 
         // Off-site should be identical (same grid_water default)
-        assert!((industry.water_offsite_ml.mid - aws.water_offsite_ml.mid).abs() < 0.001,
-            "Off-site water should be identical regardless of WUE");
+        assert!(
+            (industry.water_offsite_ml.mid - aws.water_offsite_ml.mid).abs() < 0.001,
+            "Off-site water should be identical regardless of WUE"
+        );
     }
 
     /// Validate tier scaling: Opus output should be ~5.56x Sonnet, ~33.3x Haiku.
@@ -777,12 +872,19 @@ api_markup_ratio:     {:.2}",
         let opus_sonnet = opus.server_joules.mid / sonnet.server_joules.mid;
         let opus_haiku = opus.server_joules.mid / haiku.server_joules.mid;
 
-        assert!((opus_sonnet - 5.556).abs() < 0.01, "Opus/Sonnet ratio: {opus_sonnet}");
-        assert!((opus_haiku - 33.333).abs() < 0.01, "Opus/Haiku ratio: {opus_haiku}");
+        assert!(
+            (opus_sonnet - 5.556).abs() < 0.01,
+            "Opus/Sonnet ratio: {opus_sonnet}"
+        );
+        assert!(
+            (opus_haiku - 33.333).abs() < 0.01,
+            "Opus/Haiku ratio: {opus_haiku}"
+        );
 
-        assert_snapshot!("tier_scaling", format!(
-            "opus_sonnet_ratio: {opus_sonnet:.3}\nopus_haiku_ratio: {opus_haiku:.3}"
-        ));
+        assert_snapshot!(
+            "tier_scaling",
+            format!("opus_sonnet_ratio: {opus_sonnet:.3}\nopus_haiku_ratio: {opus_haiku:.3}")
+        );
     }
 
     /// Validate input vs output energy asymmetry.
@@ -792,12 +894,22 @@ api_markup_ratio:     {:.2}",
         let config = EnergyConfig::default();
 
         let output_only = estimate(
-            &TokenCounts { output_tokens: 100_000, ..Default::default() },
-            ModelTier::Sonnet, 0.0, &config,
+            &TokenCounts {
+                output_tokens: 100_000,
+                ..Default::default()
+            },
+            ModelTier::Sonnet,
+            0.0,
+            &config,
         );
         let input_only = estimate(
-            &TokenCounts { input_tokens: 100_000, ..Default::default() },
-            ModelTier::Sonnet, 0.0, &config,
+            &TokenCounts {
+                input_tokens: 100_000,
+                ..Default::default()
+            },
+            ModelTier::Sonnet,
+            0.0,
+            &config,
         );
 
         let ratio = input_only.server_joules.mid / output_only.server_joules.mid;
@@ -810,11 +922,19 @@ api_markup_ratio:     {:.2}",
         let config = EnergyConfig::default();
 
         let with_cache = estimate(
-            &TokenCounts { cache_read_tokens: 500_000, ..Default::default() },
-            ModelTier::Sonnet, 0.0, &config,
+            &TokenCounts {
+                cache_read_tokens: 500_000,
+                ..Default::default()
+            },
+            ModelTier::Sonnet,
+            0.0,
+            &config,
         );
 
-        assert_eq!(with_cache.server_joules.mid, 0.0, "Cache-only tokens produce zero server energy");
+        assert_eq!(
+            with_cache.server_joules.mid, 0.0,
+            "Cache-only tokens produce zero server energy"
+        );
     }
 
     /// Cache creates count as fresh input computation.
@@ -823,16 +943,28 @@ api_markup_ratio:     {:.2}",
         let config = EnergyConfig::default();
 
         let fresh = estimate(
-            &TokenCounts { input_tokens: 100_000, ..Default::default() },
-            ModelTier::Sonnet, 0.0, &config,
+            &TokenCounts {
+                input_tokens: 100_000,
+                ..Default::default()
+            },
+            ModelTier::Sonnet,
+            0.0,
+            &config,
         );
         let cached = estimate(
-            &TokenCounts { cache_create_tokens: 100_000, ..Default::default() },
-            ModelTier::Sonnet, 0.0, &config,
+            &TokenCounts {
+                cache_create_tokens: 100_000,
+                ..Default::default()
+            },
+            ModelTier::Sonnet,
+            0.0,
+            &config,
         );
 
-        assert!((fresh.server_joules.mid - cached.server_joules.mid).abs() < 0.001,
-            "Cache create energy should equal fresh input energy");
+        assert!(
+            (fresh.server_joules.mid - cached.server_joules.mid).abs() < 0.001,
+            "Cache create energy should equal fresh input energy"
+        );
     }
 
     /// Realistic session: mixed tokens, Opus, typical API cost.
@@ -872,8 +1004,10 @@ api_markup_ratio:     {:.2}",
         assert!((s.avg_watts() - 68.0).abs() < 0.01);
 
         let secs_per_kwh = 1.0 / s.kwh_per_second();
-        assert!((secs_per_kwh - 52_941.0).abs() < 100.0,
-            "Seconds of solar per kWh: {secs_per_kwh}");
+        assert!(
+            (secs_per_kwh - 52_941.0).abs() < 100.0,
+            "Seconds of solar per kWh: {secs_per_kwh}"
+        );
     }
 
     /// Grid region carbon intensities should span the expected range.
@@ -909,13 +1043,24 @@ api_markup_ratio:     {:.2}",
         let config = EnergyConfig::default();
         let e = estimate(&tokens, ModelTier::Opus, 75.0, &config);
 
-        assert!(e.api_markup_ratio > 50.0, "Opus output markup should be >50x, got {:.1}", e.api_markup_ratio);
-        assert!(e.api_markup_ratio < 100.0, "Opus output markup should be <100x, got {:.1}", e.api_markup_ratio);
+        assert!(
+            e.api_markup_ratio > 50.0,
+            "Opus output markup should be >50x, got {:.1}",
+            e.api_markup_ratio
+        );
+        assert!(
+            e.api_markup_ratio < 100.0,
+            "Opus output markup should be <100x, got {:.1}",
+            e.api_markup_ratio
+        );
 
-        assert_snapshot!("api_markup_opus", format!(
-            "api_cost: ${:.2}\nlocal_electricity: ${:.4}\nmarkup: {:.1}x",
-            e.api_cost_usd, e.local_cost_usd, e.api_markup_ratio
-        ));
+        assert_snapshot!(
+            "api_markup_opus",
+            format!(
+                "api_cost: ${:.2}\nlocal_electricity: ${:.4}\nmarkup: {:.1}x",
+                e.api_cost_usd, e.local_cost_usd, e.api_markup_ratio
+            )
+        );
     }
 
     /// Custom grid region and electricity rate.
@@ -944,25 +1089,59 @@ api_markup_ratio:     {:.2}",
         let mut session = SessionEnergy::default();
 
         // Two Opus calls
-        session.add_call(20_000, 5_000, 15_000, 5_000, "claude-opus-4-6", 0.50, &config);
-        session.add_call(10_000, 3_000, 8_000, 2_000, "claude-opus-4-6", 0.30, &config);
+        session.add_call(
+            20_000,
+            5_000,
+            15_000,
+            5_000,
+            "claude-opus-4-6",
+            0.50,
+            &config,
+        );
+        session.add_call(
+            10_000,
+            3_000,
+            8_000,
+            2_000,
+            "claude-opus-4-6",
+            0.30,
+            &config,
+        );
 
         assert_eq!(session.call_count, 2);
         assert!((session.cumulative.api_cost_usd - 0.80).abs() < 0.001);
 
         // Energy should be sum of both calls
         let call1 = estimate(
-            &TokenCounts { input_tokens: 20_000, output_tokens: 5_000, cache_read_tokens: 15_000, cache_create_tokens: 5_000 },
-            ModelTier::Opus, 0.50, &config,
+            &TokenCounts {
+                input_tokens: 20_000,
+                output_tokens: 5_000,
+                cache_read_tokens: 15_000,
+                cache_create_tokens: 5_000,
+            },
+            ModelTier::Opus,
+            0.50,
+            &config,
         );
         let call2 = estimate(
-            &TokenCounts { input_tokens: 10_000, output_tokens: 3_000, cache_read_tokens: 8_000, cache_create_tokens: 2_000 },
-            ModelTier::Opus, 0.30, &config,
+            &TokenCounts {
+                input_tokens: 10_000,
+                output_tokens: 3_000,
+                cache_read_tokens: 8_000,
+                cache_create_tokens: 2_000,
+            },
+            ModelTier::Opus,
+            0.30,
+            &config,
         );
 
         let expected_joules = call1.server_joules.mid + call2.server_joules.mid;
-        assert!((session.cumulative.server_joules.mid - expected_joules).abs() < 0.01,
-            "Accumulated joules: {} vs expected {}", session.cumulative.server_joules.mid, expected_joules);
+        assert!(
+            (session.cumulative.server_joules.mid - expected_joules).abs() < 0.01,
+            "Accumulated joules: {} vs expected {}",
+            session.cumulative.server_joules.mid,
+            expected_joules
+        );
 
         assert_snapshot!("session_accumulator", fmt_estimate(&session.cumulative));
     }
@@ -973,7 +1152,15 @@ api_markup_ratio:     {:.2}",
         let config = EnergyConfig::default();
         let mut session = SessionEnergy::default();
 
-        session.add_call(20_000, 5_000, 15_000, 5_000, "claude-opus-4-6", 0.50, &config);
+        session.add_call(
+            20_000,
+            5_000,
+            15_000,
+            5_000,
+            "claude-opus-4-6",
+            0.50,
+            &config,
+        );
         session.add_call(10_000, 3_000, 8_000, 0, "claude-sonnet-4-6", 0.05, &config);
         session.add_call(5_000, 1_000, 3_000, 0, "claude-haiku-4-5", 0.01, &config);
 
@@ -981,11 +1168,22 @@ api_markup_ratio:     {:.2}",
 
         // Opus call should dominate energy (5 J/output vs 0.9 vs 0.15)
         let opus_only = estimate(
-            &TokenCounts { input_tokens: 20_000, output_tokens: 5_000, cache_read_tokens: 15_000, cache_create_tokens: 5_000 },
-            ModelTier::Opus, 0.50, &config,
+            &TokenCounts {
+                input_tokens: 20_000,
+                output_tokens: 5_000,
+                cache_read_tokens: 15_000,
+                cache_create_tokens: 5_000,
+            },
+            ModelTier::Opus,
+            0.50,
+            &config,
         );
         let opus_fraction = opus_only.server_joules.mid / session.cumulative.server_joules.mid;
-        assert!(opus_fraction > 0.85, "Opus should dominate: {:.1}%", opus_fraction * 100.0);
+        assert!(
+            opus_fraction > 0.85,
+            "Opus should dominate: {:.1}%",
+            opus_fraction * 100.0
+        );
 
         assert_snapshot!("mixed_model_session", fmt_estimate(&session.cumulative));
     }
@@ -993,7 +1191,10 @@ api_markup_ratio:     {:.2}",
     /// Confidence band properties: low < mid < high, ratios are 1/3 and 3x.
     #[test]
     fn confidence_band_properties() {
-        let tokens = TokenCounts { output_tokens: 10_000, ..Default::default() };
+        let tokens = TokenCounts {
+            output_tokens: 10_000,
+            ..Default::default()
+        };
         let config = EnergyConfig::default();
         let e = estimate(&tokens, ModelTier::Sonnet, 1.0, &config);
 
@@ -1008,9 +1209,20 @@ api_markup_ratio:     {:.2}",
             ("water_total_ml", e.water_total_ml),
         ] {
             assert!(r.low < r.mid, "{name}: low ({}) < mid ({})", r.low, r.mid);
-            assert!(r.mid < r.high, "{name}: mid ({}) < high ({})", r.mid, r.high);
-            assert!((r.low / r.mid - CONFIDENCE_LOW_FACTOR).abs() < 0.001, "{name}: low/mid ratio");
-            assert!((r.high / r.mid - CONFIDENCE_HIGH_FACTOR).abs() < 0.001, "{name}: high/mid ratio");
+            assert!(
+                r.mid < r.high,
+                "{name}: mid ({}) < high ({})",
+                r.mid,
+                r.high
+            );
+            assert!(
+                (r.low / r.mid - CONFIDENCE_LOW_FACTOR).abs() < 0.001,
+                "{name}: low/mid ratio"
+            );
+            assert!(
+                (r.high / r.mid - CONFIDENCE_HIGH_FACTOR).abs() < 0.001,
+                "{name}: high/mid ratio"
+            );
         }
     }
 }

@@ -7,14 +7,13 @@
 /// OpenCode stores message metadata as JSON in `message.data` with fields:
 ///   role, time.created, time.completed, modelID, providerID, cost,
 ///   tokens.{total, input, output, reasoning, cache.{read, write}}
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::Connection;
 use serde::Deserialize;
 
-use super::claude_code::{Event, SessionData, HudData};
+use super::claude_code::{Event, HudData, SessionData};
 use crate::energy::{EnergyConfig, SessionEnergy};
 use crate::model_registry;
 
@@ -82,7 +81,8 @@ pub fn load_opencode_sessions(energy_config: &EnergyConfig) -> HudData {
         return HudData::default();
     }
 
-    let conn = match Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let conn = match Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to open opencode DB: {e}");
@@ -109,7 +109,10 @@ pub fn load_opencode_sessions(energy_config: &EnergyConfig) -> HudData {
     // Group messages by session_id
     let mut by_session: HashMap<String, Vec<MessageRow>> = HashMap::new();
     for msg in messages {
-        by_session.entry(msg.session_id.clone()).or_default().push(msg);
+        by_session
+            .entry(msg.session_id.clone())
+            .or_default()
+            .push(msg);
     }
 
     let mut session_datas = Vec::new();
@@ -121,7 +124,10 @@ pub fn load_opencode_sessions(energy_config: &EnergyConfig) -> HudData {
         }
     }
 
-    HudData { sessions: session_datas, generation: 0 }
+    HudData {
+        sessions: session_datas,
+        generation: 0,
+    }
 }
 
 fn load_sessions(conn: &Connection) -> rusqlite::Result<Vec<SessionRow>> {
@@ -141,9 +147,8 @@ fn load_sessions(conn: &Connection) -> rusqlite::Result<Vec<SessionRow>> {
 }
 
 fn load_messages(conn: &Connection) -> rusqlite::Result<Vec<MessageRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT session_id, time_created, data FROM message ORDER BY time_created ASC"
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT session_id, time_created, data FROM message ORDER BY time_created ASC")?;
     let rows = stmt.query_map([], |row| {
         Ok(MessageRow {
             session_id: row.get(0)?,
@@ -173,7 +178,6 @@ fn build_session_data(
     let mut api_call_count: u32 = 0;
     let mut first_ts: u64 = 0;
     let mut last_ts: u64 = 0;
-    let mut last_model = String::new();
     let mut last_input_tokens: u64 = 0;
     let mut energy = SessionEnergy::default();
     let mut cumulative_input_cost = 0.0;
@@ -213,9 +217,10 @@ fn build_session_data(
         let (in_cost, out_cost) = if let Some(cost) = data.cost {
             // OpenCode provides total cost; split proportionally by token ratio
             // But we can also compute from registry for consistency
-            let (reg_in, reg_out) = profile.pricing.cost_split(
-                tokens.input, tokens.output, cache_read, cache_write,
-            );
+            let (reg_in, reg_out) =
+                profile
+                    .pricing
+                    .cost_split(tokens.input, tokens.output, cache_read, cache_write);
             let reg_total = reg_in + reg_out;
             if reg_total > 0.0 && cost > 0.0 {
                 // Scale registry split to match opencode's reported total
@@ -225,20 +230,26 @@ fn build_session_data(
                 (reg_in, reg_out)
             }
         } else {
-            profile.pricing.cost_split(tokens.input, tokens.output, cache_read, cache_write)
+            profile
+                .pricing
+                .cost_split(tokens.input, tokens.output, cache_read, cache_write)
         };
 
         cumulative_input_cost += in_cost;
         cumulative_output_cost += out_cost;
 
         // Timestamp: opencode stores milliseconds
-        let ts_secs = data.time.as_ref()
+        let ts_secs = data
+            .time
+            .as_ref()
             .and_then(|t| t.created)
-            .unwrap_or(msg.time_created) / 1000;
+            .unwrap_or(msg.time_created)
+            / 1000;
 
-        if first_ts == 0 { first_ts = ts_secs; }
+        if first_ts == 0 {
+            first_ts = ts_secs;
+        }
         last_ts = ts_secs;
-        last_model = model_str.clone();
         last_input_tokens = tokens.input;
 
         events.push(Event::ApiCall {
@@ -264,8 +275,13 @@ fn build_session_data(
         api_call_count += 1;
 
         energy.add_call(
-            tokens.input, tokens.output, cache_read, cache_write,
-            &model_str, in_cost + out_cost, energy_config,
+            tokens.input,
+            tokens.output,
+            cache_read,
+            cache_write,
+            &model_str,
+            in_cost + out_cost,
+            energy_config,
         );
 
         seq += 1;
@@ -279,7 +295,7 @@ fn build_session_data(
         session_id: sess.id,
         cwd: sess.directory.clone(),
         project: short_name(&sess.directory),
-        pid: 0, // OpenCode doesn't expose PID
+        pid: 0,
         events,
         total_cost_usd,
         total_input_cost,
@@ -291,13 +307,14 @@ fn build_session_data(
         read_counts: HashMap::new(),
         api_call_count,
         agent_count: 0,
-        is_active: false, // No PID-based liveness check for opencode
+        is_active: false,
         first_ts,
         last_ts,
-        model: last_model,
+        model: "".to_string(),
         last_input_tokens,
         subagents: vec![],
-        energy,
+        harness: "opencode".to_string(),
+        energy: Default::default(),
     })
 }
 
@@ -331,7 +348,10 @@ mod tests {
         // On machines with opencode data, this should produce sessions.
         // On CI without the DB, it returns empty. Both are valid.
         if db_path().exists() {
-            assert!(!hud.sessions.is_empty(), "Expected sessions from opencode DB");
+            assert!(
+                !hud.sessions.is_empty(),
+                "Expected sessions from opencode DB"
+            );
             let first = &hud.sessions[0];
             assert!(!first.session_id.is_empty());
             assert!(first.api_call_count > 0);

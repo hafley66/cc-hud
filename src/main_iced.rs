@@ -1,9 +1,9 @@
 use cc_hud::agent_harnesses::claude_code::{self, HudData};
-use cc_hud::scene::{self, Node, ChartData, Color, format_cost, session_color};
+use cc_hud::scene::{self, format_cost, session_color, ChartData, Color, Node};
 
-use iced::widget::{canvas, column, container, scrollable, text};
-use iced::{Element, Length, Settings, Theme, Size, Rectangle, Renderer};
 use iced::widget::canvas::{Cache, Frame, Geometry, Path, Stroke as IcedStroke};
+use iced::widget::{canvas, column, container, scrollable, text};
+use iced::{Element, Length, Rectangle, Renderer, Settings, Size, Theme};
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,6 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
     let show_history = args.iter().any(|a| a == "--history" || a == "-H");
-    let big_mode = args.iter().any(|a| a == "--big" || a == "-b");
 
     let hud_data = Arc::new(Mutex::new(HudData::default()));
 
@@ -32,11 +31,7 @@ fn main() {
         claude_code::poll_loop(feed_data, show_history);
     });
 
-    let win_size = if big_mode {
-        Size::new(1280.0, 720.0)
-    } else {
-        Size::new(960.0, 520.0)
-    };
+    let win_size = Size::new(1280.0, 720.0);
 
     let settings = Settings {
         antialiasing: true,
@@ -49,10 +44,13 @@ fn main() {
         .theme(|_| Theme::Dark)
         .subscription(App::subscription)
         .run_with(move || {
-            (App {
-                hud_data: hud_data.clone(),
-                cache: Cache::new(),
-            }, iced::Task::none())
+            (
+                App {
+                    hud_data: hud_data.clone(),
+                    cache: Cache::new(),
+                },
+                iced::Task::none(),
+            )
         })
         .expect("failed to run iced app");
 }
@@ -96,7 +94,9 @@ impl App {
 
         let header = text(format!(
             "{} sessions ({} active)  total: {}",
-            session_count, active_count, format_cost(total_cost)
+            session_count,
+            active_count,
+            format_cost(total_cost)
         ))
         .size(14);
 
@@ -177,7 +177,14 @@ fn render_panel_nodes<'a>(nodes: &[Node]) -> Element<'a, Message> {
                     );
                 }
             }
-            Node::BarRow { label, count, max, color, highlighted, .. } => {
+            Node::BarRow {
+                label,
+                count,
+                max,
+                color,
+                highlighted,
+                ..
+            } => {
                 let frac = if *max > 0.0 { *count as f32 / max } else { 0.0 };
                 let bar_color = scene_to_iced(*color);
                 let label_color = if *highlighted {
@@ -188,11 +195,19 @@ fn render_panel_nodes<'a>(nodes: &[Node]) -> Element<'a, Message> {
 
                 col = col.push(
                     iced::widget::row![
-                        text(label.clone()).size(11).width(Length::Fixed(70.0)).color(label_color),
-                        canvas(BarCanvas { frac, color: bar_color })
-                            .width(Length::Fill)
-                            .height(Length::Fixed(12.0)),
-                        text(format!("{}", count)).size(10).width(Length::Fixed(28.0))
+                        text(label.clone())
+                            .size(11)
+                            .width(Length::Fixed(70.0))
+                            .color(label_color),
+                        canvas(BarCanvas {
+                            frac,
+                            color: bar_color
+                        })
+                        .width(Length::Fill)
+                        .height(Length::Fixed(12.0)),
+                        text(format!("{}", count))
+                            .size(10)
+                            .width(Length::Fixed(28.0))
                             .color(iced::Color::from_rgb(0.5, 0.47, 0.39)),
                     ]
                     .spacing(4)
@@ -229,11 +244,7 @@ impl<Message> canvas::Program<Message> for BarCanvas {
         let mut frame = Frame::new(renderer, bounds.size());
         let w = bounds.width * self.frac;
         if w > 0.5 {
-            frame.fill_rectangle(
-                iced::Point::ORIGIN,
-                Size::new(w, bounds.height),
-                self.color,
-            );
+            frame.fill_rectangle(iced::Point::ORIGIN, Size::new(w, bounds.height), self.color);
         }
         vec![frame.into_geometry()]
     }
@@ -281,7 +292,10 @@ impl<Message> canvas::Program<Message> for HudCanvas {
         let x_min = cd.in_cost_bars.first().map(|b| b.x).unwrap_or(0.0);
         let x_max = cd.in_cost_bars.last().map(|b| b.x).unwrap_or(1.0);
         let x_span = (x_max - x_min).max(1.0);
-        let y_max = cd.per_turn_in_cost_max.max(cd.per_turn_out_cost_max).max(0.001);
+        let y_max = cd
+            .per_turn_in_cost_max
+            .max(cd.per_turn_out_cost_max)
+            .max(0.001);
 
         // Axes
         let axis_color = iced::Color::from_rgba(0.4, 0.37, 0.3, 0.6);
@@ -412,7 +426,9 @@ impl<Message> canvas::Program<Message> for HudCanvas {
 
         // Per-session total cost lines
         for (color, pts) in &cd.total_cost_lines {
-            if pts.len() < 2 { continue; }
+            if pts.len() < 2 {
+                continue;
+            }
             let line_color = scene_to_iced(*color);
             let path = Path::new(|builder| {
                 for (i, pt) in pts.iter().enumerate() {
@@ -425,7 +441,10 @@ impl<Message> canvas::Program<Message> for HudCanvas {
                     }
                 }
             });
-            frame.stroke(&path, IcedStroke::default().with_color(line_color).with_width(1.5));
+            frame.stroke(
+                &path,
+                IcedStroke::default().with_color(line_color).with_width(1.5),
+            );
         }
 
         // Combined cost line (dashed-ish, thicker, white-ish)
@@ -442,7 +461,12 @@ impl<Message> canvas::Program<Message> for HudCanvas {
                     }
                 }
             });
-            frame.stroke(&path, IcedStroke::default().with_color(combined_color).with_width(2.0));
+            frame.stroke(
+                &path,
+                IcedStroke::default()
+                    .with_color(combined_color)
+                    .with_width(2.0),
+            );
         }
 
         // Y-axis labels for total cost
