@@ -116,6 +116,8 @@ fn main() {
         show_budget: false,
         billing: BillingConfig::load(),
         cached_chart: None,
+        window_drag: None,
+        window_resize: None,
     });
 }
 
@@ -297,27 +299,22 @@ struct Hud {
     visible: Arc<std::sync::atomic::AtomicBool>,
     hud_data: Arc<Mutex<HudData>>,
     usage_data: Arc<Mutex<usage::UsageData>>,
-    /// Sessions to hide when in Exclude mode.
     exclude_set: HashSet<String>,
-    /// Sessions to show when in Include mode.
     include_set: HashSet<String>,
     filter_mode: FilterMode,
     show_active_only: bool,
     show_bars: bool,
     time_axis: bool,
     autofit: bool,
-    /// Chart viewport x-range in minutes-from-epoch. None = auto-fit to all data.
     nav_view: Option<(f64, f64)>,
-    /// Which cwd groups have their session list expanded.
     expanded_groups: HashSet<String>,
-    /// Which sessions have their subagent tree expanded.
     expanded_sessions: HashSet<String>,
     chart_vis: ChartVisibility,
-    /// When true, usage chart slot shows billing period budget instead.
     show_budget: bool,
     billing: BillingConfig,
-    /// Cached chart data to avoid rebuilding every frame.
-    cached_chart: Option<(u64, HashSet<String>, bool, scene::ChartData)>,
+    cached_chart: Option<(usize, HashSet<String>, bool, ChartData)>,
+    window_drag: Option<egui::Vec2>,
+    window_resize: Option<(egui::Pos2, egui::Vec2)>,
 }
 
 // --- colors ---
@@ -609,7 +606,6 @@ fn panel_frame() -> egui::Frame {
 // ---------------------------------------------------------------------------
 // Small mode (compact 3-row overlay for a single session)
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Big dashboard layout
@@ -3590,8 +3586,6 @@ fn draw_chart_label(ui: &mut egui::Ui, title: &str, top_label: &str, bot_label: 
 // Strip layout (original compact HUD)
 // ---------------------------------------------------------------------------
 
-
-
 // ---------------------------------------------------------------------------
 // EguiOverlay impl
 // ---------------------------------------------------------------------------
@@ -3623,6 +3617,144 @@ impl EguiOverlay for Hud {
         let data = self.hud_data.lock().unwrap().clone();
 
         let bg = egui::Color32::from_rgb(14, 12, 9);
+
+        // Window drag/resize handling
+        let screen_rect = egui_context.screen_rect();
+
+        // Title bar for dragging
+        let title_bar_height = 28.0;
+        let title_bar_rect = egui::Rect::from_min_size(
+            screen_rect.min,
+            egui::vec2(screen_rect.width(), title_bar_height),
+        );
+
+        // Close button
+        let close_btn_size = 18.0;
+        let close_btn_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                title_bar_rect.right() - close_btn_size - 6.0,
+                title_bar_rect.top() + 5.0,
+            ),
+            egui::vec2(close_btn_size, close_btn_size),
+        );
+
+        egui::Area::new(egui::Id::new("title_bar"))
+            .fixed_pos(title_bar_rect.min)
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(egui_context, |ui| {
+                ui.allocate_exact_size(title_bar_rect.size(), egui::Sense::click_and_drag());
+
+                let response = ui.response();
+                if response.dragged() {
+                    let delta = response.drag_delta();
+                    let mut rect = self.state.lock().unwrap();
+                    rect.x += delta.x as i32;
+                    rect.y += delta.y as i32;
+                    glfw_backend.window.set_pos(rect.x, rect.y);
+                }
+
+                // Draw title bar
+                ui.painter()
+                    .rect_filled(title_bar_rect, 0.0, egui::Color32::from_rgb(30, 28, 24));
+                ui.painter().line_segment(
+                    [title_bar_rect.left_bottom(), title_bar_rect.right_bottom()],
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 56, 48)),
+                );
+                ui.painter().text(
+                    egui::pos2(title_bar_rect.left() + 8.0, title_bar_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "cc-hud",
+                    egui::FontId::monospace(11.0),
+                    Palette::TEXT_DIM,
+                );
+
+                // Close button
+                let close_response = ui.allocate_rect(close_btn_rect, egui::Sense::click());
+                if close_response.clicked() {
+                    self.visible
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                let close_color = if close_response.hovered() {
+                    egui::Color32::from_rgb(200, 60, 60)
+                } else {
+                    egui::Color32::from_rgb(120, 50, 50)
+                };
+                ui.painter().rect_filled(close_btn_rect, 3.0, close_color);
+                // Draw X
+                let x_color = egui::Color32::from_rgb(220, 220, 220);
+                let pad = 5.0;
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(close_btn_rect.left() + pad, close_btn_rect.top() + pad),
+                        egui::pos2(close_btn_rect.right() - pad, close_btn_rect.bottom() - pad),
+                    ],
+                    egui::Stroke::new(1.5, x_color),
+                );
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(close_btn_rect.right() - pad, close_btn_rect.top() + pad),
+                        egui::pos2(close_btn_rect.left() + pad, close_btn_rect.bottom() - pad),
+                    ],
+                    egui::Stroke::new(1.5, x_color),
+                );
+            });
+
+        // Resize handle at bottom-right
+        let resize_size = 12.0;
+        let resize_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                screen_rect.right() - resize_size,
+                screen_rect.bottom() - resize_size,
+            ),
+            egui::vec2(resize_size, resize_size),
+        );
+
+        // Keyboard shortcuts
+        if egui_context.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.visible
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        if egui_context.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::H)) {
+            let current = self.visible.load(std::sync::atomic::Ordering::Relaxed);
+            self.visible
+                .store(!current, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        egui::Area::new(egui::Id::new("resize_handle"))
+            .fixed_pos(resize_rect.min)
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(egui_context, |ui| {
+                ui.allocate_exact_size(resize_rect.size(), egui::Sense::click_and_drag());
+
+                let response = ui.response();
+                if response.dragged() {
+                    let delta = response.drag_delta();
+                    let mut rect = self.state.lock().unwrap();
+                    rect.w = (rect.w + delta.x as i32).max(600);
+                    rect.h = (rect.h + delta.y as i32).max(300);
+                    glfw_backend.window.set_size(rect.w, rect.h);
+                }
+
+                // Draw resize handle
+                ui.painter().rect_filled(
+                    resize_rect,
+                    3.0,
+                    egui::Color32::from_rgba_unmultiplied(100, 90, 80, 80),
+                );
+
+                // Draw diagonal lines
+                let line_color = egui::Color32::from_rgba_unmultiplied(140, 130, 120, 120);
+                for i in 0..3 {
+                    let offset = (i + 1) as f32 * 3.0;
+                    let p1 = egui::pos2(resize_rect.right() - offset, resize_rect.bottom());
+                    let p2 = egui::pos2(resize_rect.right(), resize_rect.bottom() - offset);
+                    ui.painter()
+                        .line_segment([p1, p2], egui::Stroke::new(1.5, line_color));
+                }
+            });
+
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(bg))
             .show(egui_context, |ui| {
@@ -3663,7 +3795,7 @@ impl EguiOverlay for Hud {
                 }
 
                 // Cache chart data: only rebuild when data generation, hidden set, or time_axis changes
-                let data_gen = data.generation;
+                let data_gen = data.generation as usize;
                 let cache_hit = self.cached_chart.as_ref().map_or(false, |(g, h, t, _)| {
                     *g == data_gen && *h == effective_hidden && *t == self.time_axis
                 });
