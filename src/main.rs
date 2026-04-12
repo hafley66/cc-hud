@@ -286,6 +286,96 @@ struct Hud {
     cached_chart: Option<(usize, HashSet<String>, bool, ChartData)>,
     cached_plot: Option<PlotCache>,
     last_seen_gen: usize,
+    tiles_demo_open: bool,
+    tiles_tree: egui_tiles::Tree<DemoPane>,
+    chart_tree: egui_tiles::Tree<ChartPane>,
+}
+
+struct DemoPane {
+    label: String,
+    color: egui::Color32,
+}
+
+struct DemoBehavior;
+
+impl egui_tiles::Behavior<DemoPane> for DemoBehavior {
+    fn tab_title_for_pane(&mut self, pane: &DemoPane) -> egui::WidgetText {
+        pane.label.clone().into()
+    }
+    fn pane_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        _tile_id: egui_tiles::TileId,
+        pane: &mut DemoPane,
+    ) -> egui_tiles::UiResponse {
+        ui.painter().rect_filled(ui.available_rect_before_wrap(), 2.0, pane.color);
+        ui.label(&pane.label);
+        egui_tiles::UiResponse::None
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+enum ChartPane {
+    Cost,
+    Tokens,
+    Usage,
+    Tool,
+    Energy,
+    Water,
+    Totals,
+}
+
+struct ChartBehavior {
+    rects: std::collections::HashMap<ChartPane, egui::Rect>,
+}
+
+impl egui_tiles::Behavior<ChartPane> for ChartBehavior {
+    fn tab_title_for_pane(&mut self, pane: &ChartPane) -> egui::WidgetText {
+        format!("{:?}", pane).into()
+    }
+    fn pane_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        _tile_id: egui_tiles::TileId,
+        pane: &mut ChartPane,
+    ) -> egui_tiles::UiResponse {
+        self.rects.insert(*pane, ui.available_rect_before_wrap().shrink(3.0));
+        egui_tiles::UiResponse::None
+    }
+    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
+        egui_tiles::SimplificationOptions {
+            all_panes_must_have_tabs: false,
+            ..Default::default()
+        }
+    }
+    fn tab_bar_height(&self, _style: &egui::Style) -> f32 { 0.0 }
+    fn gap_width(&self, _style: &egui::Style) -> f32 { 6.0 }
+}
+
+fn build_chart_tree() -> egui_tiles::Tree<ChartPane> {
+    let mut tiles = egui_tiles::Tiles::default();
+    let cost = tiles.insert_pane(ChartPane::Cost);
+    let tokens = tiles.insert_pane(ChartPane::Tokens);
+    let usage = tiles.insert_pane(ChartPane::Usage);
+    let tool = tiles.insert_pane(ChartPane::Tool);
+    let energy = tiles.insert_pane(ChartPane::Energy);
+    let water = tiles.insert_pane(ChartPane::Water);
+    let totals = tiles.insert_pane(ChartPane::Totals);
+    let right_col = tiles.insert_vertical_tile(vec![usage, tool]);
+    let top_row = tiles.insert_horizontal_tile(vec![cost, tokens, right_col]);
+    let mid_row = tiles.insert_horizontal_tile(vec![energy, water]);
+    let root = tiles.insert_vertical_tile(vec![top_row, mid_row, totals]);
+    egui_tiles::Tree::new("chart_tree", root, tiles)
+}
+
+fn build_demo_tree() -> egui_tiles::Tree<DemoPane> {
+    let mut tiles = egui_tiles::Tiles::default();
+    let a = tiles.insert_pane(DemoPane { label: "A".into(), color: egui::Color32::from_rgb(60,40,30) });
+    let b = tiles.insert_pane(DemoPane { label: "B".into(), color: egui::Color32::from_rgb(30,50,60) });
+    let c = tiles.insert_pane(DemoPane { label: "C".into(), color: egui::Color32::from_rgb(50,40,60) });
+    let right = tiles.insert_vertical_tile(vec![b, c]);
+    let root = tiles.insert_horizontal_tile(vec![a, right]);
+    egui_tiles::Tree::new("tiles_demo", root, tiles)
 }
 
 impl Hud {
@@ -314,6 +404,9 @@ impl Hud {
             cached_chart: None,
             cached_plot: None,
             last_seen_gen: 0,
+            tiles_demo_open: false,
+            tiles_tree: build_demo_tree(),
+            chart_tree: build_chart_tree(),
         }
     }
 }
@@ -872,6 +965,7 @@ fn draw_big(
     chart_vis: &mut ChartVisibility,
     show_budget: &mut bool,
     billing: &mut BillingConfig,
+    chart_tree: &mut egui_tiles::Tree<ChartPane>,
 ) {
     let area = ui.available_rect_before_wrap();
     let pad = 8.0;
@@ -948,41 +1042,28 @@ fn draw_big(
     let legend_rect =
         egui::Rect::from_min_size(egui::pos2(x0, after_nav_y), egui::vec2(w, legend_h));
 
-    let cost_w = w * 0.50;
-    let tok_w = w * 0.26;
-    let tool_w = w - cost_w - tok_w - gap * 2.0;
     let chart_y = after_nav_y + legend_h + chart_gap;
+    let charts_bottom = energy_row_h + weekly_gap + weekly_h + energy_gap;
+    let charts_total_h = chart_h + charts_bottom;
+    let charts_area = egui::Rect::from_min_size(egui::pos2(x0, chart_y), egui::vec2(w, charts_total_h));
 
-    let cost_rect = egui::Rect::from_min_size(egui::pos2(x0, chart_y), egui::vec2(cost_w, chart_h));
-    let tok_rect = egui::Rect::from_min_size(
-        egui::pos2(x0 + cost_w + gap, chart_y),
-        egui::vec2(tok_w, chart_h),
-    );
-    let usage_chart_h = (chart_h * 0.45).floor();
-    let tool_h = chart_h - usage_chart_h - gap;
-    let right_x = x0 + cost_w + tok_w + gap * 2.0;
-    let usage_rect = egui::Rect::from_min_size(
-        egui::pos2(right_x, chart_y),
-        egui::vec2(tool_w, usage_chart_h),
-    );
-    let tool_rect = egui::Rect::from_min_size(
-        egui::pos2(right_x, chart_y + usage_chart_h + gap),
-        egui::vec2(tool_w, tool_h),
-    );
-    // Row 3: per-turn energy (Wh) + per-turn water (mL), each with cumulative overlay
-    let energy_y = chart_y + chart_h + energy_gap;
-    let energy_half = (w - gap) / 2.0;
-    let energy_wh_rect = egui::Rect::from_min_size(
-        egui::pos2(x0, energy_y),
-        egui::vec2(energy_half, energy_row_h),
-    );
-    let water_ml_rect = egui::Rect::from_min_size(
-        egui::pos2(x0 + energy_half + gap, energy_y),
-        egui::vec2(energy_half, energy_row_h),
-    );
-
-    let totals_y = energy_y + energy_row_h + weekly_gap;
-    let totals_rect = egui::Rect::from_min_size(egui::pos2(x0, totals_y), egui::vec2(w, weekly_h));
+    let (cost_rect, tok_rect, usage_rect, tool_rect, energy_wh_rect, water_ml_rect, totals_rect) = {
+        let mut behavior = ChartBehavior { rects: std::collections::HashMap::new() };
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(charts_area), |ui| {
+            chart_tree.ui(&mut behavior, ui);
+        });
+        let zero = egui::Rect::NOTHING;
+        let g = |p: ChartPane| behavior.rects.get(&p).copied().unwrap_or(zero);
+        (
+            g(ChartPane::Cost),
+            g(ChartPane::Tokens),
+            g(ChartPane::Usage),
+            g(ChartPane::Tool),
+            g(ChartPane::Energy),
+            g(ChartPane::Water),
+            g(ChartPane::Totals),
+        )
+    };
 
     // Context window size (tokens). Could be made configurable.
     const CTX_WINDOW: u64 = 200_000;
@@ -1225,12 +1306,13 @@ fn draw_big(
             );
             if ta_resp.clicked() {
                 *time_axis = !*time_axis;
-                if *time_axis {
-                    *show_bars = false;
-                }
                 *autofit = true;
                 *time_view = None;
                 *turn_view = None;
+                eprintln!(
+                    "[time-toggle] time_axis={} show_active_only={} show_bars={}",
+                    *time_axis, *show_active_only, *show_bars,
+                );
             }
             if ta_resp.hovered() {
                 painter.rect_filled(
@@ -1404,6 +1486,12 @@ fn draw_big(
         *turn_view = Some((turn_full_min, 200.0_f64.min(turn_full_max)));
     }
 
+    if is_time {
+        eprintln!(
+            "[time-frame] autofit={} time_view={:?} time_full=({:.1},{:.1}) hidden={}/{} max_turns={}",
+            *autofit, time_view, time_full_min, time_full_max, effective_hidden.len(), data.sessions.len(), max_turns,
+        );
+    }
     // Autofit (time mode only): recompute each frame to track latest data.
     if *autofit && is_time {
         let mut fit_min = f64::MAX;
@@ -3719,6 +3807,22 @@ impl App for Hud {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let data = self.hud_data.lock().unwrap().clone();
 
+        let ctx = ui.ctx().clone();
+        egui::Window::new("tiles demo")
+            .open(&mut self.tiles_demo_open)
+            .default_size([400.0, 300.0])
+            .show(&ctx, |ui| {
+                let mut behavior = DemoBehavior;
+                self.tiles_tree.ui(&mut behavior, ui);
+            });
+        egui::Area::new("tiles_toggle".into())
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+            .show(&ctx, |ui| {
+                if ui.small_button("tiles").clicked() {
+                    self.tiles_demo_open = !self.tiles_demo_open;
+                }
+            });
+
         let bg = egui::Color32::from_rgb(14, 12, 9);
 
         egui::CentralPanel::default()
@@ -3825,6 +3929,7 @@ impl App for Hud {
                     &mut self.chart_vis,
                     &mut self.show_budget,
                     &mut self.billing,
+                    &mut self.chart_tree,
                 );
             });
 
