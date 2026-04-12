@@ -2,7 +2,7 @@
 
 mod agent_harnesses;
 mod energy;
-#[path = "2_legend.rs"]
+#[path = "3_legend_table.rs"]
 mod legend;
 #[path = "2_model_registry.rs"]
 mod model_registry;
@@ -297,7 +297,7 @@ impl Hud {
             exclude_set: HashSet::new(),
             include_set: HashSet::new(),
             filter_mode: FilterMode::Exclude,
-            show_active_only: false,
+            show_active_only: true,
             show_bars: true,
             time_axis: false,
             autofit: true,
