@@ -1272,30 +1272,34 @@ fn draw_big(
     });
 
     // --- legend (grouped by cwd) ---
-    // Sort: groups with active sessions first, then by cost descending.
+    // Sort: groups with active sessions first, then by most-recent start time descending.
     groups.sort_by(|a, b| {
         let a_active = a.1.iter().any(|(si, _)| data.sessions[*si].is_active);
         let b_active = b.1.iter().any(|(si, _)| data.sessions[*si].is_active);
-        b_active.cmp(&a_active).then_with(|| {
-            let a_cost: f64 =
-                a.1.iter()
-                    .map(|(si, _)| data.sessions[*si].total_cost_usd)
-                    .sum();
-            let b_cost: f64 =
-                b.1.iter()
-                    .map(|(si, _)| data.sessions[*si].total_cost_usd)
-                    .sum();
-            b_cost
-                .partial_cmp(&a_cost)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        let a_latest = a
+            .1
+            .iter()
+            .map(|(si, _)| data.sessions[*si].first_ts)
+            .max()
+            .unwrap_or(0);
+        let b_latest = b
+            .1
+            .iter()
+            .map(|(si, _)| data.sessions[*si].first_ts)
+            .max()
+            .unwrap_or(0);
+        b_active
+            .cmp(&a_active)
+            .then_with(|| b_latest.cmp(&a_latest))
     });
-    // Within each group, put active sessions first
+    // Within each group: active first, then by start time descending (most recent first).
     for (_, members) in &mut groups {
         members.sort_by(|a, b| {
-            let a_active = data.sessions[a.0].is_active;
-            let b_active = data.sessions[b.0].is_active;
-            b_active.cmp(&a_active)
+            let sa = &data.sessions[a.0];
+            let sb = &data.sessions[b.0];
+            sb.is_active
+                .cmp(&sa.is_active)
+                .then_with(|| sb.first_ts.cmp(&sa.first_ts))
         });
     }
 

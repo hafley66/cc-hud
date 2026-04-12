@@ -27,6 +27,59 @@ fn panel_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(6))
 }
 
+fn format_relative_time(ts: u64) -> String {
+    if ts == 0 {
+        return String::new();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now <= ts {
+        return "now".to_string();
+    }
+    let delta = now - ts;
+    if delta < 60 {
+        format!("{}s ago", delta)
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{:.0}h ago", delta as f64 / 3600.0)
+    } else {
+        format!("{:.0}d ago", delta as f64 / 86400.0)
+    }
+}
+
+fn format_datestamp(ts: u64) -> String {
+    if ts == 0 {
+        return String::new();
+    }
+    let secs = ts as i64;
+    let days_since_epoch = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hour = time_of_day / 3600;
+    let min = (time_of_day % 3600) / 60;
+
+    // Approximate month/day from days since epoch (good enough for display)
+    let (y, m, d) = civil_from_days(days_since_epoch);
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m, d, hour, min)
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    // Adapted from Howard Hinnant's chrono-compatible algorithm
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 fn format_duration_secs(first: u64, last: u64) -> String {
     if first == 0 || last == 0 || last < first {
         return String::new();
@@ -162,7 +215,7 @@ impl LegendTableData {
                                 gi,
                                 ai,
                                 is_last: ai == sub_count - 1,
-                                indent: 20.0,
+                                indent: 56.0,
                             });
                         }
                     }
@@ -185,7 +238,7 @@ impl LegendTableData {
                                     gi,
                                     ai,
                                     is_last: ai == sub_count - 1,
-                                    indent: 36.0,
+                                    indent: 72.0,
                                 });
                             }
                         }
@@ -219,7 +272,21 @@ impl LegendTableData {
 impl TableDelegate for LegendTableData {
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &HeaderCellInfo) {
         let header_labels = [
-            "", "", "Session", "API", "Tools", "Skills", "Files", "", "Timeline",
+            "",
+            "",
+            "",
+            "Session",
+            "Start",
+            "",
+            "Model",
+            "ctx",
+            "cost",
+            "tokens",
+            "$/sesh",
+            "tok/sesh",
+            "agent",
+            "",
+            "Timeline",
         ];
         let col_idx = cell.col_range.start;
         if col_idx < header_labels.len() {
@@ -242,7 +309,7 @@ impl TableDelegate for LegendTableData {
                     self.render_group_header_cell(ui, cell, gi, &cwd, &member_session_indices);
                 }
                 TableRow::GroupMember { si, gi } => {
-                    self.render_session_cell(ui, cell, si, gi, Some(16.0));
+                    self.render_session_cell(ui, cell, si, gi, Some(40.0));
                 }
                 TableRow::Subagent { si, ai, indent, .. } => {
                     self.render_subagent_cell(ui, cell, si, ai, indent);
@@ -307,87 +374,136 @@ impl LegendTableData {
             },
         );
 
+        let row_click_id = cell.table_id.with(("row_click_session", si));
+        let expand_action = if has_subagents {
+            Some(session_id.clone())
+        } else {
+            None
+        };
+        let _ = (api_count, tool_count, skill_count, file_count, api_call_count, last_input, total_tokens);
+
+        let maybe_row_click = |this: &mut LegendTableData, ui: &mut egui::Ui, tag: &str| {
+            if let Some(sid) = expand_action.clone() {
+                if legacy::row_click(ui, row_click_id.with(tag)) {
+                    this.actions.toggle_session_agents.push(sid);
+                }
+            }
+        };
+
         match cell.col_nr {
             0 => {
-                // Eye column
-                if self.cell_eye(
-                    ui,
-                    cell.table_id.with(("eye", cell.row_nr)),
-                    EyeState::Session { in_filter },
-                ) {
+                let id = cell.table_id.with(("check", cell.row_nr));
+                if legacy::cell_checkbox(ui, id, in_filter, false) {
                     self.actions.toggle_ids.push(session_id.clone());
                 }
             }
             1 => {
-                // Swatch column
-                self.cell_swatch(ui, sess_col, is_active, last_input_tokens);
+                if has_subagents
+                    && legacy::cell_arrow(
+                        ui,
+                        cell.table_id.with(("arrow_session", si)),
+                        is_expanded,
+                    )
+                {
+                    self.actions.toggle_session_agents.push(session_id.clone());
+                }
             }
             2 => {
-                // Name + stats column
-                let label = if let Some(_) = indent {
+                self.cell_swatch(ui, sess_col, is_active, last_input_tokens);
+                maybe_row_click(self, ui, "swatch");
+            }
+            3 => {
+                let label = if indent.is_some() {
                     let sid_short = if session_id.len() > 8 {
                         &session_id[..8]
                     } else {
                         &session_id
                     };
                     if is_active {
-                        format!("  {} (active)", sid_short)
+                        format!("{} (active)", sid_short)
                     } else {
-                        format!("  {}", sid_short)
+                        sid_short.to_string()
                     }
                 } else {
                     project.clone()
                 };
-
-                let stats = LegendStats {
-                    cost: total_cost_usd,
-                    last_input,
-                    total_tokens,
-                    session_count: 1,
-                    api_call_count,
-                    agent_cost,
-                };
-
-                let tog = if has_subagents { None } else { None };
-
-                if let Some(sid) = self.cell_name_stats(
-                    ui, &label, &stats, &model, &harness, name_col, is_active, self.row_h, tog,
-                ) {
-                    self.actions.toggle_session_agents.push(sid);
-                }
-            }
-            3 => {
-                // API column
-                if api_count > 0 {
-                    ui.label(format!("{} calls", api_count));
-                }
+                let indent_px = indent.unwrap_or(0.0);
+                legacy::cell_name_only(ui, &label, None, name_col, self.row_h, indent_px);
+                maybe_row_click(self, ui, "name");
             }
             4 => {
-                // Tools column
-                if tool_count > 0 {
-                    ui.label(format!("{} used", tool_count));
-                }
+                legacy::cell_start(ui, s.first_ts, self.row_h);
+                maybe_row_click(self, ui, "start");
             }
             5 => {
-                // Skills column
-                if skill_count > 0 {
-                    ui.label(format!("{} used", skill_count));
-                }
+                let tag = match harness.as_str() {
+                    "claude" => "cc",
+                    "opencode" => "oc",
+                    _ => "",
+                };
+                legacy::stat_cell(ui, tag, self.row_h, false);
+                maybe_row_click(self, ui, "harness");
             }
             6 => {
-                // Files column
-                if file_count > 0 {
-                    ui.label(format!("{} read", file_count));
-                }
+                let m = if model.is_empty() {
+                    ""
+                } else {
+                    scene::short_model_label(&model)
+                };
+                legacy::stat_cell(ui, m, self.row_h, false);
+                maybe_row_click(self, ui, "model");
             }
             7 => {
-                // Detail button column (placeholder for now)
+                let txt = if is_active {
+                    format!(
+                        "{:.0}%",
+                        (last_input_tokens as f64 / 200_000.0 * 100.0).min(999.0)
+                    )
+                } else {
+                    String::new()
+                };
+                legacy::stat_cell(ui, &txt, self.row_h, is_active);
+                maybe_row_click(self, ui, "ctx");
+            }
+            8 => {
+                legacy::stat_cell(
+                    ui,
+                    &scene::format_cost(total_cost_usd),
+                    self.row_h,
+                    true,
+                );
+                maybe_row_click(self, ui, "cost");
+            }
+            9 => {
+                legacy::stat_cell(
+                    ui,
+                    &scene::format_tokens(s.total_input + s.total_output),
+                    self.row_h,
+                    true,
+                );
+                maybe_row_click(self, ui, "tokens");
+            }
+            10 => {
+                maybe_row_click(self, ui, "avg_cost");
+            }
+            11 => {
+                maybe_row_click(self, ui, "avg_tok");
+            }
+            12 => {
+                let txt = if agent_cost > 0.0 {
+                    scene::format_cost(agent_cost)
+                } else {
+                    String::new()
+                };
+                legacy::stat_cell(ui, &txt, self.row_h, false);
+                maybe_row_click(self, ui, "agent");
+            }
+            13 => {
                 if legacy::cell_detail_button(ui, cell.table_id.with(("detail_session", si))) {
                     // Could open detail view in future
                 }
             }
-            8 => {
-                // Timeline column
+            14 => {
                 let session_ref = (&s_for_timeline, sess_col);
                 self.cell_timeline(
                     ui,
@@ -399,6 +515,7 @@ impl LegendTableData {
             }
             _ => {}
         }
+        let _ = gi;
     }
 
     fn render_group_header_cell(
@@ -463,13 +580,11 @@ impl LegendTableData {
                 .contains(&self.data.sessions[*si].session_id)
         });
 
-        let badge = if active_count > 0 {
+        let header_name = if active_count > 0 {
             format!("{} x{} ({} active)", cwd, member_sis.len(), active_count)
         } else {
             format!("{} x{}", cwd, member_sis.len())
         };
-        let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
-        let header_name = format!("{} {}", arrow, badge);
 
         let stats = LegendStats {
             cost: g_cost,
@@ -480,75 +595,144 @@ impl LegendTableData {
             agent_cost: g_agent_cost,
         };
 
+        let row_click_id = cell.table_id.with(("row_click_grp", gi));
+        let cwd_string = cwd.to_string();
+
+        let member_ts_ranges: Vec<(f64, f64)> = member_sis
+            .iter()
+            .filter_map(|si| {
+                let s = &self.data.sessions[*si];
+                if s.first_ts > 0 {
+                    Some((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let row_resp = |this: &mut LegendTableData, ui: &mut egui::Ui, tag: &str| {
+            let resp = legacy::row_click_response(ui, row_click_id.with(tag));
+            if resp.clicked() {
+                this.actions.toggle_expand = Some(cwd_string.clone());
+            }
+            if resp.hovered() {
+                ui.ctx().data_mut(|d| {
+                    let hl = d.get_temp_mut_or_default::<LegendHighlight>(this.legend_hl_id);
+                    hl.ranges.extend(member_ts_ranges.iter().copied());
+                });
+            }
+        };
+
         match cell.col_nr {
             0 => {
-                // Eye column
-                if self.cell_eye(
-                    ui,
-                    cell.table_id.with(("group_eye", gi)),
-                    EyeState::Group {
-                        all_hidden,
-                        none_hidden,
-                    },
-                ) {
+                let id = cell.table_id.with(("group_check", gi));
+                let mixed = !all_hidden && !none_hidden;
+                if legacy::cell_checkbox(ui, id, none_hidden, mixed) {
                     let member_ids: Vec<String> = member_sis
                         .iter()
                         .map(|si| self.data.sessions[*si].session_id.clone())
                         .collect();
-                    self.actions.group_toggle = Some((cwd.to_string(), member_ids));
+                    self.actions.group_toggle = Some((cwd_string.clone(), member_ids));
                 }
             }
             1 => {
-                // Swatch column
-                self.cell_swatch(ui, bar_col, any_active, g_last_input);
+                if legacy::cell_arrow(ui, cell.table_id.with(("arrow_grp", gi)), is_expanded) {
+                    self.actions.toggle_expand = Some(cwd_string.clone());
+                }
             }
             2 => {
-                // Name + stats column
-                let resp = ui.interact(
-                    ui.max_rect(),
-                    cell.table_id.with(("group_expand", gi)),
-                    egui::Sense::click(),
-                );
-                if resp.clicked() {
-                    self.actions.toggle_expand = Some(cwd.to_string());
-                }
-                if resp.hovered() {
-                    ui.painter().rect_filled(
-                        ui.max_rect(),
-                        2.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
-                    );
-                    ui.ctx().data_mut(|d| {
-                        let hl = d.get_temp_mut_or_default::<LegendHighlight>(self.legend_hl_id);
-                        for si in member_sis {
-                            let s = &self.data.sessions[*si];
-                            if s.first_ts > 0 {
-                                hl.ranges
-                                    .push((s.first_ts as f64 / 60.0, s.last_ts as f64 / 60.0));
-                            }
-                        }
-                    });
-                }
-                self.cell_name_stats(
-                    ui,
-                    &header_name,
-                    &stats,
-                    &g_model,
-                    &g_harness,
-                    name_col,
-                    any_active,
-                    self.row_h,
-                    None,
-                );
+                self.cell_swatch(ui, bar_col, any_active, g_last_input);
+                row_resp(self, ui, "swatch");
             }
             3 => {
-                // Detail button column
+                legacy::cell_name_only(ui, &header_name, None, name_col, self.row_h, 0.0);
+                row_resp(self, ui, "name");
+            }
+            4 => {
+                let newest_ts = member_sis
+                    .iter()
+                    .map(|si| self.data.sessions[*si].first_ts)
+                    .max()
+                    .unwrap_or(0);
+                legacy::cell_start(ui, newest_ts, self.row_h);
+                row_resp(self, ui, "start");
+            }
+            5 => {
+                let tag = match g_harness.as_str() {
+                    "claude" => "cc",
+                    "opencode" => "oc",
+                    _ => "",
+                };
+                legacy::stat_cell(ui, tag, self.row_h, false);
+                row_resp(self, ui, "harness");
+            }
+            6 => {
+                let m = if g_model.is_empty() {
+                    ""
+                } else {
+                    scene::short_model_label(&g_model)
+                };
+                legacy::stat_cell(ui, m, self.row_h, false);
+                row_resp(self, ui, "model");
+            }
+            7 => {
+                let txt = if any_active {
+                    format!(
+                        "{:.0}%",
+                        (stats.last_input as f64 / 200_000.0 * 100.0).min(999.0)
+                    )
+                } else {
+                    String::new()
+                };
+                legacy::stat_cell(ui, &txt, self.row_h, any_active);
+                row_resp(self, ui, "ctx");
+            }
+            8 => {
+                legacy::stat_cell(ui, &scene::format_cost(stats.cost), self.row_h, true);
+                row_resp(self, ui, "cost");
+            }
+            9 => {
+                legacy::stat_cell(
+                    ui,
+                    &scene::format_tokens(stats.total_tokens),
+                    self.row_h,
+                    true,
+                );
+                row_resp(self, ui, "tokens");
+            }
+            10 => {
+                let txt = if stats.session_count > 1 {
+                    scene::format_cost(stats.avg_cost_per_session())
+                } else {
+                    String::new()
+                };
+                legacy::stat_cell(ui, &txt, self.row_h, false);
+                row_resp(self, ui, "avg_cost");
+            }
+            11 => {
+                let txt = if stats.session_count > 1 {
+                    scene::format_tokens(stats.avg_tokens_per_session())
+                } else {
+                    String::new()
+                };
+                legacy::stat_cell(ui, &txt, self.row_h, false);
+                row_resp(self, ui, "avg_tok");
+            }
+            12 => {
+                let txt = if stats.agent_cost > 0.0 {
+                    scene::format_cost(stats.agent_cost)
+                } else {
+                    String::new()
+                };
+                legacy::stat_cell(ui, &txt, self.row_h, false);
+                row_resp(self, ui, "agent");
+            }
+            13 => {
                 if self.cell_detail_button(ui, cell.table_id.with(("detail_grp", gi))) {
                     // Handle detail button click
                 }
             }
-            4 => {
-                // Timeline column
+            14 => {
                 let sess_refs: Vec<(SessionData, egui::Color32)> = member_sis
                     .iter()
                     .map(|si| {
@@ -585,9 +769,46 @@ impl LegendTableData {
         let agent = self.data.sessions[si].subagents[ai].clone();
 
         match cell.col_nr {
-            2 => {
-                // Tree connector + agent info
-                self.render_subagent_entry(ui, &agent, false, indent);
+            3 => {
+                let type_short = match agent.agent_type.as_str() {
+                    "general-purpose" => "agent",
+                    "Explore" => "explore",
+                    "Plan" => "plan",
+                    other => other,
+                };
+                let desc_trunc = if agent.description.len() > 40 {
+                    format!("{}...", &agent.description[..37])
+                } else {
+                    agent.description.clone()
+                };
+                let label = format!("{} {}", type_short, desc_trunc);
+                let sub = {
+                    let model_short = scene::short_model_label(&agent.model);
+                    let duration = format_duration_secs(agent.first_ts, agent.last_ts);
+                    Some(format!("{}  {}  {}calls", model_short, duration, agent.api_call_count))
+                };
+                legacy::cell_name_only(
+                    ui,
+                    &label,
+                    sub.as_deref(),
+                    egui::Color32::from_rgba_unmultiplied(200, 195, 180, 200),
+                    self.row_h,
+                    indent,
+                );
+            }
+            6 => {
+                legacy::stat_cell(ui, scene::short_model_label(&agent.model), self.row_h, false);
+            }
+            8 => {
+                legacy::stat_cell(ui, &scene::format_cost(agent.total_cost_usd), self.row_h, false);
+            }
+            9 => {
+                legacy::stat_cell(
+                    ui,
+                    &scene::format_tokens(agent.total_input + agent.total_output),
+                    self.row_h,
+                    false,
+                );
             }
             _ => {}
         }
@@ -763,31 +984,28 @@ pub(crate) fn draw_legend_panel(
 
     let num_rows = table_data.rows.len();
 
-    // Define columns
+    // Define columns. Fixed columns use range(w..=w) so auto_size skips them.
+    // Only name and timeline have open ranges and absorb surplus space.
     let columns = vec![
-        Column::new(eye_w).id(egui::Id::new("eye")).resizable(false),
-        Column::new(14.0)
-            .id(egui::Id::new("swatch"))
-            .resizable(false),
-        Column::new(300.0)
-            .range(150.0..=800.0)
+        Column::new(24.0).range(24.0..=24.0).id(egui::Id::new("check")),
+        Column::new(18.0).range(18.0..=18.0).id(egui::Id::new("arrow")),
+        Column::new(14.0).range(14.0..=14.0).id(egui::Id::new("swatch")),
+        Column::new(200.0)
+            .range(140.0..=f32::INFINITY)
             .id(egui::Id::new("name")),
-        Column::new(80.0).id(egui::Id::new("api")).resizable(false),
-        Column::new(80.0)
-            .id(egui::Id::new("tools"))
-            .resizable(false),
-        Column::new(80.0)
-            .id(egui::Id::new("skills"))
-            .resizable(false),
-        Column::new(80.0)
-            .id(egui::Id::new("files"))
-            .resizable(false),
-        Column::new(36.0)
-            .id(egui::Id::new("detail"))
-            .resizable(false),
+        Column::new(96.0).range(96.0..=96.0).id(egui::Id::new("start")),
+        Column::new(28.0).range(28.0..=28.0).id(egui::Id::new("harness")),
+        Column::new(56.0).range(56.0..=56.0).id(egui::Id::new("model")),
+        Column::new(44.0).range(44.0..=44.0).id(egui::Id::new("ctx")),
+        Column::new(80.0).range(80.0..=80.0).id(egui::Id::new("cost")),
+        Column::new(60.0).range(60.0..=60.0).id(egui::Id::new("tokens")),
+        Column::new(72.0).range(72.0..=72.0).id(egui::Id::new("avg_cost")),
+        Column::new(60.0).range(60.0..=60.0).id(egui::Id::new("avg_tok")),
+        Column::new(64.0).range(64.0..=64.0).id(egui::Id::new("agent")),
+        Column::new(36.0).range(36.0..=36.0).id(egui::Id::new("detail")),
         Column::new(timeline_w)
-            .id(egui::Id::new("timeline"))
-            .resizable(false),
+            .range(100.0..=f32::INFINITY)
+            .id(egui::Id::new("timeline")),
     ];
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
@@ -817,6 +1035,222 @@ pub(crate) fn draw_legend_panel(
 mod legacy {
     use super::*;
     use egui_extras::StripBuilder;
+
+    pub const COL_API: egui::Color32 = egui::Color32::from_rgba_premultiplied(110, 150, 220, 230);
+    pub const COL_TOOL: egui::Color32 = egui::Color32::from_rgba_premultiplied(220, 160, 90, 230);
+    pub const COL_SKILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(130, 200, 120, 230);
+    pub const COL_FILE: egui::Color32 = egui::Color32::from_rgba_premultiplied(180, 140, 220, 230);
+
+    /// Native egui checkbox centered in the cell. Returns true if the checkbox state changed.
+    pub fn cell_checkbox(ui: &mut egui::Ui, id: egui::Id, checked: bool, indeterminate: bool) -> bool {
+        let rect = ui.max_rect();
+        let size = egui::vec2(16.0, 16.0);
+        let box_rect = egui::Rect::from_center_size(rect.center(), size);
+        let resp = ui.interact(box_rect, id, egui::Sense::click());
+        let painter = ui.painter();
+        let visuals = ui.style().visuals.clone();
+
+        let stroke_col = if resp.hovered() {
+            visuals.widgets.hovered.fg_stroke.color
+        } else {
+            visuals.widgets.inactive.fg_stroke.color
+        };
+
+        painter.rect(
+            box_rect,
+            2.0,
+            visuals.widgets.inactive.bg_fill,
+            egui::Stroke::new(1.0, stroke_col),
+            egui::StrokeKind::Inside,
+        );
+
+        if indeterminate {
+            // Horizontal dash
+            let y = box_rect.center().y;
+            painter.line_segment(
+                [
+                    egui::pos2(box_rect.left() + 3.0, y),
+                    egui::pos2(box_rect.right() - 3.0, y),
+                ],
+                egui::Stroke::new(2.0, stroke_col),
+            );
+        } else if checked {
+            // Check mark
+            let l = box_rect.left();
+            let t = box_rect.top();
+            let w = box_rect.width();
+            let h = box_rect.height();
+            let p0 = egui::pos2(l + w * 0.22, t + h * 0.52);
+            let p1 = egui::pos2(l + w * 0.44, t + h * 0.72);
+            let p2 = egui::pos2(l + w * 0.78, t + h * 0.30);
+            painter.line_segment([p0, p1], egui::Stroke::new(2.0, stroke_col));
+            painter.line_segment([p1, p2], egui::Stroke::new(2.0, stroke_col));
+        }
+
+        resp.clicked()
+    }
+
+    /// Expand arrow cell. Returns true if clicked.
+    pub fn cell_arrow(ui: &mut egui::Ui, id: egui::Id, is_expanded: bool) -> bool {
+        let rect = ui.max_rect();
+        let resp = ui.interact(rect, id, egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                2.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14),
+            );
+        }
+        let icon = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
+        let color = if resp.hovered() { TEXT_BRIGHT } else { TEXT };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::monospace(14.0),
+            color,
+        );
+        resp.clicked()
+    }
+
+    /// Transparent click target over the cell's max_rect. Returns true if clicked.
+    pub fn row_click(ui: &mut egui::Ui, id: egui::Id) -> bool {
+        row_click_response(ui, id).clicked()
+    }
+
+    /// Like row_click but returns the full Response so callers can read hover state.
+    pub fn row_click_response(ui: &mut egui::Ui, id: egui::Id) -> egui::Response {
+        let rect = ui.max_rect();
+        let resp = ui.interact(rect, id, egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+            );
+        }
+        resp
+    }
+
+    /// Right-aligned, vertically centered numeric cell for event counts.
+    pub fn cell_count(ui: &mut egui::Ui, count: u32, color: egui::Color32, row_h: f32) {
+        if count == 0 {
+            return;
+        }
+        let rect = ui.max_rect();
+        let font = egui::FontId::monospace((row_h * 0.35).clamp(10.0, 14.0));
+        ui.painter().text(
+            egui::pos2(rect.right() - 6.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            count.to_string(),
+            font,
+            color,
+        );
+    }
+
+    /// Two-line start time cell: relative time on top, datestamp below.
+    pub fn cell_start(ui: &mut egui::Ui, first_ts: u64, row_h: f32) {
+        if first_ts == 0 {
+            return;
+        }
+        let rect = ui.max_rect();
+        let cy = rect.center().y;
+        let rel = format_relative_time(first_ts);
+        let stamp = format_datestamp(first_ts);
+        // Shorten datestamp to MM-DD HH:MM
+        let short_stamp = if stamp.len() >= 16 { &stamp[5..16] } else { &stamp };
+        let font_top = egui::FontId::monospace((row_h * 0.30).clamp(9.0, 11.0));
+        let font_bot = egui::FontId::monospace((row_h * 0.24).clamp(8.0, 10.0));
+        ui.painter().text(
+            egui::pos2(rect.left() + 2.0, cy - row_h * 0.14),
+            egui::Align2::LEFT_CENTER,
+            &rel,
+            font_top,
+            TEXT,
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + 2.0, cy + row_h * 0.18),
+            egui::Align2::LEFT_CENTER,
+            short_stamp,
+            font_bot,
+            egui::Color32::from_rgba_unmultiplied(150, 140, 120, 170),
+        );
+    }
+
+    /// Right-aligned text cell for stat values. Empty strings render nothing.
+    pub fn stat_cell(ui: &mut egui::Ui, text: &str, row_h: f32, bright: bool) {
+        if text.is_empty() {
+            return;
+        }
+        let rect = ui.max_rect();
+        let font = egui::FontId::monospace((row_h * 0.30).clamp(9.0, 11.0));
+        let col = if bright {
+            TEXT
+        } else {
+            egui::Color32::from_rgba_unmultiplied(170, 160, 140, 200)
+        };
+        ui.painter().text(
+            egui::pos2(rect.right() - 6.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            text,
+            font,
+            col,
+        );
+    }
+
+    /// Single-line or two-line left-aligned name cell (no stats). `indent_px` is added to the
+    /// x offset so nested rows (group members, subagents) visibly step in.
+    pub fn cell_name_only(
+        ui: &mut egui::Ui,
+        name: &str,
+        sub: Option<&str>,
+        name_col: egui::Color32,
+        row_h: f32,
+        indent_px: f32,
+    ) {
+        let rect = ui.max_rect();
+        let cy = rect.center().y;
+        let x0 = rect.left() + 2.0 + indent_px;
+        let font_name = egui::FontId::monospace((row_h * 0.35).clamp(9.0, 13.0));
+
+        // Tree connector glyph for indented rows
+        if indent_px >= 8.0 {
+            let tree_col = egui::Color32::from_rgba_unmultiplied(90, 85, 75, 140);
+            ui.painter().text(
+                egui::pos2(rect.left() + indent_px - 10.0, cy),
+                egui::Align2::CENTER_CENTER,
+                "\u{2514}",
+                egui::FontId::monospace(12.0),
+                tree_col,
+            );
+        }
+
+        if let Some(sub_text) = sub {
+            ui.painter().text(
+                egui::pos2(x0, cy - row_h * 0.16),
+                egui::Align2::LEFT_CENTER,
+                name,
+                font_name,
+                name_col,
+            );
+            let font_sub = egui::FontId::monospace((row_h * 0.24).clamp(8.0, 10.0));
+            ui.painter().text(
+                egui::pos2(x0, cy + row_h * 0.20),
+                egui::Align2::LEFT_CENTER,
+                sub_text,
+                font_sub,
+                egui::Color32::from_rgba_unmultiplied(160, 150, 130, 180),
+            );
+        } else {
+            ui.painter().text(
+                egui::pos2(x0, cy),
+                egui::Align2::LEFT_CENTER,
+                name,
+                font_name,
+                name_col,
+            );
+        }
+    }
 
     /// Eye visibility toggle icon. Returns true if clicked.
     pub fn cell_eye(ui: &mut egui::Ui, id: egui::Id, state: super::EyeState) -> bool {
