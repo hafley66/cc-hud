@@ -277,6 +277,7 @@ struct Hud {
     time_axis: bool,
     autofit: bool,
     nav_view: Option<(f64, f64)>,
+    turn_view: Option<(f64, f64)>,
     expanded_groups: HashSet<String>,
     expanded_sessions: HashSet<String>,
     chart_vis: ChartVisibility,
@@ -299,11 +300,12 @@ impl Hud {
             exclude_set: HashSet::new(),
             include_set: HashSet::new(),
             filter_mode: FilterMode::Exclude,
-            show_active_only: true,
+            show_active_only: false,
             show_bars: true,
             time_axis: false,
             autofit: true,
             nav_view: None,
+            turn_view: None,
             expanded_groups: HashSet::new(),
             expanded_sessions: HashSet::new(),
             chart_vis: ChartVisibility::default(),
@@ -438,9 +440,10 @@ struct PlotCache {
 }
 
 fn bars_culled(bars: &[scene::BarData], hl: &[bool], xmin: f64, xmax: f64) -> Vec<Bar> {
-    let margin = (xmax - xmin) * 0.02;
-    let lo = xmin - margin;
-    let hi = xmax + margin;
+    let finite = xmin.is_finite() && xmax.is_finite();
+    let margin = if finite { (xmax - xmin) * 0.02 } else { 0.0 };
+    let lo = if finite { xmin - margin } else { f64::NEG_INFINITY };
+    let hi = if finite { xmax + margin } else { f64::INFINITY };
     bars.iter()
         .filter(|b| b.x >= lo && b.x <= hi)
         .map(|b| {
@@ -627,9 +630,10 @@ fn handle_chart_nav(
     ctx: &egui::Context,
     resp: &egui::Response,
     bounds: &egui_plot::PlotBounds,
-    nav_view: &mut Option<(f64, f64)>,
+    view: &mut Option<(f64, f64)>,
     full_min: f64,
     full_max: f64,
+    min_span: f64,
     autofit: &mut bool,
 ) {
     let x_min = bounds.min()[0];
@@ -641,7 +645,7 @@ fn handle_chart_nav(
     if resp.dragged() {
         *autofit = false;
         let dx_time = resp.drag_delta().x as f64 * x_span / rect_w;
-        let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
+        let (mut vmin, mut vmax) = view.unwrap_or((full_min, full_max));
         let vspan = vmax - vmin;
         vmin -= dx_time;
         vmax -= dx_time;
@@ -653,7 +657,7 @@ fn handle_chart_nav(
             vmax = full_max;
             vmin = vmax - vspan;
         }
-        *nav_view = Some((vmin, vmax));
+        *view = Some((vmin, vmax));
     }
 
     // Vertical scroll = zoom anchored at cursor
@@ -661,7 +665,7 @@ fn handle_chart_nav(
     if resp.hovered() && scroll_y.abs() > 0.1 {
         *autofit = false;
         let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
-        let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
+        let (vmin, vmax) = view.unwrap_or((full_min, full_max));
         let vspan = vmax - vmin;
         let anchor = ctx
             .input(|i| i.pointer.hover_pos())
@@ -671,11 +675,11 @@ fn handle_chart_nav(
             })
             .unwrap_or((x_min + x_max) / 2.0);
         let t = ((anchor - vmin) / vspan).clamp(0.0, 1.0);
-        let new_span = (vspan * zoom_factor).clamp(1.0, full_span);
+        let new_span = (vspan * zoom_factor).clamp(min_span, full_span);
         let new_min = (anchor - t * new_span).max(full_min);
         let new_max = (new_min + new_span).min(full_max);
         let new_min = (new_max - new_span).max(full_min);
-        *nav_view = Some((new_min, new_max));
+        *view = Some((new_min, new_max));
     }
 
     // Horizontal scroll = pan
@@ -683,7 +687,7 @@ fn handle_chart_nav(
     if resp.hovered() && scroll_x.abs() > 0.1 {
         *autofit = false;
         let dx_time = scroll_x as f64 * x_span / rect_w;
-        let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
+        let (mut vmin, mut vmax) = view.unwrap_or((full_min, full_max));
         let vspan = vmax - vmin;
         vmin -= dx_time;
         vmax -= dx_time;
@@ -695,7 +699,7 @@ fn handle_chart_nav(
             vmax = full_max;
             vmin = vmax - vspan;
         }
-        *nav_view = Some((vmin, vmax));
+        *view = Some((vmin, vmax));
     }
 }
 
@@ -715,6 +719,119 @@ fn make_tooltip<F: Fn(&TurnInfo) -> String>(
     } else {
         None
     }
+}
+
+fn draw_nav_strip(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: &str,
+    view: &mut Option<(f64, f64)>,
+    full_min: f64,
+    full_max: f64,
+    min_span: f64,
+    autofit: &mut bool,
+    dots: &[(f64, egui::Color32)],
+    label_fmt: &dyn Fn(f64) -> String,
+) {
+    let full_span = (full_max - full_min).max(1e-9);
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+        let bar = ui.available_rect_before_wrap();
+        let resp = ui.interact(bar, egui::Id::new(id), egui::Sense::click_and_drag());
+        let painter = ui.painter();
+        painter.line_segment(
+            [egui::pos2(bar.left(), bar.bottom()), egui::pos2(bar.right(), bar.bottom())],
+            egui::Stroke::new(0.5, Palette::SEPARATOR),
+        );
+        let bar_w = bar.width();
+        let cy = bar.center().y;
+        for (x, col) in dots {
+            let frac = ((x - full_min) / full_span) as f32;
+            let px = bar.left() + frac * bar_w;
+            painter.circle_filled(egui::pos2(px, cy), 1.5, *col);
+        }
+        let (vmin, vmax) = view.unwrap_or((full_min, full_max));
+        let v0 = ((vmin - full_min) / full_span) as f32;
+        let v1 = ((vmax - full_min) / full_span) as f32;
+        let vp_left = bar.left() + v0.clamp(0.0, 1.0) * bar_w;
+        let vp_right = bar.left() + v1.clamp(0.0, 1.0) * bar_w;
+        if vp_left > bar.left() {
+            painter.rect_filled(
+                egui::Rect::from_min_max(bar.left_top(), egui::pos2(vp_left, bar.bottom())),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+            );
+        }
+        if vp_right < bar.right() {
+            painter.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(vp_right, bar.top()), bar.right_bottom()),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+            );
+        }
+        painter.rect_stroke(
+            egui::Rect::from_min_max(
+                egui::pos2(vp_left, bar.top()),
+                egui::pos2(vp_right, bar.bottom()),
+            ),
+            1.0,
+            egui::Stroke::new(1.0, Palette::TEXT_DIM),
+            egui::StrokeKind::Outside,
+        );
+        if resp.dragged() {
+            *autofit = false;
+            let dx = (resp.drag_delta().x / bar_w) as f64 * full_span;
+            let (mut vmin, mut vmax) = view.unwrap_or((full_min, full_max));
+            let vspan = vmax - vmin;
+            vmin += dx;
+            vmax += dx;
+            if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
+            if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+            *view = Some((vmin, vmax));
+        }
+        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+        if resp.hovered() && scroll_y.abs() > 0.1 {
+            *autofit = false;
+            let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
+            let (vmin, vmax) = view.unwrap_or((full_min, full_max));
+            let vspan = vmax - vmin;
+            let mouse_frac = ui.input(|i| i.pointer.hover_pos())
+                .map(|p| ((p.x - bar.left()) / bar_w).clamp(0.0, 1.0) as f64)
+                .unwrap_or(0.5);
+            let anchor = full_min + mouse_frac * full_span;
+            let t = ((anchor - vmin) / vspan).clamp(0.0, 1.0);
+            let new_span = (vspan * zoom_factor).clamp(min_span, full_span);
+            let new_min = (anchor - t * new_span).max(full_min);
+            let new_max = (new_min + new_span).min(full_max);
+            let new_min = (new_max - new_span).max(full_min);
+            *view = Some((new_min, new_max));
+        }
+        let scroll_x = ui.input(|i| i.smooth_scroll_delta.x);
+        if resp.hovered() && scroll_x.abs() > 0.1 {
+            *autofit = false;
+            let dx = -(scroll_x as f64 / bar_w as f64) * full_span;
+            let (mut vmin, mut vmax) = view.unwrap_or((full_min, full_max));
+            let vspan = vmax - vmin;
+            vmin += dx;
+            vmax += dx;
+            if vmin < full_min { vmin = full_min; vmax = vmin + vspan; }
+            if vmax > full_max { vmax = full_max; vmin = vmax - vspan; }
+            *view = Some((vmin, vmax));
+        }
+        let label_font = egui::FontId::monospace(8.0);
+        let n_labels = (bar_w / 80.0).floor().max(2.0) as usize;
+        for i in 0..=n_labels {
+            let frac = i as f64 / n_labels as f64;
+            let t = full_min + frac * full_span;
+            let px = bar.left() + frac as f32 * bar_w;
+            painter.text(
+                egui::pos2(px, bar.bottom() - 1.0),
+                egui::Align2::CENTER_BOTTOM,
+                &label_fmt(t),
+                label_font.clone(),
+                Palette::TEXT_DIM,
+            );
+        }
+    });
 }
 
 fn panel_frame() -> egui::Frame {
@@ -748,7 +865,8 @@ fn draw_big(
     effective_hidden: &HashSet<String>,
     time_axis: &mut bool,
     autofit: &mut bool,
-    nav_view: &mut Option<(f64, f64)>,
+    time_view: &mut Option<(f64, f64)>,
+    turn_view: &mut Option<(f64, f64)>,
     expanded_groups: &mut HashSet<String>,
     expanded_sessions: &mut HashSet<String>,
     chart_vis: &mut ChartVisibility,
@@ -768,11 +886,20 @@ fn draw_big(
     let controls_h = 22.0_f32;
     let controls_rect = egui::Rect::from_min_size(egui::pos2(x0, y0), egui::vec2(w, controls_h));
 
-    // Row 0.5: time navigator strip (always visible, compact)
+    // Row 0.5: nav strips. Time strip always shown. Turn strip stacked below in non-time mode.
+    let is_time = *time_axis;
     let nav_h = 16.0_f32;
     let nav_rect =
         egui::Rect::from_min_size(egui::pos2(x0, y0 + controls_h + gap), egui::vec2(w, nav_h));
-    let after_nav_y = y0 + controls_h + gap + nav_h + gap;
+    let turn_nav_rect = if !is_time {
+        Some(egui::Rect::from_min_size(
+            egui::pos2(x0, nav_rect.bottom() + 2.0),
+            egui::vec2(w, nav_h),
+        ))
+    } else {
+        None
+    };
+    let after_nav_y = turn_nav_rect.map_or(nav_rect.bottom(), |r| r.bottom()) + gap;
 
     // Row 1: legend strip -- group sessions by cwd, one row per group
     let mut groups: Vec<(String, Vec<(usize, usize)>)> = vec![];
@@ -867,7 +994,6 @@ fn draw_big(
     let week_start_secs = now_secs.saturating_sub(7 * 24 * 3600);
     let week_span = (now_secs - week_start_secs).max(1) as f32;
     let now_min = now_secs as f64 / 60.0;
-    let is_time = *time_axis;
 
     // Formatter for x-axis in time mode: minutes-from-epoch -> relative label
     let time_x_fmt =
@@ -1103,7 +1229,8 @@ fn draw_big(
                     *show_bars = false;
                 }
                 *autofit = true;
-                *nav_view = None;
+                *time_view = None;
+                *turn_view = None;
             }
             if ta_resp.hovered() {
                 painter.rect_filled(
@@ -1208,8 +1335,22 @@ fn draw_big(
     let mut all_x_min = f64::MAX;
     let mut all_x_max = f64::MIN;
     let mut all_dots: Vec<(f64, egui::Color32)> = vec![];
+    // Nav strip covers the full dataset. Don't apply effective_hidden here --
+    // in non-time mode the nav window itself drives hiding, so filtering here
+    // would collapse full_min/full_max as the user zooms in (one-way shrink).
+    // Still skip sessions removed by the user's explicit filter set so that
+    // include/exclude lists narrow the navigator.
+    let nav_hidden: HashSet<String> = match *filter_mode {
+        FilterMode::Exclude => filter_set.clone(),
+        FilterMode::Include => data
+            .sessions
+            .iter()
+            .map(|s| s.session_id.clone())
+            .filter(|id| !filter_set.contains(id))
+            .collect(),
+    };
     for (si, session) in data.sessions.iter().enumerate() {
-        if effective_hidden.contains(&session.session_id) {
+        if nav_hidden.contains(&session.session_id) {
             continue;
         }
         let col = scene_to_egui(session_color(si));
@@ -1232,12 +1373,39 @@ fn draw_big(
     }
     let data_span = (all_x_max - all_x_min).max(1.0);
     // Pad 2% on each side
-    let full_min = all_x_min - data_span * 0.02;
-    let full_max = all_x_max + data_span * 0.02;
+    let time_full_min = all_x_min - data_span * 0.02;
+    let time_full_max = all_x_max + data_span * 0.02;
+
+    // Max turns across ALL sessions (unfiltered) so turn-axis full range is stable.
+    let max_turns: f64 = data
+        .sessions
+        .iter()
+        .map(|s| {
+            s.events
+                .iter()
+                .filter(|e| matches!(e, Event::ApiCall { .. }))
+                .count() as f64
+        })
+        .fold(1.0_f64, f64::max);
+
+    let turn_full_min = -0.5_f64;
+    let turn_full_max = max_turns + 0.5;
+
+    // Chart x-range state: time_view in time mode, turn_view in non-time mode.
+    let (full_min, full_max, view_min_span): (f64, f64, f64) = if is_time {
+        (time_full_min, time_full_max, 5.0)
+    } else {
+        (turn_full_min, turn_full_max, 2.0)
+    };
     let full_span = full_max - full_min;
 
-    // Autofit: recompute each frame while active (tracks latest data)
-    if *autofit {
+    // Default turn_view to first 200 turns so initial zoom is readable.
+    if turn_view.is_none() {
+        *turn_view = Some((turn_full_min, 200.0_f64.min(turn_full_max)));
+    }
+
+    // Autofit (time mode only): recompute each frame to track latest data.
+    if *autofit && is_time {
         let mut fit_min = f64::MAX;
         let mut fit_max = f64::MIN;
         for session in &data.sessions {
@@ -1251,155 +1419,52 @@ fn draw_big(
         }
         if fit_min < fit_max {
             let span = (fit_max - fit_min).max(1.0);
-            *nav_view = Some((fit_min - span * 0.02, fit_max + span * 0.02));
+            *time_view = Some((fit_min - span * 0.02, fit_max + span * 0.02));
         }
     }
 
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(nav_rect), |ui| {
-        let bar = ui.available_rect_before_wrap();
-        let resp = ui.interact(bar, egui::Id::new("nav_bar"), egui::Sense::click_and_drag());
-        let painter = ui.painter();
-
-        // Bottom separator
-        painter.line_segment(
-            [
-                egui::pos2(bar.left(), bar.bottom()),
-                egui::pos2(bar.right(), bar.bottom()),
-            ],
-            egui::Stroke::new(0.5, Palette::SEPARATOR),
+    // Time nav strip: always visible, drives time_view.
+    // In turn mode it filters visible sessions (last_ts ∈ window, applied in Hud::ui).
+    let nm = now_min;
+    let time_label = move |t: f64| -> String {
+        let ago_min = nm - t;
+        if ago_min.abs() < 1.0 { "now".into() }
+        else if ago_min < 60.0 { format!("{}m", ago_min.round() as i64) }
+        else if ago_min < 24.0 * 60.0 { format!("{:.0}h", ago_min / 60.0) }
+        else { format!("{:.0}d", ago_min / (24.0 * 60.0)) }
+    };
+    let turn_label = |t: f64| -> String { format!("{}", t.max(0.0).round() as i64) };
+    draw_nav_strip(
+        ui,
+        nav_rect,
+        "nav_bar_time",
+        time_view,
+        time_full_min,
+        time_full_max,
+        5.0,
+        autofit,
+        &all_dots,
+        &time_label,
+    );
+    if let Some(trect) = turn_nav_rect {
+        draw_nav_strip(
+            ui,
+            trect,
+            "nav_bar_turn",
+            turn_view,
+            turn_full_min,
+            turn_full_max,
+            2.0,
+            autofit,
+            &[],
+            &turn_label,
         );
+    }
 
-        // Draw dots on the full range
-        let bar_w = bar.width();
-        let cy = bar.center().y;
-        for (x, col) in &all_dots {
-            let frac = ((x - full_min) / full_span) as f32;
-            let px = bar.left() + frac * bar_w;
-            painter.circle_filled(egui::pos2(px, cy), 1.5, *col);
-        }
+    let active_view: &mut Option<(f64, f64)> = if is_time { time_view } else { turn_view };
 
-        // Viewport highlight (only in time mode with a nav_view set)
-        if is_time {
-            let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
-            let v0 = ((vmin - full_min) / full_span) as f32;
-            let v1 = ((vmax - full_min) / full_span) as f32;
-            let vp_left = bar.left() + v0.clamp(0.0, 1.0) * bar_w;
-            let vp_right = bar.left() + v1.clamp(0.0, 1.0) * bar_w;
-
-            // Dim areas outside viewport
-            if vp_left > bar.left() {
-                painter.rect_filled(
-                    egui::Rect::from_min_max(bar.left_top(), egui::pos2(vp_left, bar.bottom())),
-                    0.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-                );
-            }
-            if vp_right < bar.right() {
-                painter.rect_filled(
-                    egui::Rect::from_min_max(egui::pos2(vp_right, bar.top()), bar.right_bottom()),
-                    0.0,
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-                );
-            }
-            // Viewport border
-            painter.rect_stroke(
-                egui::Rect::from_min_max(
-                    egui::pos2(vp_left, bar.top()),
-                    egui::pos2(vp_right, bar.bottom()),
-                ),
-                1.0,
-                egui::Stroke::new(1.0, Palette::TEXT_DIM),
-                egui::StrokeKind::Outside,
-            );
-
-            // Handle drag: pan the viewport
-            if resp.dragged() {
-                *autofit = false;
-                let dx_px = resp.drag_delta().x;
-                let dx_min = (dx_px / bar_w) as f64 * full_span;
-                let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
-                let vspan = vmax - vmin;
-                vmin += dx_min;
-                vmax += dx_min;
-                // Clamp to full range
-                if vmin < full_min {
-                    vmin = full_min;
-                    vmax = vmin + vspan;
-                }
-                if vmax > full_max {
-                    vmax = full_max;
-                    vmin = vmax - vspan;
-                }
-                *nav_view = Some((vmin, vmax));
-            }
-
-            // Vertical scroll = zoom anchored to mouse position
-            let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-            if resp.hovered() && scroll_y.abs() > 0.1 {
-                *autofit = false;
-                let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
-                let (vmin, vmax) = nav_view.unwrap_or((full_min, full_max));
-                let vspan = vmax - vmin;
-                let mouse_frac = ui
-                    .input(|i| i.pointer.hover_pos())
-                    .map(|p| ((p.x - bar.left()) / bar_w).clamp(0.0, 1.0) as f64)
-                    .unwrap_or(0.5);
-                let anchor = full_min + mouse_frac * full_span;
-                let t = ((anchor - vmin) / vspan).clamp(0.0, 1.0);
-                let new_span = (vspan * zoom_factor).clamp(1.0, full_span);
-                let new_min = (anchor - t * new_span).max(full_min);
-                let new_max = (new_min + new_span).min(full_max);
-                let new_min = (new_max - new_span).max(full_min);
-                *nav_view = Some((new_min, new_max));
-            }
-
-            // Horizontal scroll = pan
-            let scroll_x = ui.input(|i| i.smooth_scroll_delta.x);
-            if resp.hovered() && scroll_x.abs() > 0.1 {
-                *autofit = false;
-                let dx_min = -(scroll_x as f64 / bar_w as f64) * full_span;
-                let (mut vmin, mut vmax) = nav_view.unwrap_or((full_min, full_max));
-                let vspan = vmax - vmin;
-                vmin += dx_min;
-                vmax += dx_min;
-                if vmin < full_min {
-                    vmin = full_min;
-                    vmax = vmin + vspan;
-                }
-                if vmax > full_max {
-                    vmax = full_max;
-                    vmin = vmax - vspan;
-                }
-                *nav_view = Some((vmin, vmax));
-            }
-        }
-
-        // Time labels along bottom
-        let label_font = egui::FontId::monospace(8.0);
-        let n_labels = (bar_w / 80.0).floor().max(2.0) as usize;
-        for i in 0..=n_labels {
-            let frac = i as f64 / n_labels as f64;
-            let t = full_min + frac * full_span;
-            let ago_min = now_min - t;
-            let label = if ago_min.abs() < 1.0 {
-                "now".into()
-            } else if ago_min < 60.0 {
-                format!("{}m", ago_min.round() as i64)
-            } else if ago_min < 24.0 * 60.0 {
-                format!("{:.0}h", ago_min / 60.0)
-            } else {
-                format!("{:.0}d", ago_min / (24.0 * 60.0))
-            };
-            let px = bar.left() + frac as f32 * bar_w;
-            painter.text(
-                egui::pos2(px, bar.bottom() - 1.0),
-                egui::Align2::CENTER_BOTTOM,
-                &label,
-                label_font.clone(),
-                Palette::TEXT_DIM,
-            );
-        }
-    });
+    let _ = full_span;
+    let _ = view_min_span;
 
     // --- legend (grouped by cwd) ---
     // Sort: groups with active sessions first, then by most-recent start time descending.
@@ -1507,7 +1572,7 @@ fn draw_big(
     // Effective hover x: pinned takes priority over live hover
     let effective_hover_x: Option<f64> = pinned_x.or_else(|| prev_hover.as_ref().map(|hs| hs.x));
 
-    let visible_span = match *nav_view {
+    let visible_span = match *active_view {
         Some((vmin, vmax)) => vmax - vmin,
         None => full_span,
     };
@@ -1533,7 +1598,7 @@ fn draw_big(
     let totals_width_default: f32 = if is_time { 1.2 } else { 1.5 };
     let show_markers = !is_time || !panel_hl.key.is_empty();
 
-    let (vis_xmin, vis_xmax) = match *nav_view {
+    let (vis_xmin, vis_xmax) = match *active_view {
         Some((vmin, vmax)) => (vmin, vmax),
         None => (full_min, full_max),
     };
@@ -1651,7 +1716,7 @@ fn draw_big(
                     })
                     .show_axes([false, true])
                     .show_grid(true);
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                if let Some((vmin, vmax)) = *active_view {
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
@@ -1712,9 +1777,10 @@ fn draw_big(
                         ui.ctx(),
                         &plot_resp.response,
                         plot_resp.transform.bounds(),
-                        nav_view,
+                        active_view,
                         full_min,
                         full_max,
+                        view_min_span,
                         autofit,
                     );
                 }
@@ -1746,7 +1812,7 @@ fn draw_big(
                     .y_grid_spacer(token_grid_spacer)
                     .show_axes([false, true])
                     .show_grid(true);
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                if let Some((vmin, vmax)) = *active_view {
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
@@ -1803,9 +1869,10 @@ fn draw_big(
                         ui.ctx(),
                         &plot_resp.response,
                         plot_resp.transform.bounds(),
-                        nav_view,
+                        active_view,
                         full_min,
                         full_max,
+                        view_min_span,
                         autofit,
                     );
                 }
@@ -2098,7 +2165,7 @@ fn draw_big(
                     // In time mode, share viewport with other charts; otherwise auto-fit to billing period
                     if is_time {
                         p = p.link_cursor(cursor_id, [true, false]);
-                        if let Some((vmin, vmax)) = *nav_view {
+                        if let Some((vmin, vmax)) = *active_view {
                             p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                         }
                     }
@@ -2182,17 +2249,16 @@ fn draw_big(
                         update_hover_src(pui, HoverSource::Budget);
                     });
                     try_pin(&plot_resp.response);
-                    if is_time {
-                        handle_chart_nav(
-                            ui.ctx(),
-                            &plot_resp.response,
-                            plot_resp.transform.bounds(),
-                            nav_view,
-                            full_min,
-                            full_max,
-                            autofit,
-                        );
-                    }
+                    handle_chart_nav(
+                        ui.ctx(),
+                        &plot_resp.response,
+                        plot_resp.transform.bounds(),
+                        active_view,
+                        full_min,
+                        full_max,
+                        view_min_span,
+                        autofit,
+                    );
                 } else {
                     let inner = ui.available_rect_before_wrap();
                     let msg = "no data in billing period";
@@ -2296,7 +2362,7 @@ fn draw_big(
                         })
                         .x_axis_formatter(usage_time_fmt)
                         .label_formatter(tip_fmt);
-                    if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                    if let Some((vmin, vmax)) = *active_view {
                         p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                     }
                     let plot_resp = p.show(ui, |pui| {
@@ -2316,17 +2382,16 @@ fn draw_big(
                                 .width(0.5),
                         );
                     });
-                    if is_time {
-                        handle_chart_nav(
-                            ui.ctx(),
-                            &plot_resp.response,
-                            plot_resp.transform.bounds(),
-                            nav_view,
-                            full_min,
-                            full_max,
-                            autofit,
-                        );
-                    }
+                    handle_chart_nav(
+                        ui.ctx(),
+                        &plot_resp.response,
+                        plot_resp.transform.bounds(),
+                        active_view,
+                        full_min,
+                        full_max,
+                        view_min_span,
+                        autofit,
+                    );
                 } else if let Some(e) = &usage.error {
                     let inner = ui.available_rect_before_wrap();
                     ui.painter().text(
@@ -2433,7 +2498,7 @@ fn draw_big(
                     })
                     .show_axes([false, true])
                     .show_grid(true);
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                if let Some((vmin, vmax)) = *active_view {
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
@@ -2466,9 +2531,10 @@ fn draw_big(
                         ui.ctx(),
                         &plot_resp.response,
                         plot_resp.transform.bounds(),
-                        nav_view,
+                        active_view,
                         full_min,
                         full_max,
+                        view_min_span,
                         autofit,
                     );
                 }
@@ -2499,7 +2565,7 @@ fn draw_big(
                     })
                     .show_axes([false, true])
                     .show_grid(true);
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                if let Some((vmin, vmax)) = *active_view {
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
@@ -2532,9 +2598,10 @@ fn draw_big(
                         ui.ctx(),
                         &plot_resp.response,
                         plot_resp.transform.bounds(),
-                        nav_view,
+                        active_view,
                         full_min,
                         full_max,
+                        view_min_span,
                         autofit,
                     );
                 }
@@ -2579,7 +2646,7 @@ fn draw_big(
                 if is_time {
                     p = p.x_axis_formatter(time_x_fmt);
                 }
-                if let Some((vmin, vmax)) = if is_time { *nav_view } else { None } {
+                if let Some((vmin, vmax)) = *active_view {
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let cost_color = egui::Color32::from_rgb(220, 180, 60); // gold
@@ -2653,9 +2720,10 @@ fn draw_big(
                         ui.ctx(),
                         &plot_resp.response,
                         plot_resp.transform.bounds(),
-                        nav_view,
+                        active_view,
                         full_min,
                         full_max,
+                        view_min_span,
                         autofit,
                     );
                 }
@@ -3692,6 +3760,36 @@ impl App for Hud {
                     }
                 }
 
+                // Default nav_view to last 24h on first data load (minutes-from-epoch)
+                if self.nav_view.is_none() && !data.sessions.is_empty() {
+                    let max_last = data
+                        .sessions
+                        .iter()
+                        .map(|s| s.last_ts)
+                        .max()
+                        .unwrap_or(0) as f64
+                        / 60.0;
+                    if max_last > 0.0 {
+                        self.nav_view = Some((max_last - 24.0 * 60.0, max_last));
+                    }
+                }
+
+                // In non-time mode, nav_view range filters sessions by last_ts ∈ window.
+                // Quantize window to 1-minute boundaries so small scroll deltas don't
+                // flip the hidden set (and invalidate the cache) every frame.
+                if !self.time_axis {
+                    if let Some((vmin, vmax)) = self.nav_view {
+                        let qmin = vmin.floor();
+                        let qmax = vmax.ceil();
+                        for s in &data.sessions {
+                            let last_m = s.last_ts as f64 / 60.0;
+                            if last_m < qmin || last_m > qmax {
+                                effective_hidden.insert(s.session_id.clone());
+                            }
+                        }
+                    }
+                }
+
                 // Cache chart data: only rebuild when data generation, hidden set, or time_axis changes
                 let data_gen = data.generation as usize;
                 let cache_hit = self.cached_chart.as_ref().map_or(false, |(g, h, t, _)| {
@@ -3721,6 +3819,7 @@ impl App for Hud {
                     &mut self.time_axis,
                     &mut self.autofit,
                     &mut self.nav_view,
+                    &mut self.turn_view,
                     &mut self.expanded_groups,
                     &mut self.expanded_sessions,
                     &mut self.chart_vis,
