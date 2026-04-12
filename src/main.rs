@@ -1798,6 +1798,8 @@ fn draw_big(
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
+                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_auto_bounds([false, true]);
                     if *show_bars {
                         let fresh = BarChart::new(
                             "fresh$",
@@ -1894,6 +1896,8 @@ fn draw_big(
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
+                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_auto_bounds([false, true]);
                     if *show_bars {
                         let fresh = BarChart::new(
                             "fresh",
@@ -2254,6 +2258,8 @@ fn draw_big(
                     let web_reported_for_chart = billing.web_reported;
                     let period_start_for_chart = period_start_x;
                     let plot_resp = p.show(ui, |pui| {
+                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_auto_bounds([false, true]);
                         let pts = step_pts(&zeroed); // budget always uses time-based x
                         pui.line(
                             egui_plot::Line::new("CLI spent", pts)
@@ -2444,6 +2450,8 @@ fn draw_big(
                         p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                     }
                     let plot_resp = p.show(ui, |pui| {
+                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_auto_bounds([false, true]);
                         pui.line(
                             egui_plot::Line::new("5h", five_h_pts)
                                 .color(egui::Color32::from_rgb(220, 160, 60))
@@ -2580,6 +2588,8 @@ fn draw_big(
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
+                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_auto_bounds([false, true]);
                     if *show_bars {
                         pui.bar_chart(BarChart::new(
                             "Wh",
@@ -2647,6 +2657,8 @@ fn draw_big(
                     p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
                 }
                 let plot_resp = p.show(ui, |pui| {
+                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_auto_bounds([false, true]);
                     if *show_bars {
                         pui.bar_chart(BarChart::new(
                             "mL",
@@ -2733,6 +2745,8 @@ fn draw_big(
                 let water_color = egui::Color32::from_rgb(80, 180, 220); // cyan
 
                 let plot_resp = p.show(ui, |pui| {
+                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_auto_bounds([false, true]);
                     if !pc.totals_cost.is_empty() {
                         pui.line(egui_plot::Line::new("cost", pc.totals_cost.as_slice()).color(cost_color).width(2.0));
                         if pc.totals_cost.len() <= MAX_LINE_PTS {
