@@ -20,11 +20,11 @@ fn scene_to_egui(c: scene::Color) -> egui::Color32 {
 }
 
 fn panel_frame() -> egui::Frame {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(BG_PANEL)
         .stroke(egui::Stroke::new(0.5, SEPARATOR))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::same(6.0))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::same(6))
 }
 
 fn format_duration_secs(first: u64, last: u64) -> String {
@@ -94,6 +94,7 @@ pub enum EyeState {
 // Table row model
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 enum TableRow {
     FlatSession {
         si: usize,
@@ -107,6 +108,11 @@ enum TableRow {
     GroupMember {
         si: usize,
         gi: usize,
+    },
+    SessionExpanded {
+        si: usize,
+        gi: usize,
+        event_idx: usize,
     },
     Subagent {
         si: usize,
@@ -154,6 +160,14 @@ impl LegendTableData {
                 for (si, _) in members {
                     rows.push(TableRow::FlatSession { si: *si, gi });
                     if expanded_sessions.contains(&data.sessions[*si].session_id) {
+                        let event_count = data.sessions[*si].events.len();
+                        for event_idx in 0..event_count {
+                            rows.push(TableRow::SessionExpanded {
+                                si: *si,
+                                gi,
+                                event_idx,
+                            });
+                        }
                         let sub_count = data.sessions[*si].subagents.len();
                         for ai in 0..sub_count {
                             rows.push(TableRow::Subagent {
@@ -177,6 +191,14 @@ impl LegendTableData {
                     for (si, _) in members {
                         rows.push(TableRow::GroupMember { si: *si, gi });
                         if expanded_sessions.contains(&data.sessions[*si].session_id) {
+                            let event_count = data.sessions[*si].events.len();
+                            for event_idx in 0..event_count {
+                                rows.push(TableRow::SessionExpanded {
+                                    si: *si,
+                                    gi,
+                                    event_idx,
+                                });
+                            }
                             let sub_count = data.sessions[*si].subagents.len();
                             for ai in 0..sub_count {
                                 rows.push(TableRow::Subagent {
@@ -225,23 +247,27 @@ impl TableDelegate for LegendTableData {
     }
 
     fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &CellInfo) {
-        if let Some(row) = self.rows.get(cell.row_nr as usize) {
+        let row_idx = cell.row_nr as usize;
+        if let Some(row) = self.rows.get(row_idx).cloned() {
             match row {
                 TableRow::FlatSession { si, gi } => {
-                    self.render_session_cell(ui, cell, *si, *gi, None);
+                    self.render_session_cell(ui, cell, si, gi, None);
                 }
                 TableRow::GroupHeader {
                     gi,
                     cwd,
                     member_session_indices,
                 } => {
-                    self.render_group_header_cell(ui, cell, *gi, cwd, member_session_indices);
+                    self.render_group_header_cell(ui, cell, gi, &cwd, &member_session_indices);
                 }
                 TableRow::GroupMember { si, gi } => {
-                    self.render_session_cell(ui, cell, *si, *gi, Some(16.0));
+                    self.render_session_cell(ui, cell, si, gi, Some(16.0));
+                }
+                TableRow::SessionExpanded { si, gi, event_idx } => {
+                    self.render_event_cell(ui, cell, si, event_idx);
                 }
                 TableRow::Subagent { si, ai, indent, .. } => {
-                    self.render_subagent_cell(ui, cell, *si, *ai, *indent);
+                    self.render_subagent_cell(ui, cell, si, ai, indent);
                 }
             }
         }
@@ -268,7 +294,20 @@ impl LegendTableData {
         let text_alpha = if is_hidden { 80u8 } else { 230u8 };
         let name_col = egui::Color32::from_rgba_unmultiplied(240, 230, 200, text_alpha);
 
-        let actual_eye_w = self.eye_w + indent.unwrap_or(0.0);
+        let session_id = s.session_id.clone();
+        let is_active = s.is_active;
+        let last_input_tokens = s.last_input_tokens;
+        let project = s.project.clone();
+        let model = s.model.clone();
+        let harness = s.harness.clone();
+        let total_cost_usd = s.total_cost_usd;
+        let last_input = s.last_input_tokens;
+        let total_tokens = s.total_input + s.total_output;
+        let api_call_count = s.api_call_count;
+        let agent_cost = s.subagents.iter().map(|a| a.total_cost_usd).sum::<f64>();
+        let has_subagents = !s.subagents.is_empty();
+        let is_expanded = self.expanded_sessions.contains(&s.session_id);
+        let s_for_timeline = s.clone();
 
         match cell.col_nr {
             0 => {
@@ -278,74 +317,63 @@ impl LegendTableData {
                     cell.table_id.with(("eye", cell.row_nr)),
                     EyeState::Session { in_filter },
                 ) {
-                    self.actions.toggle_ids.push(s.session_id.clone());
+                    self.actions.toggle_ids.push(session_id.clone());
                 }
             }
             1 => {
                 // Swatch column
-                self.cell_swatch(ui, sess_col, s.is_active, s.last_input_tokens);
+                self.cell_swatch(ui, sess_col, is_active, last_input_tokens);
             }
             2 => {
                 // Name + stats column
                 let label = if let Some(_) = indent {
-                    let sid_short = if s.session_id.len() > 8 {
-                        &s.session_id[..8]
+                    let sid_short = if session_id.len() > 8 {
+                        &session_id[..8]
                     } else {
-                        &s.session_id
+                        &session_id
                     };
-                    if s.is_active {
+                    if is_active {
                         format!("  {} (active)", sid_short)
                     } else {
                         format!("  {}", sid_short)
                     }
                 } else {
-                    s.project.clone()
+                    project.clone()
                 };
 
                 let stats = LegendStats {
-                    cost: s.total_cost_usd,
-                    last_input: s.last_input_tokens,
-                    total_tokens: s.total_input + s.total_output,
+                    cost: total_cost_usd,
+                    last_input,
+                    total_tokens,
                     session_count: 1,
-                    api_call_count: s.api_call_count,
-                    agent_cost: s.subagents.iter().map(|a| a.total_cost_usd).sum(),
+                    api_call_count,
+                    agent_cost,
                 };
 
-                let tog = if !s.subagents.is_empty() {
-                    Some((
-                        s,
-                        self.expanded_sessions.contains(&s.session_id),
-                        cell.table_id.with(("agent_toggle", gi, si)),
-                    ))
-                } else {
-                    None
-                };
+                let tog = if has_subagents { None } else { None };
 
                 if let Some(sid) = self.cell_name_stats(
-                    ui,
-                    &label,
-                    &stats,
-                    &s.model,
-                    &s.harness,
-                    name_col,
-                    s.is_active,
-                    self.row_h,
-                    tog,
+                    ui, &label, &stats, &model, &harness, name_col, is_active, self.row_h, tog,
                 ) {
                     self.actions.toggle_session_agents.push(sid);
                 }
             }
             3 => {
-                // Detail button column
-                if self.cell_detail_button(ui, cell.table_id.with(("detail_btn", cell.row_nr))) {
-                    // Handle detail button click
+                // Detail/expand button column
+                if legacy::cell_expand_button(
+                    ui,
+                    cell.table_id.with(("expand_session", si)),
+                    is_expanded,
+                ) {
+                    self.actions.toggle_session_expand.push(session_id.clone());
                 }
             }
             4 => {
                 // Timeline column
+                let session_ref = (&s_for_timeline, sess_col);
                 self.cell_timeline(
                     ui,
-                    &[(s, sess_col)],
+                    &[session_ref],
                     self.week_start_secs,
                     self.week_span,
                     sess_col,
@@ -503,18 +531,22 @@ impl LegendTableData {
             }
             4 => {
                 // Timeline column
-                let sess_refs: Vec<(&SessionData, egui::Color32)> = member_sis
+                let sess_refs: Vec<(SessionData, egui::Color32)> = member_sis
                     .iter()
                     .map(|si| {
                         (
-                            &self.data.sessions[*si],
+                            self.data.sessions[*si].clone(),
                             scene_to_egui(scene::session_color(*si)),
                         )
                     })
                     .collect();
+
+                let sess_ref_pairs: Vec<(&SessionData, egui::Color32)> =
+                    sess_refs.iter().map(|(s, c)| (s, *c)).collect();
+
                 self.cell_timeline(
                     ui,
-                    &sess_refs,
+                    &sess_ref_pairs,
                     self.week_start_secs,
                     self.week_span,
                     group_col,
@@ -532,14 +564,161 @@ impl LegendTableData {
         ai: usize,
         indent: f32,
     ) {
-        let agent = &self.data.sessions[si].subagents[ai];
+        let agent = self.data.sessions[si].subagents[ai].clone();
 
         match cell.col_nr {
             2 => {
                 // Tree connector + agent info
-                self.render_subagent_entry(ui, agent, false, indent);
+                self.render_subagent_entry(ui, &agent, false, indent);
             }
             _ => {}
+        }
+    }
+
+    fn render_event_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        cell: &CellInfo,
+        si: usize,
+        event_idx: usize,
+    ) {
+        let s = &self.data.sessions[si];
+        if let Some(event) = s.events.get(event_idx) {
+            let pad = 8.0;
+            let time_offset = self.week_start_secs;
+
+            match cell.col_nr {
+                0 => {
+                    // Empty eye column for events
+                }
+                1 => {
+                    // Empty swatch column for events
+                }
+                2 => {
+                    // Event type and details
+                    let rect = ui.max_rect();
+                    let cy = rect.center().y;
+                    let type_color = match event {
+                        crate::agent_harnesses::claude_code::Event::ApiCall { .. } => {
+                            egui::Color32::from_rgba_unmultiplied(100, 200, 255, 200)
+                        }
+                        crate::agent_harnesses::claude_code::Event::ToolUse { .. } => {
+                            egui::Color32::from_rgba_unmultiplied(255, 200, 100, 200)
+                        }
+                        crate::agent_harnesses::claude_code::Event::SkillUse { .. } => {
+                            egui::Color32::from_rgba_unmultiplied(150, 255, 150, 200)
+                        }
+                        crate::agent_harnesses::claude_code::Event::ReadFile { .. } => {
+                            egui::Color32::from_rgba_unmultiplied(200, 150, 255, 200)
+                        }
+                        crate::agent_harnesses::claude_code::Event::AgentSpawn { .. } => {
+                            egui::Color32::from_rgba_unmultiplied(255, 150, 200, 200)
+                        }
+                        crate::agent_harnesses::claude_code::Event::Compaction { .. } => {
+                            egui::Color32::from_rgba_unmultiplied(150, 150, 150, 180)
+                        }
+                    };
+
+                    let (event_type, details, cost_str, model_str) = match event {
+                        crate::agent_harnesses::claude_code::Event::ApiCall {
+                            input_tokens,
+                            output_tokens,
+                            model: m,
+                            input_cost_usd,
+                            output_cost_usd,
+                            timestamp_secs,
+                            ..
+                        } => (
+                            "API",
+                            format!(
+                                "{} in + {} out",
+                                scene::format_tokens(*input_tokens),
+                                scene::format_tokens(*output_tokens)
+                            ),
+                            Some(format!(
+                                "{}",
+                                scene::format_cost(input_cost_usd + output_cost_usd)
+                            )),
+                            Some(format!("{} | {}", scene::short_model_label(m), {
+                                if *timestamp_secs > 0 {
+                                    format!("{:.1}m", (*timestamp_secs - time_offset) as f64 / 60.0)
+                                } else {
+                                    String::new()
+                                }
+                            })),
+                        ),
+                        crate::agent_harnesses::claude_code::Event::ToolUse { name, .. } => {
+                            ("Tool", name.clone(), None, None)
+                        }
+                        crate::agent_harnesses::claude_code::Event::SkillUse { skill, .. } => {
+                            ("Skill", skill.clone(), None, None)
+                        }
+                        crate::agent_harnesses::claude_code::Event::ReadFile {
+                            category, ..
+                        } => ("File", category.clone(), None, None),
+                        crate::agent_harnesses::claude_code::Event::AgentSpawn {
+                            subagent_type,
+                            description,
+                            ..
+                        } => (
+                            "Agent",
+                            format!("{}: {}", subagent_type, description),
+                            None,
+                            None,
+                        ),
+                        crate::agent_harnesses::claude_code::Event::Compaction { .. } => {
+                            ("Compact", "context compaction".to_string(), None, None)
+                        }
+                    };
+
+                    // Type badge
+                    ui.painter().text(
+                        egui::pos2(rect.left() + pad, cy - 6.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("[{}]", event_type),
+                        egui::FontId::monospace(10.0),
+                        type_color,
+                    );
+
+                    // Details line
+                    ui.painter().text(
+                        egui::pos2(rect.left() + pad + 50.0, cy - 6.0),
+                        egui::Align2::LEFT_CENTER,
+                        &details,
+                        egui::FontId::monospace(10.0),
+                        TEXT_DIM,
+                    );
+
+                    // Secondary line (model/time for API calls)
+                    if let Some(model_info) = model_str {
+                        ui.painter().text(
+                            egui::pos2(rect.left() + pad + 50.0, cy + 10.0),
+                            egui::Align2::LEFT_CENTER,
+                            &model_info,
+                            egui::FontId::monospace(9.0),
+                            TEXT_DIM,
+                        );
+                    }
+
+                    // Cost (right aligned)
+                    if let Some(cost) = cost_str {
+                        ui.painter().text(
+                            egui::pos2(rect.right() - pad, cy - 6.0),
+                            egui::Align2::RIGHT_CENTER,
+                            &cost,
+                            egui::FontId::monospace(10.0),
+                            TEXT_DIM,
+                        );
+                    }
+                }
+                3 => {
+                    // Empty detail column for events
+                }
+                4 => {
+                    // Empty timeline column for events
+                }
+                _ => {}
+            }
         }
     }
 
@@ -607,99 +786,6 @@ impl LegendTableData {
     ) {
         legacy::render_subagent_entry(ui, agent, is_last, indent, self.row_h, self.timeline_w);
     }
-
-    fn cell_swatch(
-        &mut self,
-        ui: &mut egui::Ui,
-        color: egui::Color32,
-        is_active: bool,
-        last_input: u64,
-    ) {
-        legacy::cell_swatch(ui, color, is_active, last_input, self.row_h);
-    }
-
-    fn cell_name_stats(
-        &mut self,
-        ui: &mut egui::Ui,
-        name: &str,
-        stats: &LegendStats,
-        model: &str,
-        harness: &str,
-        theme: egui::Color32,
-        is_active: bool,
-        row_h: f32,
-        toggle: Option<(&SessionData, bool, egui::Id)>,
-    ) -> Option<String> {
-        legacy::cell_name_stats(
-            ui, name, stats, model, harness, theme, is_active, row_h, toggle,
-        )
-    }
-
-    fn cell_detail_button(&mut self, ui: &mut egui::Ui, id: egui::Id) -> bool {
-        legacy::cell_detail_button(ui, id)
-    }
-
-    fn cell_timeline(
-        &mut self,
-        ui: &mut egui::Ui,
-        sessions: &[(&SessionData, egui::Color32)],
-        week_start_secs: u64,
-        week_span: f32,
-        bg_color: egui::Color32,
-    ) {
-        legacy::cell_timeline(
-            ui,
-            sessions,
-            &self.effective_hidden,
-            week_start_secs,
-            week_span,
-            bg_color,
-            self.row_h,
-        );
-    }
-
-    fn render_subagent_entry(
-        &mut self,
-        ui: &mut egui::Ui,
-        agent: &SubagentData,
-        is_last: bool,
-        indent: f32,
-    ) {
-        legacy::render_subagent_entry(ui, agent, is_last, indent, self.row_h, self.timeline_w);
-    }
-
-    fn cell_detail_button(&mut self, ui: &mut egui::Ui, id: egui::Id) -> bool {
-        legacy::cell_detail_button(ui, id)
-    }
-
-    fn cell_timeline(
-        &mut self,
-        ui: &mut egui::Ui,
-        sessions: &[(&SessionData, egui::Color32)],
-        week_start_secs: u64,
-        week_span: f32,
-        bg_color: egui::Color32,
-    ) {
-        legacy::cell_timeline(
-            ui,
-            sessions,
-            &self.effective_hidden,
-            week_start_secs,
-            week_span,
-            bg_color,
-            self.row_h,
-        );
-    }
-
-    fn render_subagent_entry(
-        &mut self,
-        ui: &mut egui::Ui,
-        agent: &SubagentData,
-        is_last: bool,
-        indent: f32,
-    ) {
-        legacy::render_subagent_entry(ui, agent, is_last, indent, self.row_h, self.timeline_w);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -711,6 +797,7 @@ pub(crate) struct LegendActions {
     pub group_toggle: Option<(String, Vec<String>)>,
     pub toggle_expand: Option<String>,
     pub toggle_session_agents: Vec<String>,
+    pub toggle_session_expand: Vec<String>,
 }
 
 impl LegendActions {
@@ -720,6 +807,7 @@ impl LegendActions {
             group_toggle: None,
             toggle_expand: None,
             toggle_session_agents: vec![],
+            toggle_session_expand: vec![],
         }
     }
 
@@ -737,6 +825,13 @@ impl LegendActions {
             }
         }
         for sid in self.toggle_session_agents {
+            if expanded_sessions.contains(&sid) {
+                expanded_sessions.remove(&sid);
+            } else {
+                expanded_sessions.insert(sid);
+            }
+        }
+        for sid in self.toggle_session_expand {
             if expanded_sessions.contains(&sid) {
                 expanded_sessions.remove(&sid);
             } else {
@@ -1175,6 +1270,28 @@ mod legacy {
             egui::Align2::CENTER_CENTER,
             "detail",
             egui::FontId::monospace(7.0),
+            TEXT_DIM,
+        );
+        resp.clicked()
+    }
+
+    /// Expand/collapse button for session events.
+    pub fn cell_expand_button(ui: &mut egui::Ui, id: egui::Id, is_expanded: bool) -> bool {
+        let rect = ui.max_rect();
+        let resp = ui.interact(rect, id, egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                2.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
+            );
+        }
+        let icon = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
+        ui.painter().text(
+            egui::pos2(rect.center().x, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::monospace(16.0),
             TEXT_DIM,
         );
         resp.clicked()
