@@ -665,7 +665,26 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
             .entry(session.project.clone())
             .or_default() += 1;
     }
-    let mut project_name_idx: HashMap<String, usize> = HashMap::new();
+    // Pre-compute per-project index: #1 = oldest (lowest first_ts) within each project
+    let mut project_session_index: HashMap<usize, usize> = HashMap::new();
+    {
+        let mut per_project: HashMap<String, Vec<(usize, u64)>> = HashMap::new();
+        for (si, session) in data.sessions.iter().enumerate() {
+            if hidden.contains(&session.session_id) {
+                continue;
+            }
+            per_project
+                .entry(session.project.clone())
+                .or_default()
+                .push((si, session.first_ts));
+        }
+        for (_, mut entries) in per_project {
+            entries.sort_by_key(|(_, ts)| *ts);
+            for (rank, (si, _)) in entries.iter().enumerate() {
+                project_session_index.insert(*si, rank + 1);
+            }
+        }
+    }
 
     for (si, session) in data.sessions.iter().enumerate() {
         if hidden.contains(&session.session_id) {
@@ -1165,9 +1184,8 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                 .copied()
                 .unwrap_or(1);
             if count > 1 {
-                let idx = project_name_idx.entry(session.project.clone()).or_default();
-                *idx += 1;
-                format!("{}(#{})", session.project, idx)
+                let idx = project_session_index.get(&si).copied().unwrap_or(1);
+                format!("{} #{}", session.project, idx)
             } else {
                 session.project.clone()
             }

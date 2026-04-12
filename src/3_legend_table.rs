@@ -152,6 +152,7 @@ enum TableRow {
     FlatSession {
         si: usize,
         gi: usize,
+        member_index: usize,
     },
     GroupHeader {
         gi: usize,
@@ -161,6 +162,7 @@ enum TableRow {
     GroupMember {
         si: usize,
         gi: usize,
+        member_index: usize,
     },
     Subagent {
         si: usize,
@@ -205,8 +207,9 @@ impl LegendTableData {
         for (gi, (cwd, members)) in groups.iter().enumerate() {
             let is_flat = members.len() <= 2;
             if is_flat {
-                for (si, _) in members {
-                    rows.push(TableRow::FlatSession { si: *si, gi });
+                let n = members.len();
+                for (mi, (si, _)) in members.iter().enumerate() {
+                    rows.push(TableRow::FlatSession { si: *si, gi, member_index: n - mi });
                     if expanded_sessions.contains(&data.sessions[*si].session_id) {
                         let sub_count = data.sessions[*si].subagents.len();
                         for ai in 0..sub_count {
@@ -228,8 +231,9 @@ impl LegendTableData {
                     member_session_indices: member_sis,
                 });
                 if expanded_groups.contains(cwd) {
-                    for (si, _) in members {
-                        rows.push(TableRow::GroupMember { si: *si, gi });
+                    let n = members.len();
+                    for (mi, (si, _)) in members.iter().enumerate() {
+                        rows.push(TableRow::GroupMember { si: *si, gi, member_index: n - mi });
                         if expanded_sessions.contains(&data.sessions[*si].session_id) {
                             let sub_count = data.sessions[*si].subagents.len();
                             for ai in 0..sub_count {
@@ -285,7 +289,7 @@ impl TableDelegate for LegendTableData {
             "$/sesh",
             "tok/sesh",
             "agent",
-            "",
+            "cmpct",
             "Timeline",
         ];
         let col_idx = cell.col_range.start;
@@ -298,8 +302,8 @@ impl TableDelegate for LegendTableData {
         let row_idx = cell.row_nr as usize;
         if let Some(row) = self.rows.get(row_idx).cloned() {
             match row {
-                TableRow::FlatSession { si, gi } => {
-                    self.render_session_cell(ui, cell, si, gi, None);
+                TableRow::FlatSession { si, gi, member_index } => {
+                    self.render_session_cell(ui, cell, si, gi, None, member_index);
                 }
                 TableRow::GroupHeader {
                     gi,
@@ -308,8 +312,8 @@ impl TableDelegate for LegendTableData {
                 } => {
                     self.render_group_header_cell(ui, cell, gi, &cwd, &member_session_indices);
                 }
-                TableRow::GroupMember { si, gi } => {
-                    self.render_session_cell(ui, cell, si, gi, Some(40.0));
+                TableRow::GroupMember { si, gi, member_index } => {
+                    self.render_session_cell(ui, cell, si, gi, Some(40.0), member_index);
                 }
                 TableRow::Subagent { si, ai, indent, .. } => {
                     self.render_subagent_cell(ui, cell, si, ai, indent);
@@ -331,6 +335,7 @@ impl LegendTableData {
         si: usize,
         gi: usize,
         indent: Option<f32>,
+        member_index: usize,
     ) {
         let s = &self.data.sessions[si];
         let sess_col = scene_to_egui(scene::session_color(si));
@@ -354,25 +359,7 @@ impl LegendTableData {
         let is_expanded = self.expanded_sessions.contains(&s.session_id);
         let s_for_timeline = s.clone();
 
-        // Count events by type
-        let (api_count, tool_count, skill_count, file_count) = s.events.iter().fold(
-            (0u32, 0u32, 0u32, 0u32),
-            |(api, tool, skill, file), event| match event {
-                crate::agent_harnesses::claude_code::Event::ApiCall { .. } => {
-                    (api + 1, tool, skill, file)
-                }
-                crate::agent_harnesses::claude_code::Event::ToolUse { .. } => {
-                    (api, tool + 1, skill, file)
-                }
-                crate::agent_harnesses::claude_code::Event::SkillUse { .. } => {
-                    (api, tool, skill + 1, file)
-                }
-                crate::agent_harnesses::claude_code::Event::ReadFile { .. } => {
-                    (api, tool, skill, file + 1)
-                }
-                _ => (api, tool, skill, file),
-            },
-        );
+        let compaction_count = s.events.iter().filter(|e| matches!(e, crate::agent_harnesses::claude_code::Event::Compaction { .. })).count() as u32;
 
         let row_click_id = cell.table_id.with(("row_click_session", si));
         let expand_action = if has_subagents {
@@ -380,13 +367,25 @@ impl LegendTableData {
         } else {
             None
         };
-        let _ = (api_count, tool_count, skill_count, file_count, api_call_count, last_input, total_tokens);
+        let _ = (api_call_count, last_input, total_tokens);
 
-        let maybe_row_click = |this: &mut LegendTableData, ui: &mut egui::Ui, tag: &str| {
-            if let Some(sid) = expand_action.clone() {
-                if legacy::row_click(ui, row_click_id.with(tag)) {
+        let first_ts = s.first_ts;
+        let last_ts = s.last_ts;
+
+        let maybe_row_interact = |this: &mut LegendTableData, ui: &mut egui::Ui, tag: &str| {
+            let resp = legacy::row_click_response(ui, row_click_id.with(tag));
+            if resp.clicked() {
+                if let Some(sid) = expand_action.clone() {
                     this.actions.toggle_session_agents.push(sid);
                 }
+            }
+            if resp.hovered() {
+                let first_min = first_ts as f64 / 60.0;
+                let last_min = last_ts as f64 / 60.0;
+                ui.ctx().data_mut(|d| {
+                    let hl = d.get_temp_mut_or_default::<LegendHighlight>(this.legend_hl_id);
+                    hl.ranges.push((first_min, last_min));
+                });
             }
         };
 
@@ -410,30 +409,26 @@ impl LegendTableData {
             }
             2 => {
                 self.cell_swatch(ui, sess_col, is_active, last_input_tokens);
-                maybe_row_click(self, ui, "swatch");
+                maybe_row_interact(self, ui, "swatch");
             }
             3 => {
-                let label = if indent.is_some() {
-                    let sid_short = if session_id.len() > 8 {
-                        &session_id[..8]
-                    } else {
-                        &session_id
-                    };
-                    if is_active {
-                        format!("{} (active)", sid_short)
-                    } else {
-                        sid_short.to_string()
-                    }
+                let primary = if is_active {
+                    format!("{} #{} (active)", project, member_index)
                 } else {
-                    project.clone()
+                    format!("{} #{}", project, member_index)
+                };
+                let sid_short = if session_id.len() > 8 {
+                    &session_id[..8]
+                } else {
+                    &session_id
                 };
                 let indent_px = indent.unwrap_or(0.0);
-                legacy::cell_name_only(ui, &label, None, name_col, self.row_h, indent_px);
-                maybe_row_click(self, ui, "name");
+                legacy::cell_name_only(ui, &primary, Some(sid_short), name_col, self.row_h, indent_px);
+                maybe_row_interact(self, ui, "name");
             }
             4 => {
                 legacy::cell_start(ui, s.first_ts, self.row_h);
-                maybe_row_click(self, ui, "start");
+                maybe_row_interact(self, ui, "start");
             }
             5 => {
                 let tag = match harness.as_str() {
@@ -442,7 +437,7 @@ impl LegendTableData {
                     _ => "",
                 };
                 legacy::stat_cell(ui, tag, self.row_h, false);
-                maybe_row_click(self, ui, "harness");
+                maybe_row_interact(self, ui, "harness");
             }
             6 => {
                 let m = if model.is_empty() {
@@ -451,7 +446,7 @@ impl LegendTableData {
                     scene::short_model_label(&model)
                 };
                 legacy::stat_cell(ui, m, self.row_h, false);
-                maybe_row_click(self, ui, "model");
+                maybe_row_interact(self, ui, "model");
             }
             7 => {
                 let txt = if is_active {
@@ -463,7 +458,7 @@ impl LegendTableData {
                     String::new()
                 };
                 legacy::stat_cell(ui, &txt, self.row_h, is_active);
-                maybe_row_click(self, ui, "ctx");
+                maybe_row_interact(self, ui, "ctx");
             }
             8 => {
                 legacy::stat_cell(
@@ -472,7 +467,7 @@ impl LegendTableData {
                     self.row_h,
                     true,
                 );
-                maybe_row_click(self, ui, "cost");
+                maybe_row_interact(self, ui, "cost");
             }
             9 => {
                 legacy::stat_cell(
@@ -481,13 +476,13 @@ impl LegendTableData {
                     self.row_h,
                     true,
                 );
-                maybe_row_click(self, ui, "tokens");
+                maybe_row_interact(self, ui, "tokens");
             }
             10 => {
-                maybe_row_click(self, ui, "avg_cost");
+                maybe_row_interact(self, ui, "avg_cost");
             }
             11 => {
-                maybe_row_click(self, ui, "avg_tok");
+                maybe_row_interact(self, ui, "avg_tok");
             }
             12 => {
                 let txt = if agent_cost > 0.0 {
@@ -496,12 +491,13 @@ impl LegendTableData {
                     String::new()
                 };
                 legacy::stat_cell(ui, &txt, self.row_h, false);
-                maybe_row_click(self, ui, "agent");
+                maybe_row_interact(self, ui, "agent");
             }
             13 => {
-                if legacy::cell_detail_button(ui, cell.table_id.with(("detail_session", si))) {
-                    // Could open detail view in future
+                if compaction_count > 0 {
+                    legacy::stat_cell(ui, &compaction_count.to_string(), self.row_h, false);
                 }
+                maybe_row_interact(self, ui, "cmpct");
             }
             14 => {
                 let session_ref = (&s_for_timeline, sess_col);
@@ -728,9 +724,20 @@ impl LegendTableData {
                 row_resp(self, ui, "agent");
             }
             13 => {
-                if self.cell_detail_button(ui, cell.table_id.with(("detail_grp", gi))) {
-                    // Handle detail button click
-                }
+                let total_compactions: u32 = member_sis.iter().map(|si| {
+                    self.data.sessions[*si].events.iter()
+                        .filter(|e| matches!(e, crate::agent_harnesses::claude_code::Event::Compaction { .. }))
+                        .count() as u32
+                }).sum();
+                let avg = if member_sis.len() > 1 {
+                    format!("{:.1}", total_compactions as f64 / member_sis.len() as f64)
+                } else if total_compactions > 0 {
+                    total_compactions.to_string()
+                } else {
+                    String::new()
+                };
+                legacy::stat_cell(ui, &avg, self.row_h, false);
+                row_resp(self, ui, "cmpct");
             }
             14 => {
                 let sess_refs: Vec<(SessionData, egui::Color32)> = member_sis
@@ -846,9 +853,6 @@ impl LegendTableData {
         )
     }
 
-    fn cell_detail_button(&mut self, ui: &mut egui::Ui, id: egui::Id) -> bool {
-        legacy::cell_detail_button(ui, id)
-    }
 
     fn cell_timeline(
         &mut self,
@@ -960,7 +964,7 @@ pub(crate) fn draw_legend_panel(
     week_span: f32,
 ) -> LegendActions {
     let row_h = 42.0_f32;
-    let row_gap = 3.0_f32;
+    let _row_gap = 3.0_f32;
     let timeline_w = 120.0_f32;
     let eye_w = 20.0_f32;
 
@@ -984,28 +988,24 @@ pub(crate) fn draw_legend_panel(
 
     let num_rows = table_data.rows.len();
 
-    // Define columns. Fixed columns use range(w..=w) so auto_size skips them.
-    // Only name and timeline have open ranges and absorb surplus space.
+    let col = |w: f32| Column::new(w).range(w..=w);
+    let flex = |w: f32, min: f32| Column::new(w).range(min..=f32::INFINITY);
     let columns = vec![
-        Column::new(24.0).range(24.0..=24.0).id(egui::Id::new("check")),
-        Column::new(18.0).range(18.0..=18.0).id(egui::Id::new("arrow")),
-        Column::new(14.0).range(14.0..=14.0).id(egui::Id::new("swatch")),
-        Column::new(200.0)
-            .range(140.0..=f32::INFINITY)
-            .id(egui::Id::new("name")),
-        Column::new(96.0).range(96.0..=96.0).id(egui::Id::new("start")),
-        Column::new(28.0).range(28.0..=28.0).id(egui::Id::new("harness")),
-        Column::new(56.0).range(56.0..=56.0).id(egui::Id::new("model")),
-        Column::new(44.0).range(44.0..=44.0).id(egui::Id::new("ctx")),
-        Column::new(80.0).range(80.0..=80.0).id(egui::Id::new("cost")),
-        Column::new(60.0).range(60.0..=60.0).id(egui::Id::new("tokens")),
-        Column::new(72.0).range(72.0..=72.0).id(egui::Id::new("avg_cost")),
-        Column::new(60.0).range(60.0..=60.0).id(egui::Id::new("avg_tok")),
-        Column::new(64.0).range(64.0..=64.0).id(egui::Id::new("agent")),
-        Column::new(36.0).range(36.0..=36.0).id(egui::Id::new("detail")),
-        Column::new(timeline_w)
-            .range(100.0..=f32::INFINITY)
-            .id(egui::Id::new("timeline")),
+        col(24.0).id(egui::Id::new("check")),
+        col(18.0).id(egui::Id::new("arrow")),
+        col(14.0).id(egui::Id::new("swatch")),
+        flex(200.0, 140.0).id(egui::Id::new("name")),
+        col(96.0).id(egui::Id::new("start")),
+        col(28.0).id(egui::Id::new("harness")),
+        col(56.0).id(egui::Id::new("model")),
+        col(44.0).id(egui::Id::new("ctx")),
+        col(80.0).id(egui::Id::new("cost")),
+        col(60.0).id(egui::Id::new("tokens")),
+        col(72.0).id(egui::Id::new("avg_cost")),
+        col(60.0).id(egui::Id::new("avg_tok")),
+        col(64.0).id(egui::Id::new("agent")),
+        col(48.0).id(egui::Id::new("cmpct")),
+        flex(timeline_w, 100.0).id(egui::Id::new("timeline")),
     ];
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
@@ -1553,33 +1553,6 @@ mod legacy {
         toggled_id
     }
 
-    /// Detail [->] button. Returns true if clicked.
-    pub fn cell_detail_button(ui: &mut egui::Ui, id: egui::Id) -> bool {
-        let rect = ui.max_rect();
-        let resp = ui.interact(rect, id, egui::Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                2.0,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
-            );
-        }
-        ui.painter().text(
-            egui::pos2(rect.center().x, rect.center().y - 4.0),
-            egui::Align2::CENTER_CENTER,
-            "\u{2192}",
-            egui::FontId::monospace(18.0),
-            TEXT_DIM,
-        );
-        ui.painter().text(
-            egui::pos2(rect.center().x, rect.center().y + 10.0),
-            egui::Align2::CENTER_CENTER,
-            "detail",
-            egui::FontId::monospace(7.0),
-            TEXT_DIM,
-        );
-        resp.clicked()
-    }
 
     /// Expand/collapse button for session events.
     pub fn cell_expand_button(ui: &mut egui::Ui, id: egui::Id, is_expanded: bool) -> bool {
