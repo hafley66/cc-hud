@@ -1309,10 +1309,6 @@ fn draw_big(
                 *autofit = true;
                 *time_view = None;
                 *turn_view = None;
-                eprintln!(
-                    "[time-toggle] time_axis={} show_active_only={} show_bars={}",
-                    *time_axis, *show_active_only, *show_bars,
-                );
             }
             if ta_resp.hovered() {
                 painter.rect_filled(
@@ -1486,12 +1482,6 @@ fn draw_big(
         *turn_view = Some((turn_full_min, 200.0_f64.min(turn_full_max)));
     }
 
-    if is_time {
-        eprintln!(
-            "[time-frame] autofit={} time_view={:?} time_full=({:.1},{:.1}) hidden={}/{} max_turns={}",
-            *autofit, time_view, time_full_min, time_full_max, effective_hidden.len(), data.sessions.len(), max_turns,
-        );
-    }
     // Autofit (time mode only): recompute each frame to track latest data.
     if *autofit && is_time {
         let mut fit_min = f64::MAX;
@@ -1680,10 +1670,10 @@ fn draw_big(
     // Time-mode visual parameters: defined once, used at every chart render site.
     // In time mode with many overlapping sessions, reduce line opacity/width to keep charts readable.
     // Hovered sessions always render at full brightness regardless.
-    let line_alpha_default: f32 = if is_time { 0.30 } else { 0.75 };
-    let line_width_default: f32 = if is_time { 1.5 } else { 2.0 };
-    let totals_alpha_default: f32 = if is_time { 0.35 } else { 0.80 };
-    let totals_width_default: f32 = if is_time { 1.2 } else { 1.5 };
+    let line_alpha_default: f32 = 0.75;
+    let line_width_default: f32 = 2.0;
+    let totals_alpha_default: f32 = 0.80;
+    let totals_width_default: f32 = 1.5;
     let show_markers = !is_time || !panel_hl.key.is_empty();
 
     let (vis_xmin, vis_xmax) = match *active_view {
