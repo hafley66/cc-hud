@@ -757,7 +757,7 @@ fn handle_chart_nav(
     let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
     if resp.hovered() && scroll_y.abs() > 0.1 {
         *autofit = false;
-        let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
+        let zoom_factor = (1.0 - (scroll_y as f64 * 0.0008)).clamp(0.85, 1.18);
         let (vmin, vmax) = view.unwrap_or((full_min, full_max));
         let vspan = vmax - vmin;
         let anchor = ctx
@@ -884,7 +884,7 @@ fn draw_nav_strip(
         let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
         if resp.hovered() && scroll_y.abs() > 0.1 {
             *autofit = false;
-            let zoom_factor = 1.0 - (scroll_y as f64 * 0.003);
+            let zoom_factor = (1.0 - (scroll_y as f64 * 0.0008)).clamp(0.85, 1.18);
             let (vmin, vmax) = view.unwrap_or((full_min, full_max));
             let vspan = vmax - vmin;
             let mouse_frac = ui.input(|i| i.pointer.hover_pos())
@@ -1538,6 +1538,12 @@ fn draw_big(
             &turn_label,
         );
     }
+
+    // Snapshot time_view value before reborrowing into active_view so usage/budget
+    // (which are inherently time-based) can always drive their X off the time window.
+    let time_view_snap: Option<(f64, f64)> = *time_view;
+    let (time_vis_xmin, time_vis_xmax) = time_view_snap
+        .unwrap_or((time_full_min, time_full_max));
 
     let active_view: &mut Option<(f64, f64)> = if is_time { time_view } else { turn_view };
 
@@ -2244,13 +2250,9 @@ fn draw_big(
                         .include_y(billing.limit_usd * 1.05)
                         .y_axis_formatter(budget_y_fmt)
                         .x_axis_formatter(time_x_fmt);
-                    // In time mode, share viewport with other charts; otherwise auto-fit to billing period
-                    if is_time {
-                        p = p.link_cursor(cursor_id, [true, false]);
-                        if let Some((vmin, vmax)) = *active_view {
-                            p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
-                        }
-                    }
+                    // Budget is always time-based: share the time window regardless of mode.
+                    p = p.link_cursor(cursor_id, [true, false]);
+                    p = p.include_x(time_vis_xmin).include_x(time_vis_xmax).auto_bounds([false, true]);
                     // If web reported total > CLI total, include it in Y range
                     if let Some((web_val, _)) = billing.web_reported {
                         p = p.include_y(web_val * 1.05);
@@ -2258,7 +2260,7 @@ fn draw_big(
                     let web_reported_for_chart = billing.web_reported;
                     let period_start_for_chart = period_start_x;
                     let plot_resp = p.show(ui, |pui| {
-                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_plot_bounds_x(time_vis_xmin..=time_vis_xmax);
                     pui.set_auto_bounds([false, true]);
                         let pts = step_pts(&zeroed); // budget always uses time-based x
                         pui.line(
@@ -2333,16 +2335,20 @@ fn draw_big(
                         update_hover_src(pui, HoverSource::Budget);
                     });
                     try_pin(&plot_resp.response);
-                    handle_chart_nav(
-                        ui.ctx(),
-                        &plot_resp.response,
-                        plot_resp.transform.bounds(),
-                        active_view,
-                        full_min,
-                        full_max,
-                        view_min_span,
-                        autofit,
-                    );
+                    // Budget is time-only: drive time_view directly via active_view only when is_time.
+                    // In non-time mode, use the always-visible time nav strip instead.
+                    if is_time {
+                        handle_chart_nav(
+                            ui.ctx(),
+                            &plot_resp.response,
+                            plot_resp.transform.bounds(),
+                            active_view,
+                            time_full_min,
+                            time_full_max,
+                            5.0,
+                            autofit,
+                        );
+                    }
                 } else {
                     let inner = ui.available_rect_before_wrap();
                     let msg = "no data in billing period";
@@ -2446,11 +2452,10 @@ fn draw_big(
                         })
                         .x_axis_formatter(usage_time_fmt)
                         .label_formatter(tip_fmt);
-                    if let Some((vmin, vmax)) = *active_view {
-                        p = p.include_x(vmin).include_x(vmax).auto_bounds([false, true]);
-                    }
+                    // Usage is always time-based: use the time window regardless of mode.
+                    p = p.include_x(time_vis_xmin).include_x(time_vis_xmax).auto_bounds([false, true]);
                     let plot_resp = p.show(ui, |pui| {
-                    pui.set_plot_bounds_x(vis_xmin..=vis_xmax);
+                    pui.set_plot_bounds_x(time_vis_xmin..=time_vis_xmax);
                     pui.set_auto_bounds([false, true]);
                         pui.line(
                             egui_plot::Line::new("5h", five_h_pts)
@@ -2468,16 +2473,19 @@ fn draw_big(
                                 .width(0.5),
                         );
                     });
-                    handle_chart_nav(
-                        ui.ctx(),
-                        &plot_resp.response,
-                        plot_resp.transform.bounds(),
-                        active_view,
-                        full_min,
-                        full_max,
-                        view_min_span,
-                        autofit,
-                    );
+                    // Usage is time-only: drive active_view (which is time_view) only in time mode.
+                    if is_time {
+                        handle_chart_nav(
+                            ui.ctx(),
+                            &plot_resp.response,
+                            plot_resp.transform.bounds(),
+                            active_view,
+                            time_full_min,
+                            time_full_max,
+                            5.0,
+                            autofit,
+                        );
+                    }
                 } else if let Some(e) = &usage.error {
                     let inner = ui.available_rect_before_wrap();
                     ui.painter().text(
