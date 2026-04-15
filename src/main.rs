@@ -275,6 +275,7 @@ struct Hud {
     show_active_only: bool,
     show_bars: bool,
     time_axis: bool,
+    compaction_plus: bool,
     autofit: bool,
     nav_view: Option<(f64, f64)>,
     turn_view: Option<(f64, f64)>,
@@ -284,7 +285,7 @@ struct Hud {
     show_budget: bool,
     billing: BillingConfig,
     focused: Option<String>,
-    cached_chart: Option<(usize, HashSet<String>, bool, ChartData)>,
+    cached_chart: Option<(usize, HashSet<String>, bool, bool, ChartData)>,
     cached_plot: Option<PlotCache>,
     last_seen_gen: usize,
     tiles_demo_open: bool,
@@ -394,6 +395,7 @@ impl Hud {
             show_active_only: false,
             show_bars: true,
             time_axis: false,
+            compaction_plus: false,
             autofit: true,
             nav_view: None,
             turn_view: None,
@@ -960,6 +962,7 @@ fn draw_big(
     show_bars: &mut bool,
     effective_hidden: &HashSet<String>,
     time_axis: &mut bool,
+    compaction_plus: &mut bool,
     autofit: &mut bool,
     time_view: &mut Option<(f64, f64)>,
     turn_view: &mut Option<(f64, f64)>,
@@ -1328,6 +1331,48 @@ fn draw_big(
                 egui::FontId::monospace(10.0),
                 ta_col,
             );
+
+            // "compaction+" toggle -- segment turn axis at compactions (non-time mode only)
+            if !*time_axis {
+                let cp_label = if *compaction_plus {
+                    "● compaction+"
+                } else {
+                    "○ compaction+"
+                };
+                let cp_col = if *compaction_plus {
+                    Palette::TEXT_BRIGHT
+                } else {
+                    Palette::TEXT_DIM
+                };
+                let cp_rect = egui::Rect::from_min_size(
+                    egui::pos2(ta_rect.right() + 8.0, cy - btn_size.y / 2.0),
+                    egui::vec2(100.0, btn_size.y),
+                );
+                let cp_resp = ui.interact(
+                    cp_rect,
+                    egui::Id::new("ctrl_compaction_plus"),
+                    egui::Sense::click(),
+                );
+                if cp_resp.clicked() {
+                    *compaction_plus = !*compaction_plus;
+                    *autofit = true;
+                    *turn_view = None;
+                }
+                if cp_resp.hovered() {
+                    painter.rect_filled(
+                        cp_rect,
+                        3.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                    );
+                }
+                painter.text(
+                    cp_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    cp_label,
+                    egui::FontId::monospace(10.0),
+                    cp_col,
+                );
+            }
 
             // "fit" button -- resets navigator zoom in time mode
             if *time_axis {
@@ -3938,16 +3983,29 @@ impl App for Hud {
 
                 // Cache chart data: only rebuild when data generation, hidden set, or time_axis changes
                 let data_gen = data.generation as usize;
-                let cache_hit = self.cached_chart.as_ref().map_or(false, |(g, h, t, _)| {
-                    *g == data_gen && *h == effective_hidden && *t == self.time_axis
+                let cache_hit = self.cached_chart.as_ref().map_or(false, |(g, h, t, cp, _)| {
+                    *g == data_gen
+                        && *h == effective_hidden
+                        && *t == self.time_axis
+                        && *cp == self.compaction_plus
                 });
                 if !cache_hit {
-                    let cd = build_chart_data(&data, &effective_hidden, self.time_axis);
+                    let cd = build_chart_data(
+                        &data,
+                        &effective_hidden,
+                        self.time_axis,
+                        self.compaction_plus,
+                    );
                     self.cached_plot = Some(build_plot_cache(&cd));
-                    self.cached_chart =
-                        Some((data_gen, effective_hidden.clone(), self.time_axis, cd));
+                    self.cached_chart = Some((
+                        data_gen,
+                        effective_hidden.clone(),
+                        self.time_axis,
+                        self.compaction_plus,
+                        cd,
+                    ));
                 }
-                let cd = &self.cached_chart.as_ref().unwrap().3;
+                let cd = &self.cached_chart.as_ref().unwrap().4;
                 let pc = self.cached_plot.as_ref().unwrap();
                 let usage = self.usage_data.lock().unwrap().clone();
 
@@ -3963,6 +4021,7 @@ impl App for Hud {
                     &mut self.show_bars,
                     &effective_hidden,
                     &mut self.time_axis,
+                    &mut self.compaction_plus,
                     &mut self.autofit,
                     &mut self.nav_view,
                     &mut self.turn_view,

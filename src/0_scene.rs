@@ -576,7 +576,13 @@ pub struct ChartData {
     pub total_water_max: f64,
 }
 
-pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: bool) -> ChartData {
+pub fn build_chart_data(
+    data: &HudData,
+    hidden: &HashSet<String>,
+    time_axis: bool,
+    compaction_plus: bool,
+) -> ChartData {
+    let segment_mode = compaction_plus && !time_axis;
     let mut per_turn_in_cost_max = 0.001_f64;
     let mut per_turn_out_cost_max = 0.001_f64;
     let mut in_max = 100.0_f64;
@@ -705,6 +711,16 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
         }
 
         let mut turns: Vec<TurnInfo> = vec![];
+        let mut seg_idx: u32 = 0;
+        let total_segs: u32 = if segment_mode {
+            1 + session
+                .events
+                .iter()
+                .filter(|e| matches!(e, Event::Compaction { .. }))
+                .count() as u32
+        } else {
+            1
+        };
         let mut total_in_cost = 0.0f64;
         let mut total_out_cost = 0.0f64;
         let mut prev_total_cost = 0.0f64;
@@ -1138,12 +1154,41 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                     skill_xs.push((last_x + 0.10, skill.clone()));
                 }
                 Event::Compaction { timestamp_secs, .. } => {
-                    let x = if time_axis {
-                        *timestamp_secs as f64 / 60.0
+                    if segment_mode {
+                        // Flush current segment turns as its own session_turns entry,
+                        // then reset segment-local counters.
+                        let project_count = project_name_counts
+                            .get(&session.project)
+                            .copied()
+                            .unwrap_or(1);
+                        let session_rank =
+                            project_session_index.get(&si).copied().unwrap_or(1);
+                        let base = if project_count > 1 {
+                            format!("{} #{}", session.project, session_rank)
+                        } else {
+                            session.project.clone()
+                        };
+                        let display_name = if total_segs > 1 {
+                            format!("{}/c:{}", base, seg_idx)
+                        } else {
+                            base
+                        };
+                        session_turns.push((
+                            display_name,
+                            session_color(si),
+                            std::mem::take(&mut turns),
+                        ));
+                        seg_idx += 1;
+                        api_idx = 0;
+                        last_x = 0.0;
                     } else {
-                        api_idx as f64
-                    };
-                    compaction_xs.push(x);
+                        let x = if time_axis {
+                            *timestamp_secs as f64 / 60.0
+                        } else {
+                            api_idx as f64
+                        };
+                        compaction_xs.push(x);
+                    }
                 }
                 _ => {}
             }
@@ -1183,11 +1228,16 @@ pub fn build_chart_data(data: &HudData, hidden: &HashSet<String>, time_axis: boo
                 .get(&session.project)
                 .copied()
                 .unwrap_or(1);
-            if count > 1 {
+            let base = if count > 1 {
                 let idx = project_session_index.get(&si).copied().unwrap_or(1);
                 format!("{} #{}", session.project, idx)
             } else {
                 session.project.clone()
+            };
+            if segment_mode && total_segs > 1 {
+                format!("{}/c:{}", base, seg_idx)
+            } else {
+                base
             }
         };
         session_turns.push((display_name, session_color(si), turns));
