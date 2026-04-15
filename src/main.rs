@@ -285,6 +285,7 @@ struct Hud {
     show_budget: bool,
     billing: BillingConfig,
     focused: Option<String>,
+    viewer: Option<TurnViewerState>,
     cached_chart: Option<(usize, HashSet<String>, bool, bool, ChartData)>,
     cached_plot: Option<PlotCache>,
     last_seen_gen: usize,
@@ -405,6 +406,7 @@ impl Hud {
             show_budget: false,
             billing: BillingConfig::load(),
             focused: None,
+            viewer: None,
             cached_chart: None,
             cached_plot: None,
             last_seen_gen: 0,
@@ -453,6 +455,16 @@ use legend::LegendHighlight;
 struct HoverState {
     x: f64,
     source: HoverSource,
+}
+
+/// Open-viewer state. Payload is loaded lazily on first frame after open.
+#[derive(Clone)]
+struct TurnViewerState {
+    session_id: String,
+    cwd: String,
+    display_name: String,
+    api_call_idx: u32,
+    payload: Option<agent_harnesses::claude_code::TurnPayload>,
 }
 
 /// Which panel row is hovered, used to highlight corresponding vlines on charts.
@@ -972,6 +984,7 @@ fn draw_big(
     show_budget: &mut bool,
     billing: &mut BillingConfig,
     focused: &mut Option<String>,
+    viewer: &mut Option<TurnViewerState>,
     chart_tree: &mut egui_tiles::Tree<ChartPane>,
 ) {
     let area = ui.available_rect_before_wrap();
@@ -2907,7 +2920,10 @@ fn draw_big(
             let mut context_footer: Option<(u64, u64, f64, bool)> = None;
             // Budget always uses time-based x, even in non-time mode
             let use_ts_x = matches!(hs.source, HoverSource::Budget) && !is_time;
-            for (name, sess_color, turns) in &cd.session_turns {
+            // Closest turn across all sessions — used by the V-key turn viewer shortcut.
+            // (meta_idx, api_call_idx, display_name, distance).
+            let mut viewer_hit: Option<(usize, u32, String, f64)> = None;
+            for (meta_idx, (name, sess_color, turns)) in cd.session_turns.iter().enumerate() {
                 if turns.is_empty() {
                     continue;
                 }
@@ -2925,6 +2941,15 @@ fn draw_big(
                     (tx(a) - hx).abs().partial_cmp(&(tx(b) - hx).abs()).unwrap()
                 });
                 if let Some((idx, t)) = nearest {
+                    let dist = (tx(t) - hx).abs();
+                    let beat = viewer_hit
+                        .as_ref()
+                        .map(|(_, _, _, d)| dist < *d)
+                        .unwrap_or(true);
+                    if beat {
+                        viewer_hit =
+                            Some((meta_idx, t.api_call_idx, name.clone(), dist));
+                    }
                     // Compute context burn rate: avg context growth per turn over recent window
                     let window = 5;
                     let start = idx.saturating_sub(window);
@@ -3827,7 +3852,104 @@ fn draw_big(
                             });
                     });
             }
+
+            // Press V while hovering a turn to open the turn viewer popup.
+            // Uses the globally-nearest turn across all sessions under cursor.
+            if let Some((meta_idx, api_call_idx, display_name, _)) = viewer_hit {
+                let pressed_v = ui
+                    .ctx()
+                    .input(|i| i.key_pressed(egui::Key::V));
+                if pressed_v {
+                    if let Some((sid, cwd)) = cd.session_meta.get(meta_idx).cloned() {
+                        *viewer = Some(TurnViewerState {
+                            session_id: sid,
+                            cwd,
+                            display_name,
+                            api_call_idx,
+                            payload: None,
+                        });
+                    }
+                }
+            }
         }
+    }
+
+    // --- Turn viewer popup ---
+    if let Some(v) = viewer.as_mut() {
+        if v.payload.is_none() {
+            v.payload = agent_harnesses::claude_code::read_turn_payload(
+                &v.cwd,
+                &v.session_id,
+                v.api_call_idx,
+            );
+        }
+    }
+    let mut keep_open = viewer.is_some();
+    if let Some(v) = viewer.as_ref() {
+        let title = format!("turn {} — {}", v.api_call_idx + 1, v.display_name);
+        egui::Window::new(title)
+            .id(egui::Id::new("hud_turn_viewer"))
+            .open(&mut keep_open)
+            .default_size([640.0, 520.0])
+            .resizable(true)
+            .show(ui.ctx(), |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| match &v.payload {
+                    Some(p) => {
+                        ui.label(
+                            egui::RichText::new("user")
+                                .color(Palette::TEXT_DIM)
+                                .monospace(),
+                        );
+                        let mut user_buf = p.user_text.as_str();
+                        ui.add(
+                            egui::TextEdit::multiline(&mut user_buf)
+                                .desired_width(f32::INFINITY)
+                                .code_editor(),
+                        );
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new("assistant")
+                                .color(Palette::TEXT_DIM)
+                                .monospace(),
+                        );
+                        let mut asst_buf = p.assistant_text.as_str();
+                        ui.add(
+                            egui::TextEdit::multiline(&mut asst_buf)
+                                .desired_width(f32::INFINITY)
+                                .code_editor(),
+                        );
+                        if !p.tool_uses.is_empty() {
+                            ui.separator();
+                            ui.collapsing(
+                                format!("tool calls ({})", p.tool_uses.len()),
+                                |ui| {
+                                    for (name, input) in &p.tool_uses {
+                                        ui.label(
+                                            egui::RichText::new(name)
+                                                .color(Palette::TEXT_BRIGHT)
+                                                .monospace(),
+                                        );
+                                        let mut input_buf = input.as_str();
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut input_buf)
+                                                .desired_width(f32::INFINITY)
+                                                .code_editor(),
+                                        );
+                                    }
+                                },
+                            );
+                        }
+                    }
+                    None => {
+                        ui.label("(no payload — JSONL line not found for this turn)");
+                    }
+                });
+            });
+    }
+    if !keep_open {
+        *viewer = None;
+    } else if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+        *viewer = None;
     }
 }
 
@@ -4031,6 +4153,7 @@ impl App for Hud {
                     &mut self.show_budget,
                     &mut self.billing,
                     &mut self.focused,
+                    &mut self.viewer,
                     &mut self.chart_tree,
                 );
             });

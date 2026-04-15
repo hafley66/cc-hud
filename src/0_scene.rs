@@ -517,6 +517,10 @@ pub struct TurnInfo {
     pub energy: EnergyEstimate,
     /// Cumulative energy up to this turn
     pub cumulative_energy: EnergyEstimate,
+    /// Zero-based index of this ApiCall within the session (stable even when
+    /// segment_mode resets segment-local api_idx). Used by the turn-viewer to
+    /// locate the matching JSONL entry on demand.
+    pub api_call_idx: u32,
 }
 
 pub struct ChartData {
@@ -559,6 +563,9 @@ pub struct ChartData {
     pub budget_cost_max: f64,
     pub compaction_xs: Vec<f64>,
     pub session_turns: Vec<(String, Color, Vec<TurnInfo>)>,
+    /// Per-entry (session_id, cwd) parallel to session_turns. When segment_mode
+    /// splits a session into multiple entries, all share the same pair.
+    pub session_meta: Vec<(String, String)>,
     /// Per-turn energy bars (Wh midpoint)
     pub energy_wh_bars: Vec<BarData>,
     /// Per-turn water bars (mL midpoint)
@@ -605,6 +612,7 @@ pub fn build_chart_data(
     let mut skill_xs: Vec<(f64, String)> = vec![];
     let mut compaction_xs: Vec<f64> = vec![];
     let mut session_turns: Vec<(String, Color, Vec<TurnInfo>)> = vec![];
+    let mut session_meta: Vec<(String, String)> = vec![];
     let mut energy_wh_bars: Vec<BarData> = vec![];
     let mut water_ml_bars: Vec<BarData> = vec![];
     let mut local_cost_bars: Vec<BarData> = vec![];
@@ -711,6 +719,7 @@ pub fn build_chart_data(
         }
 
         let mut turns: Vec<TurnInfo> = vec![];
+        let mut global_api_idx: u32 = 0;
         let mut seg_idx: u32 = 0;
         let total_segs: u32 = if segment_mode {
             1 + session
@@ -1142,10 +1151,12 @@ pub fn build_chart_data(
                         is_reset,
                         energy: turn_energy,
                         cumulative_energy: cum_energy.clone(),
+                        api_call_idx: global_api_idx,
                     });
                     prev_total_cost = cur_total;
                     last_x = x;
                     api_idx += 1;
+                    global_api_idx += 1;
                 }
                 Event::AgentSpawn { subagent_type, .. } => {
                     agent_xs.push((last_x + 0.15, subagent_type.clone()));
@@ -1178,6 +1189,7 @@ pub fn build_chart_data(
                             session_color(si),
                             std::mem::take(&mut turns),
                         ));
+                        session_meta.push((session.session_id.clone(), session.cwd.clone()));
                         seg_idx += 1;
                         api_idx = 0;
                         last_x = 0.0;
@@ -1241,6 +1253,7 @@ pub fn build_chart_data(
             }
         };
         session_turns.push((display_name, session_color(si), turns));
+        session_meta.push((session.session_id.clone(), session.cwd.clone()));
     }
 
     let sort_desc =
@@ -1403,6 +1416,7 @@ pub fn build_chart_data(
         budget_cost_max,
         compaction_xs,
         session_turns,
+        session_meta,
         energy_wh_bars,
         water_ml_bars,
         local_cost_bars,

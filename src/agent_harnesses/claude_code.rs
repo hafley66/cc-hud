@@ -966,6 +966,167 @@ pub fn poll_loop(data: Arc<Mutex<HudData>>, show_history: bool) {
     }
 }
 
+/// Plaintext snapshot of a single turn's message payload, reconstructed on
+/// demand from the session's JSONL. Used by the turn viewer popup.
+#[derive(Debug, Clone)]
+pub struct TurnPayload {
+    pub user_text: String,
+    pub assistant_text: String,
+    pub tool_uses: Vec<(String, String)>,
+    pub timestamp_secs: u64,
+}
+
+/// Load the Nth ApiCall's user+assistant+tool_use payload from a session's
+/// JSONL file. `api_call_idx` is zero-based (matches TurnInfo.api_call_idx).
+///
+/// Streaming parser: we accumulate user text between api calls, and per
+/// assistant message-id we accumulate text + tool_use blocks until the
+/// final (stop_reason-bearing) partial lands. On that final partial we
+/// check whether this is the target ApiCall index.
+pub fn read_turn_payload(cwd: &str, session_id: &str, api_call_idx: u32) -> Option<TurnPayload> {
+    use std::io::{BufRead, BufReader};
+    let path = format!(
+        "{}/.claude/projects/{}/{}.jsonl",
+        home_dir(),
+        cwd_to_project_dir(cwd),
+        session_id
+    );
+    let file = std::fs::File::open(&path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut counter: u32 = 0;
+    let mut pending_user = String::new();
+
+    struct Pending {
+        assistant_text: String,
+        tool_uses: Vec<(String, String)>,
+        timestamp_secs: u64,
+    }
+    let mut pending: HashMap<String, Pending> = HashMap::new();
+
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let msg_type = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
+
+        // Skip compaction boundaries entirely (they are not ApiCalls).
+        if msg_type == "system" && subtype == "compact_boundary" {
+            continue;
+        }
+
+        let ts = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .map(parse_iso_secs)
+            .unwrap_or(0);
+
+        if msg_type == "user" {
+            if let Some(content) = v.get("message").and_then(|m| m.get("content")) {
+                if let Some(s) = content.as_str() {
+                    if !pending_user.is_empty() {
+                        pending_user.push_str("\n\n");
+                    }
+                    pending_user.push_str(s);
+                } else if let Some(arr) = content.as_array() {
+                    for blk in arr {
+                        let bt = blk.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                        if bt == "text" {
+                            if let Some(t) = blk.get("text").and_then(|x| x.as_str()) {
+                                if !pending_user.is_empty() {
+                                    pending_user.push_str("\n\n");
+                                }
+                                pending_user.push_str(t);
+                            }
+                        } else if bt == "tool_result" {
+                            let body = blk
+                                .get("content")
+                                .and_then(|x| x.as_str())
+                                .map(|s| s.chars().take(1000).collect::<String>());
+                            if let Some(b) = body {
+                                pending_user.push_str("\n[tool_result] ");
+                                pending_user.push_str(&b);
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if msg_type != "assistant" {
+            continue;
+        }
+        let Some(msg) = v.get("message") else {
+            continue;
+        };
+        let msg_id = msg
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let is_final = msg.get("stop_reason").and_then(|x| x.as_str()).is_some();
+
+        let p = pending.entry(msg_id.clone()).or_insert_with(|| Pending {
+            assistant_text: String::new(),
+            tool_uses: Vec::new(),
+            timestamp_secs: ts,
+        });
+
+        if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+            for blk in arr {
+                let bt = blk.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                if bt == "text" {
+                    if let Some(t) = blk.get("text").and_then(|x| x.as_str()) {
+                        if !p.assistant_text.is_empty() {
+                            p.assistant_text.push('\n');
+                        }
+                        p.assistant_text.push_str(t);
+                    }
+                } else if bt == "tool_use" {
+                    let name = blk
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let input = blk
+                        .get("input")
+                        .and_then(|v| serde_json::to_string_pretty(v).ok())
+                        .unwrap_or_else(|| "{}".to_string());
+                    p.tool_uses.push((name, input));
+                }
+            }
+        }
+
+        if !is_final && !msg_id.is_empty() {
+            continue;
+        }
+
+        let pd = pending.remove(&msg_id).unwrap_or(Pending {
+            assistant_text: String::new(),
+            tool_uses: Vec::new(),
+            timestamp_secs: ts,
+        });
+
+        if counter == api_call_idx {
+            return Some(TurnPayload {
+                user_text: std::mem::take(&mut pending_user),
+                assistant_text: pd.assistant_text,
+                tool_uses: pd.tool_uses,
+                timestamp_secs: pd.timestamp_secs,
+            });
+        }
+        counter += 1;
+        pending_user.clear();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
