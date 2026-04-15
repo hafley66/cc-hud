@@ -1544,7 +1544,7 @@ fn draw_big(
         *turn_view = Some((turn_full_min, 200.0_f64.min(turn_full_max)));
     }
 
-    // Autofit (time mode only): recompute each frame to track latest data.
+    // Autofit: recompute each frame to track latest data.
     if *autofit && is_time {
         let mut fit_min = f64::MAX;
         let mut fit_max = f64::MIN;
@@ -1560,6 +1560,19 @@ fn draw_big(
         if fit_min < fit_max {
             let span = (fit_max - fit_min).max(1.0);
             *time_view = Some((fit_min - span * 0.02, fit_max + span * 0.02));
+        }
+    }
+    // Turn-mode autofit while a session is pinned: expand right edge as new turns arrive.
+    if *autofit && !is_time {
+        if let Some(fid) = focused.as_deref() {
+            if let Some(session) = data.sessions.iter().find(|s| s.session_id == fid) {
+                let api_count = session
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e, Event::ApiCall { .. }))
+                    .count() as f64;
+                *turn_view = Some((-0.5_f64, (api_count + 0.5).max(0.5)));
+            }
         }
     }
 
@@ -1607,6 +1620,12 @@ fn draw_big(
     let (time_vis_xmin, time_vis_xmax) = time_view_snap
         .unwrap_or((time_full_min, time_full_max));
 
+    // Raw pointers to the two views so the focus handler can write to the
+    // INACTIVE view while active_view holds the mutable borrow of the other.
+    // Safety invariant: in each branch of the `if is_time` inside the focus
+    // handler below, only the pointer to the non-active view is dereferenced.
+    let time_view_ptr: *mut Option<(f64, f64)> = time_view as *mut _;
+    let turn_view_ptr: *mut Option<(f64, f64)> = turn_view as *mut _;
     let active_view: &mut Option<(f64, f64)> = if is_time { time_view } else { turn_view };
 
     let _ = full_span;
@@ -1665,12 +1684,52 @@ fn draw_big(
         // Toggle: clicking the currently-focused row clears focus.
         if focused.as_deref() == Some(&fid) {
             *focused = None;
+            *active_view = None;
         } else {
-            *focused = Some(fid);
+            *focused = Some(fid.clone());
+
+            // Fit both axes to the focused session immediately so the very
+            // first frame after pinning shows the session in full.
+            if let Some(session) = data.sessions.iter().find(|s| s.session_id == fid) {
+                let api_count = session
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e, Event::ApiCall { .. }))
+                    .count() as f64;
+                let turn_fit = (-0.5_f64, (api_count + 0.5).max(0.5));
+
+                let time_fit = if session.first_ts > 0 {
+                    let tmin = session.first_ts as f64 / 60.0;
+                    let tmax = session.last_ts as f64 / 60.0;
+                    let span = (tmax - tmin).max(1.0);
+                    Some((tmin - span * 0.02, tmax + span * 0.02))
+                } else {
+                    None
+                };
+
+                // active_view borrows exactly one of time_view / turn_view.
+                // Use the raw pointers for the INACTIVE view (the one not
+                // borrowed by active_view), which is always safe here.
+                if is_time {
+                    // active_view == &mut *time_view; turn_view_ptr is inactive.
+                    if let Some(tf) = time_fit {
+                        *active_view = Some(tf);
+                    }
+                    unsafe { *turn_view_ptr = Some(turn_fit) };
+                } else {
+                    // active_view == &mut *turn_view; time_view_ptr is inactive.
+                    *active_view = Some(turn_fit);
+                    if let Some(tf) = time_fit {
+                        unsafe { *time_view_ptr = Some(tf) };
+                    }
+                }
+            } else {
+                *active_view = None;
+            }
         }
+        // autofit keeps time mode live-tracking while pinned (autofit block already
+        // filters to visible=focused sessions only via effective_hidden).
         *autofit = true;
-        // Clear the active axis's view so next frame re-fits to the focused session.
-        *active_view = None;
     }
 
     let cursor_id = egui::Id::new("all_charts_cursor");

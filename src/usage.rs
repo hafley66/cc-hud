@@ -230,6 +230,8 @@ fn fetch_usage(token: &str) -> Result<UsageResponse, String> {
         .args([
             "-s",
             "-f",
+            "--max-time",
+            "30",
             "-H",
             &format!("Authorization: Bearer {}", token),
             "-H",
