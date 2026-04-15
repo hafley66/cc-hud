@@ -1363,11 +1363,26 @@ pub fn build_chart_data(
     let combined_cost_pts = downsample_line(&combined_cost_pts, max_line_pts);
     let cost_rate_pts = downsample_line(&cost_rate_pts, max_line_pts);
 
-    // Budget cost points: always time-based x (ts_x), for the budget chart in any axis mode
+    // Budget cost points: always time-based x, always ALL sessions regardless of
+    // hidden/filter/pin state. The budget chart shows lifetime spend so hiding
+    // a session for chart comparison should not alter the budget curve.
     let mut budget_events: Vec<(f64, f64)> = vec![];
-    for (_, _, turns) in &session_turns {
-        for t in turns {
-            budget_events.push((t.ts_x, t.cost_change));
+    for session in &data.sessions {
+        for ev in &session.events {
+            if let Event::ApiCall {
+                input_cost_usd,
+                output_cost_usd,
+                timestamp_secs,
+                ..
+            } = ev
+            {
+                if *timestamp_secs > 0 {
+                    budget_events.push((
+                        *timestamp_secs as f64 / 60.0,
+                        input_cost_usd + output_cost_usd,
+                    ));
+                }
+            }
         }
     }
     budget_events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
