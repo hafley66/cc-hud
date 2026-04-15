@@ -123,6 +123,8 @@ struct BillingConfig {
     reset_day: u8,
     /// Hour of day the reset happens (0-23, default 0 = midnight).
     reset_hour: u8,
+    /// Minute of the reset hour (0-59, in 15-min steps: 0/15/30/45).
+    reset_minute: u8,
     /// Budget limit in USD for the period.
     limit_usd: f64,
     /// User-reported total from web dashboard: (amount_usd, epoch_secs).
@@ -139,6 +141,7 @@ impl Default for BillingConfig {
         Self {
             reset_day: 1,
             reset_hour: 0,
+            reset_minute: 0,
             limit_usd: 100.0,
             web_reported: None,
             web_input_buf: String::new(),
@@ -165,6 +168,7 @@ impl BillingConfig {
         let json = serde_json::json!({
             "reset_day": self.reset_day,
             "reset_hour": self.reset_hour,
+            "reset_minute": self.reset_minute,
             "limit_usd": self.limit_usd,
             "web_reported": self.web_reported,
         });
@@ -184,6 +188,9 @@ impl BillingConfig {
                 }
                 if let Some(h) = v["reset_hour"].as_u64() {
                     cfg.reset_hour = h.min(23) as u8;
+                }
+                if let Some(m) = v["reset_minute"].as_u64() {
+                    cfg.reset_minute = (m.min(59) / 15 * 15) as u8; // snap to 15-min grid
                 }
                 if let Some(l) = v["limit_usd"].as_f64() {
                     cfg.limit_usd = l.max(1.0);
@@ -209,6 +216,7 @@ impl BillingConfig {
         let json = serde_json::json!({
             "reset_day": self.reset_day,
             "reset_hour": self.reset_hour,
+            "reset_minute": self.reset_minute,
             "limit_usd": self.limit_usd,
             "web_reported": self.web_reported,
         });
@@ -231,10 +239,10 @@ impl BillingConfig {
             libc::localtime_r(&now_secs, &mut tm);
         }
 
-        // Set to reset_day at reset_hour:00:00
+        // Set to reset_day at reset_hour:reset_minute:00
         tm.tm_mday = self.reset_day as i32;
         tm.tm_hour = self.reset_hour as i32;
-        tm.tm_min = 0;
+        tm.tm_min = self.reset_minute as i32;
         tm.tm_sec = 0;
         tm.tm_isdst = -1; // let mktime figure it out
 
@@ -2188,10 +2196,11 @@ fn draw_big(
                 let font = egui::FontId::monospace(9.0);
                 let cy = config_rect.center().y;
 
-                // Reset day control: < day >
-                let day_label = format!("reset day {}", billing.reset_day);
+                // Reset controls: < day N > < HH > : < MM >
+                // Day control
+                let day_label = format!("day {}", billing.reset_day);
                 let day_rect =
-                    egui::Rect::from_min_size(config_rect.min, egui::vec2(90.0, config_h));
+                    egui::Rect::from_min_size(config_rect.min, egui::vec2(68.0, config_h));
                 painter.text(
                     day_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -2199,58 +2208,64 @@ fn draw_big(
                     font.clone(),
                     Palette::TEXT_DIM,
                 );
-                let dec_rect = egui::Rect::from_min_size(
+                let day_dec = egui::Rect::from_min_size(
                     egui::pos2(day_rect.left(), cy - 6.0),
-                    egui::vec2(12.0, 12.0),
+                    egui::vec2(10.0, 12.0),
                 );
-                let inc_rect = egui::Rect::from_min_size(
-                    egui::pos2(day_rect.right() - 12.0, cy - 6.0),
-                    egui::vec2(12.0, 12.0),
+                let day_inc = egui::Rect::from_min_size(
+                    egui::pos2(day_rect.right() - 10.0, cy - 6.0),
+                    egui::vec2(10.0, 12.0),
                 );
-                if ui
-                    .interact(
-                        dec_rect,
-                        egui::Id::new("budget_day_dec"),
-                        egui::Sense::click(),
-                    )
-                    .clicked()
-                {
-                    billing.reset_day = if billing.reset_day <= 1 {
-                        28
-                    } else {
-                        billing.reset_day - 1
-                    };
+                if ui.interact(day_dec, egui::Id::new("budget_day_dec"), egui::Sense::click()).clicked() {
+                    billing.reset_day = if billing.reset_day <= 1 { 28 } else { billing.reset_day - 1 };
                     billing.save();
                 }
-                if ui
-                    .interact(
-                        inc_rect,
-                        egui::Id::new("budget_day_inc"),
-                        egui::Sense::click(),
-                    )
-                    .clicked()
-                {
-                    billing.reset_day = if billing.reset_day >= 28 {
-                        1
-                    } else {
-                        billing.reset_day + 1
-                    };
+                if ui.interact(day_inc, egui::Id::new("budget_day_inc"), egui::Sense::click()).clicked() {
+                    billing.reset_day = if billing.reset_day >= 28 { 1 } else { billing.reset_day + 1 };
                     billing.save();
                 }
-                painter.text(
-                    dec_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "<",
-                    font.clone(),
-                    Palette::TEXT_BRIGHT,
-                );
-                painter.text(
-                    inc_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    ">",
-                    font.clone(),
-                    Palette::TEXT_BRIGHT,
-                );
+                painter.text(day_dec.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
+                painter.text(day_inc.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
+
+                // Hour control
+                let hour_label = format!("{:02}", billing.reset_hour);
+                let hr_x = day_rect.right() + 4.0;
+                let hr_rect = egui::Rect::from_min_size(egui::pos2(hr_x, config_rect.top()), egui::vec2(44.0, config_h));
+                painter.text(hr_rect.center(), egui::Align2::CENTER_CENTER, &hour_label, font.clone(), Palette::TEXT_DIM);
+                let hr_dec = egui::Rect::from_min_size(egui::pos2(hr_rect.left(), cy - 6.0), egui::vec2(10.0, 12.0));
+                let hr_inc = egui::Rect::from_min_size(egui::pos2(hr_rect.right() - 10.0, cy - 6.0), egui::vec2(10.0, 12.0));
+                if ui.interact(hr_dec, egui::Id::new("budget_hr_dec"), egui::Sense::click()).clicked() {
+                    billing.reset_hour = if billing.reset_hour == 0 { 23 } else { billing.reset_hour - 1 };
+                    billing.save();
+                }
+                if ui.interact(hr_inc, egui::Id::new("budget_hr_inc"), egui::Sense::click()).clicked() {
+                    billing.reset_hour = if billing.reset_hour >= 23 { 0 } else { billing.reset_hour + 1 };
+                    billing.save();
+                }
+                painter.text(hr_dec.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
+                painter.text(hr_inc.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
+
+                // Colon separator
+                let colon_x = hr_rect.right() + 1.0;
+                painter.text(egui::pos2(colon_x + 3.0, cy), egui::Align2::LEFT_CENTER, ":", font.clone(), Palette::TEXT_DIM);
+
+                // Minute control (15-min steps)
+                let min_label = format!("{:02}", billing.reset_minute);
+                let mn_x = colon_x + 8.0;
+                let mn_rect = egui::Rect::from_min_size(egui::pos2(mn_x, config_rect.top()), egui::vec2(44.0, config_h));
+                painter.text(mn_rect.center(), egui::Align2::CENTER_CENTER, &min_label, font.clone(), Palette::TEXT_DIM);
+                let mn_dec = egui::Rect::from_min_size(egui::pos2(mn_rect.left(), cy - 6.0), egui::vec2(10.0, 12.0));
+                let mn_inc = egui::Rect::from_min_size(egui::pos2(mn_rect.right() - 10.0, cy - 6.0), egui::vec2(10.0, 12.0));
+                if ui.interact(mn_dec, egui::Id::new("budget_mn_dec"), egui::Sense::click()).clicked() {
+                    billing.reset_minute = if billing.reset_minute < 15 { 45 } else { billing.reset_minute - 15 };
+                    billing.save();
+                }
+                if ui.interact(mn_inc, egui::Id::new("budget_mn_inc"), egui::Sense::click()).clicked() {
+                    billing.reset_minute = if billing.reset_minute >= 45 { 0 } else { billing.reset_minute + 15 };
+                    billing.save();
+                }
+                painter.text(mn_dec.center(), egui::Align2::CENTER_CENTER, "<", font.clone(), Palette::TEXT_BRIGHT);
+                painter.text(mn_inc.center(), egui::Align2::CENTER_CENTER, ">", font.clone(), Palette::TEXT_BRIGHT);
 
                 // (painter ref ends here -- mutable ui calls below need exclusive access)
 
@@ -2337,6 +2352,10 @@ fn draw_big(
                     billing.save();
                 }
                 // Now paint text (re-borrow painter)
+                let web_label_rect = egui::Rect::from_min_size(
+                    egui::pos2(web_row.left(), web_row.top()),
+                    egui::vec2(38.0, web_h),
+                );
                 let painter = ui.painter();
                 let web_color = egui::Color32::from_rgb(180, 140, 220);
                 painter.text(
@@ -2386,6 +2405,13 @@ fn draw_big(
                         Palette::TEXT_DIM,
                     );
                 }
+                ui.interact(web_label_rect, egui::Id::new("web_label_tip"), egui::Sense::hover())
+                    .on_hover_text(
+                        "Current total as reported by claude.ai/usage for this billing period.\n\
+                         Claude Code only sees API calls made locally; the web total includes usage\n\
+                         across the web app, API keys, and integrations. Enter this value manually\n\
+                         and press Enter to anchor the budget chart to the correct baseline.",
+                    );
 
                 // The chart: cumulative cost within period, zeroed at period start
                 if !period_cost_pts.is_empty() {
@@ -3486,35 +3512,35 @@ fn draw_big(
                                                     "in",
                                                     c_input,
                                                     &mono,
-                                                    "Fresh input tokens (non-cached)",
+                                                    "Fresh input tokens — context not in cache.\nCharged at base input rate (e.g. $3/MTok Sonnet).\nApplies to the portion of the prompt not covered by a cache hit.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "in(read)",
                                                     c_cache_read,
                                                     &mono,
-                                                    "Cached input tokens (read from cache)",
+                                                    "Cache-read tokens — prompt served from the 1-hour cache.\nCharged at 0.1× input rate (e.g. $0.30/MTok Sonnet).\nAppears when a prior cache-write turn's context is reused.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "in(write)",
                                                     c_cache_create,
                                                     &mono,
-                                                    "Tokens written to prompt cache",
+                                                    "Cache-write tokens — storing context into the 1-hour prompt cache.\nCharged at 2× input rate (e.g. $6/MTok Sonnet).\nAppears on turns that establish or refresh a large context block.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "out",
                                                     c_output,
                                                     &mono,
-                                                    "Output tokens (non-thinking)",
+                                                    "Output tokens — generated response text.\nCharged at output rate (e.g. $15/MTok Sonnet).\nDoes not include thinking tokens.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "out(think)",
                                                     c_think,
                                                     &mono,
-                                                    "Thinking/reasoning tokens",
+                                                    "Thinking/reasoning tokens — internal chain-of-thought.\nCharged at the same output rate as regular output.\nOnly present on models with extended thinking enabled.",
                                                 );
                                                 header_cell(
                                                     ui,
@@ -3537,35 +3563,35 @@ fn draw_big(
                                                     "in",
                                                     c_input,
                                                     &mono,
-                                                    "Fresh input tokens",
+                                                    "Fresh input tokens — context not in cache.\nCharged at base input rate.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "in(read)",
                                                     c_cache_read,
                                                     &mono,
-                                                    "Cached input tokens",
+                                                    "Cache-read tokens — prompt served from the 1-hour cache.\nCheap: 0.1× input rate.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "in(write)",
                                                     c_cache_create,
                                                     &mono,
-                                                    "Tokens written to cache",
+                                                    "Cache-write tokens — storing context into the 1-hour prompt cache.\nExpensive: 2× input rate.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "out",
                                                     c_output,
                                                     &mono,
-                                                    "Output tokens",
+                                                    "Output tokens — generated response text.",
                                                 );
                                                 header_cell(
                                                     ui,
                                                     "out(think)",
                                                     c_think,
                                                     &mono,
-                                                    "Thinking tokens",
+                                                    "Thinking tokens — internal chain-of-thought.\nSame rate as output. Only on extended-thinking models.",
                                                 );
                                                 header_cell(
                                                     ui,
