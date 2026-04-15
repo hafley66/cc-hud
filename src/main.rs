@@ -1369,7 +1369,44 @@ fn draw_big(
                 if cp_resp.clicked() {
                     *compaction_plus = !*compaction_plus;
                     *autofit = true;
-                    *turn_view = None;
+                    // Fit turn view to the longest segment (compaction+ on) or longest
+                    // session (compaction+ off). Data not yet rebuilt this frame, so
+                    // compute directly from session events.
+                    let max_x = if *compaction_plus {
+                        // Max api calls within a single compaction segment.
+                        let mut mx = 1.0_f64;
+                        for s in &data.sessions {
+                            if effective_hidden.contains(&s.session_id) {
+                                continue;
+                            }
+                            let mut seg_len = 0usize;
+                            for ev in &s.events {
+                                match ev {
+                                    Event::ApiCall { .. } => seg_len += 1,
+                                    Event::Compaction { .. } => {
+                                        mx = mx.max(seg_len as f64);
+                                        seg_len = 0;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            mx = mx.max(seg_len as f64);
+                        }
+                        mx
+                    } else {
+                        // Max total api calls in any single session.
+                        data.sessions
+                            .iter()
+                            .filter(|s| !effective_hidden.contains(&s.session_id))
+                            .map(|s| {
+                                s.events
+                                    .iter()
+                                    .filter(|e| matches!(e, Event::ApiCall { .. }))
+                                    .count() as f64
+                            })
+                            .fold(1.0_f64, f64::max)
+                    };
+                    *turn_view = Some((-0.5, max_x + 0.5));
                 }
                 if cp_resp.hovered() {
                     painter.rect_filled(
