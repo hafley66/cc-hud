@@ -102,6 +102,7 @@ struct ChartVisibility {
     energy: bool,
     water: bool,
     totals: bool,
+    tool: bool,
 }
 
 impl Default for ChartVisibility {
@@ -112,6 +113,7 @@ impl Default for ChartVisibility {
             energy: true,
             water: true,
             totals: true,
+            tool: true,
         }
     }
 }
@@ -297,32 +299,7 @@ struct Hud {
     cached_chart: Option<(usize, HashSet<String>, bool, bool, ChartData)>,
     cached_plot: Option<PlotCache>,
     last_seen_gen: usize,
-    tiles_demo_open: bool,
-    tiles_tree: egui_tiles::Tree<DemoPane>,
     chart_tree: egui_tiles::Tree<ChartPane>,
-}
-
-struct DemoPane {
-    label: String,
-    color: egui::Color32,
-}
-
-struct DemoBehavior;
-
-impl egui_tiles::Behavior<DemoPane> for DemoBehavior {
-    fn tab_title_for_pane(&mut self, pane: &DemoPane) -> egui::WidgetText {
-        pane.label.clone().into()
-    }
-    fn pane_ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        _tile_id: egui_tiles::TileId,
-        pane: &mut DemoPane,
-    ) -> egui_tiles::UiResponse {
-        ui.painter().rect_filled(ui.available_rect_before_wrap(), 2.0, pane.color);
-        ui.label(&pane.label);
-        egui_tiles::UiResponse::None
-    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -363,31 +340,26 @@ impl egui_tiles::Behavior<ChartPane> for ChartBehavior {
     fn gap_width(&self, _style: &egui::Style) -> f32 { 6.0 }
 }
 
-fn build_chart_tree() -> egui_tiles::Tree<ChartPane> {
+fn build_chart_tree(show_tool: bool) -> egui_tiles::Tree<ChartPane> {
     let mut tiles = egui_tiles::Tiles::default();
     let cost = tiles.insert_pane(ChartPane::Cost);
     let tokens = tiles.insert_pane(ChartPane::Tokens);
     let usage = tiles.insert_pane(ChartPane::Usage);
-    let tool = tiles.insert_pane(ChartPane::Tool);
     let energy = tiles.insert_pane(ChartPane::Energy);
     let water = tiles.insert_pane(ChartPane::Water);
     let totals = tiles.insert_pane(ChartPane::Totals);
-    let right_col = tiles.insert_vertical_tile(vec![usage, tool]);
-    let top_row = tiles.insert_horizontal_tile(vec![cost, tokens, right_col]);
+    let top_row = if show_tool {
+        let tool = tiles.insert_pane(ChartPane::Tool);
+        let right_col = tiles.insert_vertical_tile(vec![usage, tool]);
+        tiles.insert_horizontal_tile(vec![cost, tokens, right_col])
+    } else {
+        tiles.insert_horizontal_tile(vec![cost, tokens, usage])
+    };
     let mid_row = tiles.insert_horizontal_tile(vec![energy, water]);
     let root = tiles.insert_vertical_tile(vec![top_row, mid_row, totals]);
     egui_tiles::Tree::new("chart_tree", root, tiles)
 }
 
-fn build_demo_tree() -> egui_tiles::Tree<DemoPane> {
-    let mut tiles = egui_tiles::Tiles::default();
-    let a = tiles.insert_pane(DemoPane { label: "A".into(), color: egui::Color32::from_rgb(60,40,30) });
-    let b = tiles.insert_pane(DemoPane { label: "B".into(), color: egui::Color32::from_rgb(30,50,60) });
-    let c = tiles.insert_pane(DemoPane { label: "C".into(), color: egui::Color32::from_rgb(50,40,60) });
-    let right = tiles.insert_vertical_tile(vec![b, c]);
-    let root = tiles.insert_horizontal_tile(vec![a, right]);
-    egui_tiles::Tree::new("tiles_demo", root, tiles)
-}
 
 impl Hud {
     fn new(
@@ -418,9 +390,7 @@ impl Hud {
             cached_chart: None,
             cached_plot: None,
             last_seen_gen: 0,
-            tiles_demo_open: false,
-            tiles_tree: build_demo_tree(),
-            chart_tree: build_chart_tree(),
+            chart_tree: build_chart_tree(true),
         }
     }
 }
@@ -1474,7 +1444,8 @@ fn draw_big(
             ];
             let vtog_w = 32.0_f32;
             let vtog_gap = 4.0_f32;
-            let vtog_total_w = vis_toggles.len() as f32 * (vtog_w + vtog_gap) - vtog_gap;
+            // +1 for the "skl" toggle rendered separately after the loop
+            let vtog_total_w = (vis_toggles.len() + 1) as f32 * (vtog_w + vtog_gap) - vtog_gap;
             let mut vtog_x = inner.right() - vtog_total_w - 4.0;
             for (label, getter, toggler) in vis_toggles {
                 let on = getter(chart_vis);
@@ -1510,6 +1481,41 @@ fn draw_big(
                     vcol,
                 );
                 vtog_x += vtog_w + vtog_gap;
+            }
+            // "skl" toggle — separate because clicking it also rebuilds the chart tree
+            {
+                let skl_rect = egui::Rect::from_min_size(
+                    egui::pos2(vtog_x, cy - btn_size.y / 2.0),
+                    egui::vec2(vtog_w, btn_size.y),
+                );
+                let skl_resp = ui.interact(
+                    skl_rect,
+                    egui::Id::new("vis_toggle_skl"),
+                    egui::Sense::click(),
+                );
+                if skl_resp.clicked() {
+                    chart_vis.tool = !chart_vis.tool;
+                    *chart_tree = build_chart_tree(chart_vis.tool);
+                }
+                if skl_resp.hovered() {
+                    painter.rect_filled(
+                        skl_rect,
+                        3.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                    );
+                }
+                let skl_col = if chart_vis.tool {
+                    Palette::TEXT_BRIGHT
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(100, 90, 75, 120)
+                };
+                painter.text(
+                    skl_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "skl",
+                    egui::FontId::monospace(9.0),
+                    skl_col,
+                );
             }
         });
     });
@@ -2703,35 +2709,37 @@ fn draw_big(
         });
     });
 
-    // Clear session hover tooltip when pointer is over tool panel
-    if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-        if tool_rect.contains(pos) {
-            ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
-        }
-    }
     // --- skill / agent / reads / tool breakdown (scrollable, via scene tree) ---
-    let panel_hl_id = egui::Id::new("panel_highlight");
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(panel_hl_id, PanelHighlight::default()));
-    let panel_nodes = scene::build_tool_panel(
-        &cd.skill_list,
-        &cd.agent_list,
-        &cd.read_list,
-        &cd.tool_list,
-        &panel_hl.key,
-    );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tool_rect), |ui| {
-        panel_frame().show(ui, |ui| {
-            ui.style_mut().visuals.override_text_color = Some(Palette::TEXT);
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let hovered_key = render_egui::render(ui, &panel_nodes);
-            if !hovered_key.is_empty() {
-                ui.ctx().data_mut(|d| {
-                    d.get_temp_mut_or_default::<PanelHighlight>(panel_hl_id).key = hovered_key
-                });
+    if chart_vis.tool {
+        // Clear session hover tooltip when pointer is over tool panel
+        if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+            if tool_rect.contains(pos) {
+                ui.ctx().data_mut(|d| d.remove::<HoverState>(hover_id));
             }
+        }
+        let panel_hl_id = egui::Id::new("panel_highlight");
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(panel_hl_id, PanelHighlight::default()));
+        let panel_nodes = scene::build_tool_panel(
+            &cd.skill_list,
+            &cd.agent_list,
+            &cd.read_list,
+            &cd.tool_list,
+            &panel_hl.key,
+        );
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tool_rect), |ui| {
+            panel_frame().show(ui, |ui| {
+                ui.style_mut().visuals.override_text_color = Some(Palette::TEXT);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                let hovered_key = render_egui::render(ui, &panel_nodes);
+                if !hovered_key.is_empty() {
+                    ui.ctx().data_mut(|d| {
+                        d.get_temp_mut_or_default::<PanelHighlight>(panel_hl_id).key = hovered_key
+                    });
+                }
+            });
         });
-    });
+    }
 
     // --- Row 3: per-turn energy (Wh) + per-turn water (mL), each with cumulative overlay ---
     let total_wh: f64 = cd
@@ -4115,22 +4123,6 @@ fn draw_chart_label(ui: &mut egui::Ui, title: &str, top_label: &str, bot_label: 
 impl App for Hud {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let data = self.hud_data.lock().unwrap().clone();
-
-        let ctx = ui.ctx().clone();
-        egui::Window::new("tiles demo")
-            .open(&mut self.tiles_demo_open)
-            .default_size([400.0, 300.0])
-            .show(&ctx, |ui| {
-                let mut behavior = DemoBehavior;
-                self.tiles_tree.ui(&mut behavior, ui);
-            });
-        egui::Area::new("tiles_toggle".into())
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
-            .show(&ctx, |ui| {
-                if ui.small_button("tiles").clicked() {
-                    self.tiles_demo_open = !self.tiles_demo_open;
-                }
-            });
 
         let bg = egui::Color32::from_rgb(14, 12, 9);
 
