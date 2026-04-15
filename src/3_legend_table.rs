@@ -186,6 +186,7 @@ struct LegendTableData {
     row_h: f32,
     timeline_w: f32,
     eye_w: f32,
+    focused: Option<String>,
     actions: LegendActions,
 }
 
@@ -197,6 +198,7 @@ impl LegendTableData {
         effective_hidden: HashSet<String>,
         expanded_groups: HashSet<String>,
         expanded_sessions: HashSet<String>,
+        focused: Option<String>,
         week_start_secs: u64,
         week_span: f32,
         row_h: f32,
@@ -264,6 +266,7 @@ impl LegendTableData {
             row_h,
             timeline_w,
             eye_w,
+            focused,
             actions: LegendActions::new(),
         }
     }
@@ -291,6 +294,7 @@ impl TableDelegate for LegendTableData {
             "agent",
             "cmpct",
             "Timeline",
+            "focus",
         ];
         let col_idx = cell.col_range.start;
         if col_idx < header_labels.len() {
@@ -508,6 +512,17 @@ impl LegendTableData {
                     self.week_span,
                     sess_col,
                 );
+            }
+            15 => {
+                let is_focused = self
+                    .focused
+                    .as_deref()
+                    .map(|f| f == session_id)
+                    .unwrap_or(false);
+                let id = cell.table_id.with(("focus_btn", cell.row_nr));
+                if legacy::cell_focus_button(ui, id, is_focused, self.row_h) {
+                    self.actions.focus_toggle = Some(session_id.clone());
+                }
             }
             _ => {}
         }
@@ -893,6 +908,8 @@ pub(crate) struct LegendActions {
     pub group_toggle: Option<(String, Vec<String>)>,
     pub toggle_expand: Option<String>,
     pub toggle_session_agents: Vec<String>,
+    /// Set when the user clicks a focus button. Toggles focus for this session.
+    pub focus_toggle: Option<String>,
 }
 
 impl LegendActions {
@@ -902,6 +919,7 @@ impl LegendActions {
             group_toggle: None,
             toggle_expand: None,
             toggle_session_agents: vec![],
+            focus_toggle: None,
         }
     }
 
@@ -960,6 +978,7 @@ pub(crate) fn draw_legend_panel(
     effective_hidden: &HashSet<String>,
     expanded_groups: &HashSet<String>,
     expanded_sessions: &HashSet<String>,
+    focused: Option<&str>,
     week_start_secs: u64,
     week_span: f32,
 ) -> LegendActions {
@@ -979,6 +998,7 @@ pub(crate) fn draw_legend_panel(
         effective_hidden.clone(),
         expanded_groups.clone(),
         expanded_sessions.clone(),
+        focused.map(|s| s.to_string()),
         week_start_secs,
         week_span,
         row_h,
@@ -1006,6 +1026,7 @@ pub(crate) fn draw_legend_panel(
         col(64.0).id(egui::Id::new("agent")),
         col(48.0).id(egui::Id::new("cmpct")),
         flex(timeline_w, 100.0).id(egui::Id::new("timeline")),
+        col(38.0).id(egui::Id::new("focus")),
     ];
 
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(legend_rect), |ui| {
@@ -1116,6 +1137,56 @@ mod legacy {
     /// Transparent click target over the cell's max_rect. Returns true if clicked.
     pub fn row_click(ui: &mut egui::Ui, id: egui::Id) -> bool {
         row_click_response(ui, id).clicked()
+    }
+
+    /// Focus/solo button. Filled disc when focused, outlined disc otherwise.
+    /// Returns true if clicked (caller toggles focus state).
+    pub fn cell_focus_button(
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        is_focused: bool,
+        row_h: f32,
+    ) -> bool {
+        let rect = ui.max_rect();
+        let resp = ui.interact(rect, id, egui::Sense::click());
+        let painter = ui.painter();
+        let hot = resp.hovered() || is_focused;
+        if hot {
+            painter.rect_filled(
+                rect,
+                2.0,
+                egui::Color32::from_rgba_unmultiplied(
+                    255,
+                    255,
+                    255,
+                    if is_focused { 32 } else { 16 },
+                ),
+            );
+        }
+        let cy = rect.center().y;
+        let glyph = if is_focused { "\u{25C9}" } else { "\u{25CE}" };
+        let glyph_col = if is_focused {
+            TEXT_BRIGHT
+        } else if resp.hovered() {
+            TEXT
+        } else {
+            TEXT_DIM
+        };
+        painter.text(
+            egui::pos2(rect.center().x, cy - row_h * 0.12),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            egui::FontId::monospace(14.0),
+            glyph_col,
+        );
+        painter.text(
+            egui::pos2(rect.center().x, cy + row_h * 0.22),
+            egui::Align2::CENTER_CENTER,
+            if is_focused { "pinned" } else { "pin" },
+            egui::FontId::monospace(7.0),
+            glyph_col,
+        );
+        resp.clicked()
     }
 
     /// Like row_click but returns the full Response so callers can read hover state.

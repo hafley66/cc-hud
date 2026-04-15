@@ -283,6 +283,7 @@ struct Hud {
     chart_vis: ChartVisibility,
     show_budget: bool,
     billing: BillingConfig,
+    focused: Option<String>,
     cached_chart: Option<(usize, HashSet<String>, bool, ChartData)>,
     cached_plot: Option<PlotCache>,
     last_seen_gen: usize,
@@ -401,6 +402,7 @@ impl Hud {
             chart_vis: ChartVisibility::default(),
             show_budget: false,
             billing: BillingConfig::load(),
+            focused: None,
             cached_chart: None,
             cached_plot: None,
             last_seen_gen: 0,
@@ -768,7 +770,8 @@ fn handle_chart_nav(
             })
             .unwrap_or((x_min + x_max) / 2.0);
         let t = ((anchor - vmin) / vspan).clamp(0.0, 1.0);
-        let new_span = (vspan * zoom_factor).clamp(min_span, full_span);
+        let upper = full_span.max(min_span);
+        let new_span = (vspan * zoom_factor).clamp(min_span, upper);
         let new_min = (anchor - t * new_span).max(full_min);
         let new_max = (new_min + new_span).min(full_max);
         let new_min = (new_max - new_span).max(full_min);
@@ -965,6 +968,7 @@ fn draw_big(
     chart_vis: &mut ChartVisibility,
     show_budget: &mut bool,
     billing: &mut BillingConfig,
+    focused: &mut Option<String>,
     chart_tree: &mut egui_tiles::Tree<ChartPane>,
 ) {
     let area = ui.available_rect_before_wrap();
@@ -1592,10 +1596,24 @@ fn draw_big(
         effective_hidden,
         expanded_groups,
         expanded_sessions,
+        focused.as_deref(),
         week_start_secs,
         week_span,
     );
+    // Extract focus_toggle before apply() consumes the struct.
+    let focus_click = actions.focus_toggle.clone();
     actions.apply(filter_set, expanded_groups, expanded_sessions);
+    if let Some(fid) = focus_click {
+        // Toggle: clicking the currently-focused row clears focus.
+        if focused.as_deref() == Some(&fid) {
+            *focused = None;
+        } else {
+            *focused = Some(fid);
+        }
+        *autofit = true;
+        // Clear the active axis's view so next frame re-fits to the focused session.
+        *active_view = None;
+    }
 
     let cursor_id = egui::Id::new("all_charts_cursor");
     let hover_id = egui::Id::new("hud_hover_turn");
@@ -1858,18 +1876,16 @@ fn draw_big(
                     if is_time { draw_legend_hl(pui, &legend_hl); }
                     update_hover_src(pui, HoverSource::Cost);
                 });
-                if is_time {
-                    handle_chart_nav(
-                        ui.ctx(),
-                        &plot_resp.response,
-                        plot_resp.transform.bounds(),
-                        active_view,
-                        full_min,
-                        full_max,
-                        view_min_span,
-                        autofit,
-                    );
-                }
+                handle_chart_nav(
+                    ui.ctx(),
+                    &plot_resp.response,
+                    plot_resp.transform.bounds(),
+                    active_view,
+                    full_min,
+                    full_max,
+                    view_min_span,
+                    autofit,
+                );
                 try_pin(&plot_resp.response);
             });
         });
@@ -1952,18 +1968,16 @@ fn draw_big(
                     if is_time { draw_legend_hl(pui, &legend_hl); }
                     update_hover_src(pui, HoverSource::Tokens);
                 });
-                if is_time {
-                    handle_chart_nav(
-                        ui.ctx(),
-                        &plot_resp.response,
-                        plot_resp.transform.bounds(),
-                        active_view,
-                        full_min,
-                        full_max,
-                        view_min_span,
-                        autofit,
-                    );
-                }
+                handle_chart_nav(
+                    ui.ctx(),
+                    &plot_resp.response,
+                    plot_resp.transform.bounds(),
+                    active_view,
+                    full_min,
+                    full_max,
+                    view_min_span,
+                    autofit,
+                );
                 try_pin(&plot_resp.response);
             });
         });
@@ -2622,18 +2636,16 @@ fn draw_big(
                     if is_time { draw_legend_hl(pui, &legend_hl); }
                     update_hover_src(pui, HoverSource::Energy);
                 });
-                if is_time {
-                    handle_chart_nav(
-                        ui.ctx(),
-                        &plot_resp.response,
-                        plot_resp.transform.bounds(),
-                        active_view,
-                        full_min,
-                        full_max,
-                        view_min_span,
-                        autofit,
-                    );
-                }
+                handle_chart_nav(
+                    ui.ctx(),
+                    &plot_resp.response,
+                    plot_resp.transform.bounds(),
+                    active_view,
+                    full_min,
+                    full_max,
+                    view_min_span,
+                    autofit,
+                );
                 try_pin(&plot_resp.response);
             });
         });
@@ -2691,18 +2703,16 @@ fn draw_big(
                     if is_time { draw_legend_hl(pui, &legend_hl); }
                     update_hover_src(pui, HoverSource::Water);
                 });
-                if is_time {
-                    handle_chart_nav(
-                        ui.ctx(),
-                        &plot_resp.response,
-                        plot_resp.transform.bounds(),
-                        active_view,
-                        full_min,
-                        full_max,
-                        view_min_span,
-                        autofit,
-                    );
-                }
+                handle_chart_nav(
+                    ui.ctx(),
+                    &plot_resp.response,
+                    plot_resp.transform.bounds(),
+                    active_view,
+                    full_min,
+                    full_max,
+                    view_min_span,
+                    autofit,
+                );
                 try_pin(&plot_resp.response);
             });
         });
@@ -2815,18 +2825,16 @@ fn draw_big(
                     if is_time { draw_legend_hl(pui, &legend_hl); }
                     update_hover_src(pui, HoverSource::WeeklyCost);
                 });
-                if is_time {
-                    handle_chart_nav(
-                        ui.ctx(),
-                        &plot_resp.response,
-                        plot_resp.transform.bounds(),
-                        active_view,
-                        full_min,
-                        full_max,
-                        view_min_span,
-                        autofit,
-                    );
-                }
+                handle_chart_nav(
+                    ui.ctx(),
+                    &plot_resp.response,
+                    plot_resp.transform.bounds(),
+                    active_view,
+                    full_min,
+                    full_max,
+                    view_min_span,
+                    autofit,
+                );
                 try_pin(&plot_resp.response);
             });
         });
@@ -3858,17 +3866,39 @@ impl App for Hud {
                     FilterMode::Exclude => &mut self.exclude_set,
                     FilterMode::Include => &mut self.include_set,
                 };
-                // Compute effective hidden set from active filter + mode
-                let mut effective_hidden: HashSet<String> = match self.filter_mode {
-                    FilterMode::Exclude => filter_set.clone(),
-                    FilterMode::Include => data
-                        .sessions
-                        .iter()
-                        .map(|s| s.session_id.clone())
-                        .filter(|id| !filter_set.contains(id))
-                        .collect(),
+                // Compute effective hidden set from active filter + mode.
+                // Focus overrides everything: hide all sessions except the focused one.
+                let mut effective_hidden: HashSet<String> = if let Some(fid) = &self.focused {
+                    if data.sessions.iter().any(|s| &s.session_id == fid) {
+                        data.sessions
+                            .iter()
+                            .map(|s| s.session_id.clone())
+                            .filter(|id| id != fid)
+                            .collect()
+                    } else {
+                        self.focused = None;
+                        match self.filter_mode {
+                            FilterMode::Exclude => filter_set.clone(),
+                            FilterMode::Include => data
+                                .sessions
+                                .iter()
+                                .map(|s| s.session_id.clone())
+                                .filter(|id| !filter_set.contains(id))
+                                .collect(),
+                        }
+                    }
+                } else {
+                    match self.filter_mode {
+                        FilterMode::Exclude => filter_set.clone(),
+                        FilterMode::Include => data
+                            .sessions
+                            .iter()
+                            .map(|s| s.session_id.clone())
+                            .filter(|id| !filter_set.contains(id))
+                            .collect(),
+                    }
                 };
-                if self.show_active_only {
+                if self.focused.is_none() && self.show_active_only {
                     for s in &data.sessions {
                         if !s.is_active {
                             effective_hidden.insert(s.session_id.clone());
@@ -3941,6 +3971,7 @@ impl App for Hud {
                     &mut self.chart_vis,
                     &mut self.show_budget,
                     &mut self.billing,
+                    &mut self.focused,
                     &mut self.chart_tree,
                 );
             });
