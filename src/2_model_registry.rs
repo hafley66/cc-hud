@@ -127,6 +127,24 @@ static BUILTIN_PROFILES: &[ModelProfile] = &[
     // -----------------------------------------------------------------------
     ModelProfile {
         provider: "anthropic",
+        patterns: &["opus-4-7"],
+        display_name: "Claude Opus 4.7",
+        energy_tier: EnergyTier::Large,
+        energy: EnergyCoefficients {
+            j_per_output_tok: 5.0,
+            input_energy_factor: 0.05,
+        },
+        pricing: TokenPricing {
+            input: 5.0,
+            output: 25.0,
+            cache_read: 0.50,
+            cache_create: 10.0,
+        },
+        context_window: 1_000_000,
+        active_params_b: 200.0,
+    },
+    ModelProfile {
+        provider: "anthropic",
         patterns: &["opus-4-6", "opus-4-5"],
         display_name: "Claude Opus 4.6/4.5",
         energy_tier: EnergyTier::Large,
@@ -662,6 +680,14 @@ mod tests {
 
     #[test]
     fn anthropic_models_match() {
+        let opus47 = lookup("claude-opus-4-7");
+        assert_eq!(opus47.display_name, "Claude Opus 4.7");
+        assert_eq!(opus47.context_window, 1_000_000);
+        assert!((opus47.pricing.output - 25.0).abs() < 0.01);
+
+        let opus47_1m = lookup("claude-opus-4-7[1m]");
+        assert_eq!(opus47_1m.display_name, "Claude Opus 4.7");
+
         let opus46 = lookup("claude-opus-4-6");
         assert_eq!(opus46.display_name, "Claude Opus 4.6/4.5");
         assert_eq!(opus46.context_window, 1_000_000);
